@@ -1,4 +1,4 @@
-use rootglass_core::LaunchRequest;
+use rootglass_core::{HostAccelerator, HostCapabilities, HostPlatform, LaunchRequest, RootglassRuntime};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use thiserror::Error;
@@ -21,6 +21,17 @@ pub enum Accelerator {
     Hvf,
     Whpx,
     Kvm,
+}
+
+impl From<Option<HostAccelerator>> for Accelerator {
+    fn from(accelerator: Option<HostAccelerator>) -> Self {
+        match accelerator {
+            Some(HostAccelerator::Hvf) => Self::Hvf,
+            Some(HostAccelerator::Whpx) => Self::Whpx,
+            Some(HostAccelerator::Kvm) => Self::Kvm,
+            None => Self::None,
+        }
+    }
 }
 
 impl Accelerator {
@@ -55,7 +66,8 @@ pub struct QemuLaunchPlan {
 }
 
 impl QemuLaunchPlan {
-    pub fn for_launch_request(request: &LaunchRequest, accelerator: Accelerator) -> Self {
+    pub fn for_launch_request(request: &LaunchRequest) -> Self {
+        let accelerator = Accelerator::from(request.accelerator);
         let binary = QemuBinary::default();
         let mut args = vec![
             "-machine".to_string(),
@@ -147,18 +159,19 @@ fn shell_quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rootglass_core::RootglassRuntime;
 
     #[test]
     fn builds_qemu_command_for_sample_launch_request() {
         let mut runtime = RootglassRuntime::new();
+        let capabilities = HostCapabilities::without_acceleration(HostPlatform::Other);
         let request = runtime
-            .prepare_launch("../../examples/hello-world.glass")
+            .prepare_launch_with_host("../../examples/hello-world.glass", &capabilities)
             .expect("sample glass produces launch request");
 
-        let plan = QemuLaunchPlan::for_launch_request(&request, Accelerator::None);
+        let plan = QemuLaunchPlan::for_launch_request(&request);
         let command_line = plan.command_line();
 
+        assert_eq!(plan.accelerator, Accelerator::None);
         assert!(command_line.contains(DEFAULT_QEMU_SYSTEM_AARCH64));
         assert!(command_line.contains("-machine virt"));
         assert!(command_line.contains("-cpu cortex-a57"));
@@ -170,13 +183,20 @@ mod tests {
     }
 
     #[test]
-    fn includes_acceleration_when_requested() {
+    fn includes_acceleration_selected_by_core() {
         let mut runtime = RootglassRuntime::new();
+        let capabilities = HostCapabilities {
+            platform: HostPlatform::Linux,
+            hvf_available: false,
+            whpx_available: false,
+            kvm_available: true,
+        };
         let request = runtime
-            .prepare_launch("../../examples/hello-world.glass")
+            .prepare_launch_with_host("../../examples/hello-world.glass", &capabilities)
             .expect("sample glass produces launch request");
 
-        let plan = QemuLaunchPlan::for_launch_request(&request, Accelerator::Kvm);
+        let plan = QemuLaunchPlan::for_launch_request(&request);
+        assert_eq!(plan.accelerator, Accelerator::Kvm);
         assert!(plan.command_line().contains("-accel kvm"));
     }
 }
