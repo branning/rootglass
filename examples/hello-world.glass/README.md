@@ -6,13 +6,13 @@ This directory is a development-form `.glass` fixture. It mirrors the intended p
 
 ```text
 hello-world.glass/
-  rootglass.toml          # bundle manifest
-  rootfs.img              # required read-only root filesystem image, not committed
-  state.img               # optional writable overlay partition, not committed
+  rootglass.toml              # bundle manifest
+  rootfs.img                  # required read-only root filesystem image, not committed
+  state.img                   # optional writable overlay partition, not committed
   metadata/
-    README.md             # human-facing notes
+    README.md                 # human-facing notes
   signatures/
-    bundle.sig            # placeholder for signature verification work
+    glass.dsse.json           # DSSE-wrapped in-toto-style signature
 ```
 
 ## Binary assets
@@ -23,7 +23,7 @@ Expected local files once generated or downloaded:
 
 - `rootfs.img` — required read-only root filesystem image.
 - `state.img` — optional writable overlay partition.
-- `signatures/bundle.sig` — signature over the manifest and asset digest set once the signature format is chosen.
+- `signatures/glass.dsse.json` — DSSE-wrapped signature over the manifest and committed fixture metadata.
 
 Until those assets exist, this fixture is still useful for parser and validation tests that distinguish between structural validation and full launch readiness.
 
