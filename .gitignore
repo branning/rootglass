@@ -1,0 +1,14 @@
+# Rust build output
+/target/
+
+# Rootglass local runtime state
+/.rootglass/
+
+# Generated example glass assets
+/examples/**/*.img
+/examples/**/*.qcow2
+/examples/**/*.raw
+/examples/**/*.log
+
+# Local downloaded runtime-profile assets
+/runtime-assets/
