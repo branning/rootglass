@@ -1,5 +1,8 @@
+pub mod storage;
+
 use rootglass_manifest::{Glass, ManifestError};
 use std::path::{Path, PathBuf};
+use storage::{OverlayStore, StorageSelection};
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,6 +165,7 @@ pub struct LaunchRequest {
     pub device_tree: String,
     pub rootfs: PathBuf,
     pub writable_overlay: Option<PathBuf>,
+    pub storage: StorageSelection,
     pub kernel_args: Vec<String>,
     pub memory_mb: u32,
     pub cpus: u32,
@@ -169,14 +173,41 @@ pub struct LaunchRequest {
     pub accelerator: Option<HostAccelerator>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct RootglassRuntime {
     status: RuntimeStatus,
+    overlay_store: OverlayStore,
+    selected_local_overlay: Option<String>,
+}
+
+impl Default for RootglassRuntime {
+    fn default() -> Self {
+        Self {
+            status: RuntimeStatus::default(),
+            overlay_store: OverlayStore::new(".rootglass/overlays"),
+            selected_local_overlay: None,
+        }
+    }
 }
 
 impl RootglassRuntime {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn with_overlay_store(overlay_store: OverlayStore) -> Self {
+        Self {
+            overlay_store,
+            ..Self::default()
+        }
+    }
+
+    pub fn select_local_overlay(&mut self, overlay_name: impl Into<String>) {
+        self.selected_local_overlay = Some(overlay_name.into());
+    }
+
+    pub fn clear_local_overlay_selection(&mut self) {
+        self.selected_local_overlay = None;
     }
 
     pub fn status(&self) -> &RuntimeStatus {
@@ -222,7 +253,12 @@ impl RootglassRuntime {
         // For now, the manifest crate enforces that publisher/signature metadata is present.
 
         self.transition(LifecycleState::Ready);
-        Ok(LaunchRequest::from_glass(&glass, accelerator))
+        Ok(LaunchRequest::from_glass(
+            &glass,
+            accelerator,
+            &self.overlay_store,
+            self.selected_local_overlay.as_deref(),
+        ))
     }
 
     fn transition(&mut self, state: LifecycleState) {
@@ -280,20 +316,34 @@ fn select_accelerator(
 }
 
 impl LaunchRequest {
-    pub fn from_glass(glass: &Glass, accelerator: Option<HostAccelerator>) -> Self {
+    pub fn from_glass(
+        glass: &Glass,
+        accelerator: Option<HostAccelerator>,
+        overlay_store: &OverlayStore,
+        selected_local_overlay: Option<&str>,
+    ) -> Self {
         let manifest = &glass.manifest;
+        let storage = overlay_store.selection_for(
+            &glass.root,
+            &manifest.identifier,
+            &manifest.boot.rootfs,
+            manifest.boot.writable_overlay.as_deref(),
+            selected_local_overlay,
+        );
+        let writable_overlay = storage
+            .writable_overlay
+            .as_ref()
+            .map(|selection| selection.path().to_path_buf());
+
         Self {
             glass_root: glass.root.clone(),
             runtime_profile: manifest.runtime.profile.clone(),
             architecture: manifest.runtime.architecture.clone(),
             kernel: manifest.boot.kernel.clone(),
             device_tree: manifest.boot.device_tree.clone(),
-            rootfs: glass.root.join(&manifest.boot.rootfs),
-            writable_overlay: manifest
-                .boot
-                .writable_overlay
-                .as_ref()
-                .map(|path| glass.root.join(path)),
+            rootfs: storage.read_only_rootfs.clone(),
+            writable_overlay,
+            storage,
             kernel_args: manifest.boot.kernel_args.clone(),
             memory_mb: manifest.resources.memory_mb,
             cpus: manifest.resources.cpus,
@@ -306,6 +356,7 @@ impl LaunchRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::WritableOverlaySelection;
 
     #[test]
     fn prepares_launch_request_from_sample_glass() {
@@ -320,6 +371,10 @@ mod tests {
         assert_eq!(request.runtime_profile, "virt-linux");
         assert_eq!(request.accelerator, None);
         assert!(request.rootfs.ends_with("rootfs.img"));
+        assert!(matches!(
+            request.storage.writable_overlay,
+            Some(WritableOverlaySelection::Bundled(_))
+        ));
         assert!(request
             .writable_overlay
             .as_ref()
@@ -359,5 +414,26 @@ mod tests {
             .expect("sample glass can use available KVM");
 
         assert_eq!(request.accelerator, Some(HostAccelerator::Kvm));
+    }
+
+    #[test]
+    fn selected_local_overlay_replaces_bundled_overlay() {
+        let mut runtime = RootglassRuntime::with_overlay_store(OverlayStore::new("/tmp/rootglass/overlays"));
+        runtime.select_local_overlay("experiment-1");
+        let capabilities = HostCapabilities::without_acceleration(HostPlatform::Other);
+
+        let request = runtime
+            .prepare_launch_with_host("../../examples/hello-world.glass", &capabilities)
+            .expect("sample glass can select local overlay");
+
+        assert!(matches!(
+            request.storage.writable_overlay,
+            Some(WritableOverlaySelection::Local(_))
+        ));
+        assert!(request
+            .writable_overlay
+            .as_ref()
+            .expect("overlay selected")
+            .ends_with("experiment-1.img"));
     }
 }
