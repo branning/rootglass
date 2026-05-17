@@ -1,6 +1,4 @@
-use rootglass_manifest::{
-    BUILTIN_AARCH64_DEVICE_TREE, BUILTIN_AARCH64_KERNEL, ManifestError,
-};
+use rootglass_manifest::{ManifestError, BUILTIN_AARCH64_DEVICE_TREE, BUILTIN_AARCH64_KERNEL};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -60,7 +58,7 @@ impl RuntimeAssetResolver {
             other => {
                 return Err(RuntimeProfileError::UnsupportedDeviceTree(
                     other.to_string(),
-                ))
+                ));
             }
         };
 
@@ -111,7 +109,9 @@ mod tests {
         assert_eq!(assets.device_tree, None);
         assert_eq!(
             assets.initrd,
-            Some(PathBuf::from("runtime-assets/alpine-aarch64/initramfs-virt"))
+            Some(PathBuf::from(
+                "runtime-assets/alpine-aarch64/initramfs-virt"
+            ))
         );
     }
 }
