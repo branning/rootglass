@@ -31,6 +31,15 @@ jobs:
       - name: Cache Cargo registry and build outputs
         uses: Swatinem/rust-cache@v2
 
+      - name: Generate lockfile
+        run: cargo generate-lockfile
+
+      - name: Print lockfile for bootstrapping
+        run: |
+          echo '---BEGIN CARGO LOCK---'
+          cat Cargo.lock
+          echo '---END CARGO LOCK---'
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
