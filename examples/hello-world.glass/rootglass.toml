@@ -1,0 +1,41 @@
+schema_version = 1
+name = "Hello World"
+identifier = "io.rootglass.examples.hello-world"
+version = "0.1.0"
+description = "Minimal Rootglass glass used for manifest validation and QEMU smoke testing."
+
+[publisher]
+name = "Rootglass Examples"
+identity = "rootglass.dev/examples"
+signature = "signatures/bundle.sig"
+
+[runtime]
+architecture = "aarch64"
+profile = "virt-linux"
+requires_hardware_acceleration = false
+
+[runtime.host_constraints]
+macos = { hypervisor = false }
+windows = { whpx = false }
+linux = { kvm = false }
+
+[boot]
+kernel = "builtin:aarch64-linux"
+device_tree = "builtin:aarch64-virt"
+rootfs = "rootfs.img"
+writable_overlay = "state.img"
+kernel_args = [
+  "console=ttyAMA0",
+  "root=/dev/vda",
+  "rw"
+]
+
+[resources]
+memory_mb = 512
+cpus = 1
+
+[display]
+mode = "serial-console"
+
+[network]
+mode = "user"
