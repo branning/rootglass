@@ -7,7 +7,7 @@ description = "Minimal Rootglass glass used for manifest validation and QEMU smo
 [publisher]
 name = "Rootglass Examples"
 identity = "rootglass.dev/examples"
-signature = "signatures/bundle.sig"
+signature = "signatures/glass.dsse.json"
 
 [runtime]
 architecture = "aarch64"
