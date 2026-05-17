@@ -1,8 +1,8 @@
-use rootglass_core::{HostCapabilities, RootglassRuntime};
+use rootglass_core::{HostCapabilities, LaunchRequest, RootglassRuntime};
 use rootglass_manifest::Glass;
 use rootglass_qemu::QemuLaunchPlan;
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -29,6 +29,10 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "plan" => {
             let glass_root = required_path_arg(&args, "plan")?;
             print_launch_plan(glass_root)
+        }
+        "boot" => {
+            let glass_root = required_path_arg(&args, "boot")?;
+            boot_glass(glass_root)
         }
         "help" | "--help" | "-h" => {
             print_usage();
@@ -71,10 +75,38 @@ fn validate_glass(glass_root: PathBuf) -> Result<(), String> {
 }
 
 fn print_launch_plan(glass_root: PathBuf) -> Result<(), String> {
+    let request = prepare_launch(&glass_root)?;
+    print_verification(&request);
+
+    let plan = QemuLaunchPlan::for_launch_request(&request);
+    println!("{}", plan.command_line());
+    Ok(())
+}
+
+fn boot_glass(glass_root: PathBuf) -> Result<(), String> {
+    let request = prepare_launch(&glass_root)?;
+    validate_boot_assets(&request)?;
+    print_verification(&request);
+
+    let plan = QemuLaunchPlan::for_launch_request(&request);
+    eprintln!("launching: {}", plan.command_line());
+    let mut child = plan
+        .spawn_interactive()
+        .map_err(|error| error.to_string())?;
+    let status = child.wait().map_err(|error| error.to_string())?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("QEMU exited with status {status}"))
+    }
+}
+
+fn prepare_launch(glass_root: &Path) -> Result<LaunchRequest, String> {
     let mut runtime = RootglassRuntime::new();
     let capabilities = HostCapabilities::detect_current();
-    let request = runtime
-        .prepare_launch_with_host(&glass_root, &capabilities)
+    runtime
+        .prepare_launch_with_host(glass_root, &capabilities)
         .map_err(|error| {
             runtime
                 .status()
@@ -82,24 +114,46 @@ fn print_launch_plan(glass_root: PathBuf) -> Result<(), String> {
                 .as_ref()
                 .map(|user_error| format!("{}\n{}", user_error.summary, user_error.detail))
                 .unwrap_or_else(|| error.to_string())
-        })?;
+        })
+}
 
+fn validate_boot_assets(request: &LaunchRequest) -> Result<(), String> {
+    require_file("kernel", &request.kernel)?;
+    if let Some(initrd) = &request.initrd {
+        require_file("initrd", initrd)?;
+    }
+    if let Some(device_tree) = &request.device_tree {
+        require_file("device tree", device_tree)?;
+    }
+    require_file("rootfs", &request.rootfs)?;
+    if let Some(writable_overlay) = &request.writable_overlay {
+        require_file("writable overlay", writable_overlay)?;
+    }
+    Ok(())
+}
+
+fn require_file(label: &str, path: &Path) -> Result<(), String> {
+    if path.is_file() {
+        Ok(())
+    } else {
+        Err(format!("missing {label} asset: {}", path.display()))
+    }
+}
+
+fn print_verification(request: &LaunchRequest) {
     println!(
         "verified publisher: {} ({})",
         request.signature.publisher_name, request.signature.publisher_identity
     );
     println!("signature key: {}", request.signature.key_id);
     println!("signed subjects: {}", request.signature.subject_count);
-
-    let plan = QemuLaunchPlan::for_launch_request(&request);
-    println!("{}", plan.command_line());
-    Ok(())
 }
 
 fn print_usage() {
     eprintln!("usage:");
     eprintln!("  rootglass validate <path-to.glass>");
     eprintln!("  rootglass plan <path-to.glass>");
+    eprintln!("  rootglass boot <path-to.glass>");
 }
 
 #[cfg(test)]
@@ -122,5 +176,16 @@ mod tests {
             "../../examples/hello-world.glass".to_string(),
         ])
         .expect("sample manifest produces a launch plan");
+    }
+
+    #[test]
+    fn boot_fails_before_qemu_when_assets_are_missing() {
+        let error = run(vec![
+            "boot".to_string(),
+            "../../examples/hello-world.glass".to_string(),
+        ])
+        .expect_err("boot should fail before QEMU without generated assets");
+
+        assert!(error.contains("missing kernel asset"));
     }
 }
