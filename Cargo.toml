@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/rootglass-core",
     "crates/rootglass-manifest",
 ]
 resolver = "2"
@@ -10,6 +11,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/branning/rootglass"
 
 [workspace.dependencies]
+rootglass-manifest = { path = "crates/rootglass-manifest" }
 serde = { version = "1", features = ["derive"] }
 thiserror = "1"
 toml = "0.8"
