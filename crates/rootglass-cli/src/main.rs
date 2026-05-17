@@ -55,7 +55,10 @@ fn validate_glass(glass_root: PathBuf) -> Result<(), String> {
 
     println!("valid manifest: {}", glass.manifest.name);
     println!("identifier: {}", glass.manifest.identifier);
-    println!("runtime: {} {}", glass.manifest.runtime.architecture, glass.manifest.runtime.profile);
+    println!(
+        "runtime: {} {}",
+        glass.manifest.runtime.architecture, glass.manifest.runtime.profile
+    );
     println!("rootfs: {}", glass.manifest.boot.rootfs);
 
     if let Some(overlay) = &glass.manifest.boot.writable_overlay {
