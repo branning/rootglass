@@ -64,7 +64,9 @@ impl OverlayStore {
                 name: name.to_string(),
                 path: self.overlay_path(glass_identifier, name),
             })),
-            None => bundled_overlay.map(|path| WritableOverlaySelection::Bundled(glass_root.join(path))),
+            None => {
+                bundled_overlay.map(|path| WritableOverlaySelection::Bundled(glass_root.join(path)))
+            }
         };
 
         StorageSelection {
@@ -102,9 +104,15 @@ mod tests {
             Some("experiment-1"),
         );
 
-        assert_eq!(selection.read_only_rootfs, PathBuf::from("/tmp/hello-world.glass/rootfs.img"));
+        assert_eq!(
+            selection.read_only_rootfs,
+            PathBuf::from("/tmp/hello-world.glass/rootfs.img")
+        );
         let overlay = selection.writable_overlay.expect("overlay selected");
-        assert_eq!(overlay.path(), Path::new("/tmp/rootglass/overlays/io.rootglass.examples.hello-world/experiment-1.img"));
+        assert_eq!(
+            overlay.path(),
+            Path::new("/tmp/rootglass/overlays/io.rootglass.examples.hello-world/experiment-1.img")
+        );
     }
 
     #[test]
@@ -118,7 +126,12 @@ mod tests {
             None,
         );
 
-        let overlay = selection.writable_overlay.expect("bundled overlay selected");
-        assert_eq!(overlay.path(), Path::new("/tmp/hello-world.glass/state.img"));
+        let overlay = selection
+            .writable_overlay
+            .expect("bundled overlay selected");
+        assert_eq!(
+            overlay.path(),
+            Path::new("/tmp/hello-world.glass/state.img")
+        );
     }
 }
