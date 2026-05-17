@@ -277,7 +277,10 @@ mod tests {
         assert_eq!(glass.manifest.runtime.architecture, "aarch64");
         assert_eq!(glass.manifest.runtime.profile, "virt-linux");
         assert_eq!(glass.manifest.boot.rootfs, "rootfs.img");
-        assert_eq!(glass.manifest.boot.writable_overlay.as_deref(), Some("state.img"));
+        assert_eq!(
+            glass.manifest.boot.writable_overlay.as_deref(),
+            Some("state.img")
+        );
 
         glass
             .validate_manifest_only()
@@ -333,7 +336,10 @@ mode = "user"
             .validate_manifest_only()
             .expect_err("unsupported architecture should fail");
 
-        assert!(matches!(error, ManifestError::UnsupportedArchitecture { .. }));
+        assert!(matches!(
+            error,
+            ManifestError::UnsupportedArchitecture { .. }
+        ));
     }
 
     #[test]
@@ -375,6 +381,9 @@ mode = "user"
             .validate_manifest_only()
             .expect_err("non-builtin kernel should fail");
 
-        assert!(matches!(error, ManifestError::UnsupportedKernelReference { .. }));
+        assert!(matches!(
+            error,
+            ManifestError::UnsupportedKernelReference { .. }
+        ));
     }
 }
