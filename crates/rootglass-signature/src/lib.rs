@@ -1,5 +1,5 @@
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -176,10 +176,11 @@ pub fn verify_glass_dir(
     let glass_root = glass_root.as_ref();
     let signature_path = signature_path.as_ref();
     let envelope_path = glass_root.join(signature_path);
-    let envelope_bytes = fs::read(&envelope_path).map_err(|source| SignatureError::ReadEnvelope {
-        path: envelope_path,
-        source,
-    })?;
+    let envelope_bytes =
+        fs::read(&envelope_path).map_err(|source| SignatureError::ReadEnvelope {
+            path: envelope_path,
+            source,
+        })?;
     let envelope: DsseEnvelope = serde_json::from_slice(&envelope_bytes)?;
     verify_envelope(glass_root, signature_path, &envelope, trust_store)
 }
@@ -218,18 +219,17 @@ pub fn verify_envelope(
             reason: error.to_string(),
         })?;
 
-    let verifying_key = VerifyingKey::from_bytes(
-        public_key_bytes.as_slice().try_into().map_err(|_| {
+    let verifying_key =
+        VerifyingKey::from_bytes(public_key_bytes.as_slice().try_into().map_err(|_| {
             SignatureError::InvalidTrustedKey {
                 key_id: trusted.key_id.clone(),
                 reason: "public key must be 32 bytes".to_string(),
             }
-        })?,
-    )
-    .map_err(|error| SignatureError::InvalidTrustedKey {
-        key_id: trusted.key_id.clone(),
-        reason: error.to_string(),
-    })?;
+        })?)
+        .map_err(|error| SignatureError::InvalidTrustedKey {
+            key_id: trusted.key_id.clone(),
+            reason: error.to_string(),
+        })?;
 
     let signature = Signature::from_slice(&signature_bytes)
         .map_err(|error| SignatureError::InvalidSignatureEncoding(error.to_string()))?;
@@ -289,10 +289,8 @@ fn verify_statement(
         if !path.is_file() {
             return Err(SignatureError::MissingSubject(subject.name.clone()));
         }
-        let bytes = fs::read(&path).map_err(|source| SignatureError::ReadSignedFile {
-            path,
-            source,
-        })?;
+        let bytes =
+            fs::read(&path).map_err(|source| SignatureError::ReadSignedFile { path, source })?;
         let actual = hex_sha256(&bytes);
         if actual != *expected {
             return Err(SignatureError::DigestMismatch {
