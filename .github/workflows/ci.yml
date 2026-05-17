@@ -39,3 +39,9 @@ jobs:
 
       - name: Run tests
         run: cargo test --workspace --all-targets
+
+      - name: Smoke test CLI validate
+        run: cargo run -p rootglass-cli -- validate examples/hello-world.glass
+
+      - name: Smoke test CLI plan
+        run: cargo run -p rootglass-cli -- plan examples/hello-world.glass
