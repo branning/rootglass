@@ -79,9 +79,20 @@ impl QemuLaunchPlan {
             "-smp".to_string(),
             request.cpus.to_string(),
             "-kernel".to_string(),
-            request.kernel.clone(),
-            "-dtb".to_string(),
-            request.device_tree.clone(),
+            request.kernel.display().to_string(),
+        ];
+
+        if let Some(device_tree) = &request.device_tree {
+            args.push("-dtb".to_string());
+            args.push(device_tree.display().to_string());
+        }
+
+        if let Some(initrd) = &request.initrd {
+            args.push("-initrd".to_string());
+            args.push(initrd.display().to_string());
+        }
+
+        args.extend([
             "-drive".to_string(),
             format!(
                 "if=none,file={},format=raw,readonly=on,id=rootfs",
@@ -92,7 +103,7 @@ impl QemuLaunchPlan {
             "-nographic".to_string(),
             "-serial".to_string(),
             "mon:stdio".to_string(),
-        ];
+        ]);
 
         if let Some(accel) = accelerator.qemu_arg() {
             args.push("-accel".to_string());
@@ -176,7 +187,9 @@ mod tests {
         assert!(command_line.contains(DEFAULT_QEMU_SYSTEM_AARCH64));
         assert!(command_line.contains("-machine virt"));
         assert!(command_line.contains("-cpu cortex-a57"));
-        assert!(command_line.contains("-kernel builtin:aarch64-linux"));
+        assert!(command_line.contains("-kernel runtime-assets/alpine-aarch64/vmlinuz-virt"));
+        assert!(!command_line.contains("-dtb"));
+        assert!(command_line.contains("-initrd runtime-assets/alpine-aarch64/initramfs-virt"));
         assert!(command_line.contains("readonly=on"));
         assert!(command_line.contains("rootfs.img"));
         assert!(command_line.contains("state.img"));
