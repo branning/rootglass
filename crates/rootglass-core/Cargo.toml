@@ -7,4 +7,5 @@ repository.workspace = true
 
 [dependencies]
 rootglass-manifest.workspace = true
+rootglass-signature.workspace = true
 thiserror.workspace = true
