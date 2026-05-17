@@ -2,7 +2,7 @@ pub mod runtime_profile;
 pub mod storage;
 
 use rootglass_manifest::{Glass, ManifestError};
-use rootglass_signature::{SignatureError, TrustStore, VerificationReport, verify_glass_dir};
+use rootglass_signature::{verify_glass_dir, SignatureError, TrustStore, VerificationReport};
 use runtime_profile::{ResolvedRuntimeAssets, RuntimeAssetResolver, RuntimeProfileError};
 use std::path::{Path, PathBuf};
 use storage::{OverlayStore, StorageSelection};
@@ -316,10 +316,10 @@ impl RootglassRuntime {
             }
         };
 
-        let runtime_assets = match self
-            .asset_resolver
-            .resolve(&glass.manifest.boot.kernel, &glass.manifest.boot.device_tree)
-        {
+        let runtime_assets = match self.asset_resolver.resolve(
+            &glass.manifest.boot.kernel,
+            &glass.manifest.boot.device_tree,
+        ) {
             Ok(assets) => assets,
             Err(error) => {
                 self.fail(CoreError::RuntimeProfile(error), LifecycleState::Validating)?;
@@ -484,7 +484,9 @@ mod tests {
         assert_eq!(request.device_tree, None);
         assert_eq!(
             request.initrd,
-            Some(PathBuf::from("runtime-assets/alpine-aarch64/initramfs-virt"))
+            Some(PathBuf::from(
+                "runtime-assets/alpine-aarch64/initramfs-virt"
+            ))
         );
         assert!(request.rootfs.ends_with("rootfs.img"));
         assert!(matches!(
