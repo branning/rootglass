@@ -1,4 +1,6 @@
-use rootglass_core::{HostAccelerator, HostCapabilities, HostPlatform, LaunchRequest, RootglassRuntime};
+use rootglass_core::{
+    HostAccelerator, HostCapabilities, HostPlatform, LaunchRequest, RootglassRuntime,
+};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use thiserror::Error;
