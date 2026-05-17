@@ -214,7 +214,10 @@ impl RootglassRuntime {
         &self.status
     }
 
-    pub fn prepare_launch(&mut self, glass_root: impl AsRef<Path>) -> Result<LaunchRequest, CoreError> {
+    pub fn prepare_launch(
+        &mut self,
+        glass_root: impl AsRef<Path>,
+    ) -> Result<LaunchRequest, CoreError> {
         let capabilities = HostCapabilities::detect_current();
         self.prepare_launch_with_host(glass_root, &capabilities)
     }
@@ -283,7 +286,10 @@ fn select_accelerator(
     match capabilities.platform {
         HostPlatform::MacOs => {
             let requires_hvf = runtime.requires_hardware_acceleration
-                || constraints.macos.as_ref().is_some_and(|macos| macos.hypervisor);
+                || constraints
+                    .macos
+                    .as_ref()
+                    .is_some_and(|macos| macos.hypervisor);
             if requires_hvf && !capabilities.hvf_available {
                 return Err(HostPreflightError::MissingHvf);
             }
@@ -291,7 +297,10 @@ fn select_accelerator(
         }
         HostPlatform::Windows => {
             let requires_whpx = runtime.requires_hardware_acceleration
-                || constraints.windows.as_ref().is_some_and(|windows| windows.whpx);
+                || constraints
+                    .windows
+                    .as_ref()
+                    .is_some_and(|windows| windows.whpx);
             if requires_whpx && !capabilities.whpx_available {
                 return Err(HostPreflightError::MissingWhpx);
             }
@@ -386,7 +395,8 @@ mod tests {
     fn records_user_facing_error_when_glass_is_missing() {
         let mut runtime = RootglassRuntime::new();
         let capabilities = HostCapabilities::without_acceleration(HostPlatform::Other);
-        let result = runtime.prepare_launch_with_host("../../examples/does-not-exist.glass", &capabilities);
+        let result =
+            runtime.prepare_launch_with_host("../../examples/does-not-exist.glass", &capabilities);
 
         assert!(result.is_err());
         assert_eq!(runtime.status().state, LifecycleState::Failed);
@@ -418,7 +428,8 @@ mod tests {
 
     #[test]
     fn selected_local_overlay_replaces_bundled_overlay() {
-        let mut runtime = RootglassRuntime::with_overlay_store(OverlayStore::new("/tmp/rootglass/overlays"));
+        let mut runtime =
+            RootglassRuntime::with_overlay_store(OverlayStore::new("/tmp/rootglass/overlays"));
         runtime.select_local_overlay("experiment-1");
         let capabilities = HostCapabilities::without_acceleration(HostPlatform::Other);
 
