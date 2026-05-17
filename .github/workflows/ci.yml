@@ -31,26 +31,17 @@ jobs:
       - name: Cache Cargo registry and build outputs
         uses: Swatinem/rust-cache@v2
 
-      - name: Generate lockfile
-        run: cargo generate-lockfile
-
-      - name: Print lockfile for bootstrapping
-        run: |
-          echo '---BEGIN CARGO LOCK---'
-          cat Cargo.lock
-          echo '---END CARGO LOCK---'
-
       - name: Check formatting
         run: cargo fmt --all -- --check
 
       - name: Run Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       - name: Run tests
-        run: cargo test --workspace --all-targets
+        run: cargo test --locked --workspace --all-targets
 
       - name: Smoke test CLI validate
-        run: cargo run -p rootglass-cli -- validate examples/hello-world.glass
+        run: cargo run --locked -p rootglass-cli -- validate examples/hello-world.glass
 
       - name: Smoke test CLI plan
-        run: cargo run -p rootglass-cli -- plan examples/hello-world.glass
+        run: cargo run --locked -p rootglass-cli -- plan examples/hello-world.glass
