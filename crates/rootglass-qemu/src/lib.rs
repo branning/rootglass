@@ -140,7 +140,7 @@ fn shell_quote(value: &str) -> String {
     {
         value.to_string()
     } else {
-        format!("'{escaped}'", escaped = value.replace(''\'', "'\\''"))
+        format!("'{}'", value.replace('\'', "'\\''"))
     }
 }
 
