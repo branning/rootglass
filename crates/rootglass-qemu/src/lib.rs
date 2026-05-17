@@ -147,12 +147,31 @@ impl QemuLaunchPlan {
         command
     }
 
+    pub fn interactive_command(&self) -> Command {
+        let mut command = Command::new(&self.binary.path);
+        command.args(&self.args);
+        command.stdin(Stdio::inherit());
+        command.stdout(Stdio::inherit());
+        command.stderr(Stdio::inherit());
+        command
+    }
+
     pub fn spawn(&self) -> Result<Child, QemuError> {
         let command_line = self.command_line();
         self.command().spawn().map_err(|source| QemuError::Spawn {
             command: command_line,
             source,
         })
+    }
+
+    pub fn spawn_interactive(&self) -> Result<Child, QemuError> {
+        let command_line = self.command_line();
+        self.interactive_command()
+            .spawn()
+            .map_err(|source| QemuError::Spawn {
+                command: command_line,
+                source,
+            })
     }
 }
 
