@@ -1,5 +1,5 @@
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -372,6 +372,7 @@ fn hex_sha256(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn verifies_sample_glass_fixture() {
@@ -396,5 +397,55 @@ mod tests {
         .expect_err("empty trust store should reject sample fixture");
 
         assert!(matches!(error, SignatureError::UnknownKey(_)));
+    }
+
+    #[test]
+    fn rejects_missing_signature_file() {
+        let error = verify_glass_dir(
+            "../../examples/hello-world.glass",
+            "signatures/missing.dsse.json",
+            &TrustStore::example_fixture(),
+        )
+        .expect_err("missing signature should fail");
+
+        assert!(matches!(error, SignatureError::ReadEnvelope { .. }));
+    }
+
+    #[test]
+    fn rejects_tampered_signed_file() {
+        let temp = copy_sample_glass_to_temp();
+        fs::write(temp.join("README.md"), "tampered\n").expect("tamper with signed file");
+
+        let error = verify_glass_dir(
+            &temp,
+            "signatures/glass.dsse.json",
+            &TrustStore::example_fixture(),
+        )
+        .expect_err("tampered file should fail");
+
+        assert!(matches!(error, SignatureError::DigestMismatch { .. }));
+        fs::remove_dir_all(temp).expect("remove temp fixture");
+    }
+
+    fn copy_sample_glass_to_temp() -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after unix epoch")
+            .as_nanos();
+        let temp = std::env::temp_dir().join(format!("rootglass-signature-test-{unique}.glass"));
+        fs::create_dir_all(temp.join("metadata")).expect("create metadata dir");
+        fs::create_dir_all(temp.join("signatures")).expect("create signatures dir");
+
+        copy_fixture_file("README.md", &temp);
+        copy_fixture_file("rootglass.toml", &temp);
+        copy_fixture_file("metadata/README.md", &temp);
+        copy_fixture_file("signatures/glass.dsse.json", &temp);
+        temp
+    }
+
+    fn copy_fixture_file(relative: &str, temp: &Path) {
+        let source = Path::new("../../examples/hello-world.glass").join(relative);
+        let destination = temp.join(relative);
+        fs::copy(source, destination).expect("copy fixture file");
     }
 }
