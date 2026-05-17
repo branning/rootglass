@@ -1,6 +1,4 @@
-use rootglass_core::{
-    HostAccelerator, HostCapabilities, HostPlatform, LaunchRequest, RootglassRuntime,
-};
+use rootglass_core::{HostAccelerator, LaunchRequest};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use thiserror::Error;
@@ -161,6 +159,7 @@ fn shell_quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rootglass_core::{HostCapabilities, HostPlatform, RootglassRuntime};
 
     #[test]
     fn builds_qemu_command_for_sample_launch_request() {
