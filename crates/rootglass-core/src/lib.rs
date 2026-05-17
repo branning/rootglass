@@ -1,6 +1,7 @@
 pub mod storage;
 
 use rootglass_manifest::{Glass, ManifestError};
+use rootglass_signature::{SignatureError, TrustStore, VerificationReport, verify_glass_dir};
 use std::path::{Path, PathBuf};
 use storage::{OverlayStore, StorageSelection};
 use thiserror::Error;
@@ -48,6 +49,9 @@ pub enum CoreError {
 
     #[error("host preflight failed: {0}")]
     HostPreflight(#[from] HostPreflightError),
+
+    #[error("signature verification failed: {0}")]
+    Signature(#[from] SignatureError),
 }
 
 impl CoreError {
@@ -67,6 +71,14 @@ impl CoreError {
                 stage,
                 suggestion: Some(
                     "Use a supported host, enable virtualization support, or choose a glass that does not require hardware acceleration.".to_string(),
+                ),
+            },
+            CoreError::Signature(error) => UserFacingError {
+                summary: "This glass could not be verified.".to_string(),
+                detail: error.to_string(),
+                stage,
+                suggestion: Some(
+                    "Only open signed glasses from trusted publishers. Re-download the glass or contact the publisher if verification fails.".to_string(),
                 ),
             },
         }
@@ -157,6 +169,25 @@ pub enum HostPreflightError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignatureVerification {
+    pub publisher_name: String,
+    pub publisher_identity: String,
+    pub key_id: String,
+    pub subject_count: usize,
+}
+
+impl From<VerificationReport> for SignatureVerification {
+    fn from(report: VerificationReport) -> Self {
+        Self {
+            publisher_name: report.publisher_name,
+            publisher_identity: report.publisher_identity,
+            key_id: report.key_id,
+            subject_count: report.subject_count,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchRequest {
     pub glass_root: PathBuf,
     pub runtime_profile: String,
@@ -166,6 +197,7 @@ pub struct LaunchRequest {
     pub rootfs: PathBuf,
     pub writable_overlay: Option<PathBuf>,
     pub storage: StorageSelection,
+    pub signature: SignatureVerification,
     pub kernel_args: Vec<String>,
     pub memory_mb: u32,
     pub cpus: u32,
@@ -177,6 +209,7 @@ pub struct LaunchRequest {
 pub struct RootglassRuntime {
     status: RuntimeStatus,
     overlay_store: OverlayStore,
+    trust_store: TrustStore,
     selected_local_overlay: Option<String>,
 }
 
@@ -185,6 +218,7 @@ impl Default for RootglassRuntime {
         Self {
             status: RuntimeStatus::default(),
             overlay_store: OverlayStore::new(".rootglass/overlays"),
+            trust_store: TrustStore::example_fixture(),
             selected_local_overlay: None,
         }
     }
@@ -198,6 +232,13 @@ impl RootglassRuntime {
     pub fn with_overlay_store(overlay_store: OverlayStore) -> Self {
         Self {
             overlay_store,
+            ..Self::default()
+        }
+    }
+
+    pub fn with_trust_store(trust_store: TrustStore) -> Self {
+        Self {
+            trust_store,
             ..Self::default()
         }
     }
@@ -252,13 +293,23 @@ impl RootglassRuntime {
 
         self.transition(LifecycleState::Verifying);
 
-        // Signature verification will be wired here after the signature trade study is resolved.
-        // For now, the manifest crate enforces that publisher/signature metadata is present.
+        let signature = match verify_glass_dir(
+            &glass.root,
+            &glass.manifest.publisher.signature,
+            &self.trust_store,
+        ) {
+            Ok(report) => SignatureVerification::from(report),
+            Err(error) => {
+                self.fail(CoreError::Signature(error), LifecycleState::Verifying)?;
+                unreachable!("fail always returns Err")
+            }
+        };
 
         self.transition(LifecycleState::Ready);
         Ok(LaunchRequest::from_glass(
             &glass,
             accelerator,
+            signature,
             &self.overlay_store,
             self.selected_local_overlay.as_deref(),
         ))
@@ -328,6 +379,7 @@ impl LaunchRequest {
     pub fn from_glass(
         glass: &Glass,
         accelerator: Option<HostAccelerator>,
+        signature: SignatureVerification,
         overlay_store: &OverlayStore,
         selected_local_overlay: Option<&str>,
     ) -> Self {
@@ -353,6 +405,7 @@ impl LaunchRequest {
             rootfs: storage.read_only_rootfs.clone(),
             writable_overlay,
             storage,
+            signature,
             kernel_args: manifest.boot.kernel_args.clone(),
             memory_mb: manifest.resources.memory_mb,
             cpus: manifest.resources.cpus,
@@ -373,12 +426,13 @@ mod tests {
         let capabilities = HostCapabilities::without_acceleration(HostPlatform::Other);
         let request = runtime
             .prepare_launch_with_host("../../examples/hello-world.glass", &capabilities)
-            .expect("manifest-only launch preparation succeeds");
+            .expect("launch preparation succeeds");
 
         assert_eq!(runtime.status().state, LifecycleState::Ready);
         assert_eq!(request.architecture, "aarch64");
         assert_eq!(request.runtime_profile, "virt-linux");
         assert_eq!(request.accelerator, None);
+        assert_eq!(request.signature.publisher_identity, "rootglass.dev/examples");
         assert!(request.rootfs.ends_with("rootfs.img"));
         assert!(matches!(
             request.storage.writable_overlay,
@@ -407,6 +461,23 @@ mod tests {
             .expect("user-facing error is recorded");
         assert_eq!(error.stage, LifecycleState::Validating);
         assert!(error.detail.contains("failed to read manifest"));
+    }
+
+    #[test]
+    fn records_user_facing_error_when_signature_is_untrusted() {
+        let mut runtime = RootglassRuntime::with_trust_store(TrustStore::default());
+        let capabilities = HostCapabilities::without_acceleration(HostPlatform::Other);
+        let result = runtime.prepare_launch_with_host("../../examples/hello-world.glass", &capabilities);
+
+        assert!(result.is_err());
+        assert_eq!(runtime.status().state, LifecycleState::Failed);
+        let error = runtime
+            .status()
+            .last_error
+            .as_ref()
+            .expect("user-facing error is recorded");
+        assert_eq!(error.stage, LifecycleState::Verifying);
+        assert!(error.detail.contains("unknown signing key"));
     }
 
     #[test]
