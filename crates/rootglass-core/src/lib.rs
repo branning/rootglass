@@ -1,7 +1,7 @@
 pub mod storage;
 
 use rootglass_manifest::{Glass, ManifestError};
-use rootglass_signature::{SignatureError, TrustStore, VerificationReport, verify_glass_dir};
+use rootglass_signature::{verify_glass_dir, SignatureError, TrustStore, VerificationReport};
 use std::path::{Path, PathBuf};
 use storage::{OverlayStore, StorageSelection};
 use thiserror::Error;
@@ -432,7 +432,10 @@ mod tests {
         assert_eq!(request.architecture, "aarch64");
         assert_eq!(request.runtime_profile, "virt-linux");
         assert_eq!(request.accelerator, None);
-        assert_eq!(request.signature.publisher_identity, "rootglass.dev/examples");
+        assert_eq!(
+            request.signature.publisher_identity,
+            "rootglass.dev/examples"
+        );
         assert!(request.rootfs.ends_with("rootfs.img"));
         assert!(matches!(
             request.storage.writable_overlay,
@@ -467,7 +470,8 @@ mod tests {
     fn records_user_facing_error_when_signature_is_untrusted() {
         let mut runtime = RootglassRuntime::with_trust_store(TrustStore::default());
         let capabilities = HostCapabilities::without_acceleration(HostPlatform::Other);
-        let result = runtime.prepare_launch_with_host("../../examples/hello-world.glass", &capabilities);
+        let result =
+            runtime.prepare_launch_with_host("../../examples/hello-world.glass", &capabilities);
 
         assert!(result.is_err());
         assert_eq!(runtime.status().state, LifecycleState::Failed);
