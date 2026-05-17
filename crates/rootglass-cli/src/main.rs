@@ -84,6 +84,13 @@ fn print_launch_plan(glass_root: PathBuf) -> Result<(), String> {
                 .unwrap_or_else(|| error.to_string())
         })?;
 
+    println!(
+        "verified publisher: {} ({})",
+        request.signature.publisher_name, request.signature.publisher_identity
+    );
+    println!("signature key: {}", request.signature.key_id);
+    println!("signed subjects: {}", request.signature.subject_count);
+
     let plan = QemuLaunchPlan::for_launch_request(&request);
     println!("{}", plan.command_line());
     Ok(())
