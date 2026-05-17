@@ -2,6 +2,7 @@
 members = [
     "crates/rootglass-core",
     "crates/rootglass-manifest",
+    "crates/rootglass-qemu",
 ]
 resolver = "2"
 
@@ -12,6 +13,7 @@ repository = "https://github.com/branning/rootglass"
 
 [workspace.dependencies]
 rootglass-manifest = { path = "crates/rootglass-manifest" }
+rootglass-core = { path = "crates/rootglass-core" }
 serde = { version = "1", features = ["derive"] }
 thiserror = "1"
 toml = "0.8"
