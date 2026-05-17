@@ -24,7 +24,7 @@ The user-facing bundle name is a **glass**. The serialized bundle extension is `
 - Multiple launch profiles in the MVP.
 - Kernel or device-tree override support in the MVP.
 
-## Initial bundle shape
+## Development directory form
 
 During development, a glass may be represented as a directory:
 
@@ -37,10 +37,26 @@ hello-world.glass/
     icon.png
     README.md
   signatures/
-    bundle.sig              # exact signature format TBD
+    glass.dsse.json
 ```
 
-For distribution, the same internal structure should be serialized as a single `.glass` archive.
+Directory-form glasses are for development and tests. They are allowed to omit large generated binary assets when the test is explicitly manifest-only or fixture-only.
+
+## Serialized archive form
+
+For distribution, a `.glass` file is a ZIP archive containing the same internal paths as the development directory form.
+
+Rules:
+
+- ZIP entry names must use forward slashes.
+- ZIP entry names must be relative paths.
+- Absolute paths are invalid.
+- `.` and `..` path components are invalid.
+- Backslashes are invalid.
+- Duplicate entry names are invalid.
+- Directory entries are allowed but ignored for signature subjects.
+- File mode, timestamp, and compression method are not part of the Rootglass trust model.
+- The only unsigned file in a production archive should be `signatures/glass.dsse.json`.
 
 ## Storage model
 
@@ -74,7 +90,7 @@ description = "Minimal Rootglass bundle used for runtime smoke testing."
 [publisher]
 name = "Example Publisher"
 identity = "example.com"
-signature = "signatures/bundle.sig"
+signature = "signatures/glass.dsse.json"
 
 [runtime]
 architecture = "aarch64"
@@ -128,9 +144,9 @@ Bundle version. SemVer is preferred but not required until enforcement is useful
 
 ### `publisher`
 
-Publisher identity and signature metadata. Rootglass should require a widely usable signature format that proves the bundle was created by a named entity.
+Publisher identity and signature metadata. Rootglass uses DSSE-wrapped in-toto-style statements signed with Ed25519. See [signatures.md](signatures.md).
 
-The exact signature mechanism is not chosen yet. The design should preserve:
+The signature should preserve:
 
 - Human-readable publisher name.
 - Stable publisher identity.
@@ -216,6 +232,8 @@ Examples:
 - Unsupported schema version.
 - Missing rootfs file.
 - More than one writable overlay in a serialized `.glass` bundle.
+- Unsafe archive path.
+- Duplicate archive entry.
 - Unsupported architecture.
 - Unsupported runtime profile.
 - Invalid resource request.
@@ -233,19 +251,19 @@ Directory bundles may also use a `.glass/` suffix during development so the file
 
 - Bundle name: **glass**.
 - Bundle extension: `.glass`.
+- Serialized bundle container: ZIP archive.
+- Directory-form `.glass/` bundles are allowed for development.
 - Kernel/device-tree assets: builtin runtime profile only for MVP; optional overrides reserved for future use.
 - Mutable rootfs state: optional writable overlay partition.
 - Serialized bundle overlays: at most one writable overlay.
 - Local overlays: multiple may be created and tracked by the app; one selected at launch.
-- Signatures: required before running distributed bundles; exact widely usable format TBD.
+- Signatures: DSSE-wrapped in-toto-style statement signed with Ed25519.
 - Host platform constraints: included in the manifest.
 - Multiple launch profiles: left open, not MVP.
 - Future read-only overlay packs: left open, not MVP.
 
 ## Open questions
 
-- Which signature format should Rootglass require?
 - What rootfs image formats should be accepted first?
-- What exact `.glass` archive/container format should be used?
 - How should local writable overlays be named, stored, cloned, and deleted?
 - How should Rootglass explain publisher identity and trust to a nontechnical user?
