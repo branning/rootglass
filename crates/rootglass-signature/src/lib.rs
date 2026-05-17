@@ -1,12 +1,14 @@
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::io::{Cursor, Read, Seek};
+use std::path::{Component, Path, PathBuf};
 use thiserror::Error;
+use zip::ZipArchive;
 
 pub const DSSE_PAYLOAD_TYPE: &str = "application/vnd.in-toto+json";
 pub const STATEMENT_TYPE: &str = "https://in-toto.io/Statement/v1";
@@ -20,6 +22,22 @@ pub enum SignatureError {
         #[source]
         source: std::io::Error,
     },
+
+    #[error("failed to read archive at {path}: {source}")]
+    ReadArchive {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("failed to read ZIP archive: {0}")]
+    Zip(#[from] zip::result::ZipError),
+
+    #[error("unsafe archive path: {0}")]
+    UnsafeArchivePath(String),
+
+    #[error("duplicate archive entry: {0}")]
+    DuplicateArchiveEntry(String),
 
     #[error("failed to parse signature envelope: {0}")]
     ParseEnvelope(#[from] serde_json::Error),
@@ -174,20 +192,63 @@ pub fn verify_glass_dir(
     trust_store: &TrustStore,
 ) -> Result<VerificationReport, SignatureError> {
     let glass_root = glass_root.as_ref();
-    let signature_path = signature_path.as_ref();
-    let envelope_path = glass_root.join(signature_path);
+    let signature_path = normalize_relative_path(signature_path.as_ref())?;
+    let envelope_path = glass_root.join(&signature_path);
     let envelope_bytes =
         fs::read(&envelope_path).map_err(|source| SignatureError::ReadEnvelope {
             path: envelope_path,
             source,
         })?;
     let envelope: DsseEnvelope = serde_json::from_slice(&envelope_bytes)?;
-    verify_envelope(glass_root, signature_path, &envelope, trust_store)
+    let file_set = DirectoryFileSet::new(glass_root, &signature_path);
+    verify_envelope_with_files(&file_set, &envelope, trust_store)
+}
+
+pub fn verify_glass_archive(
+    archive_path: impl AsRef<Path>,
+    signature_path: impl AsRef<Path>,
+    trust_store: &TrustStore,
+) -> Result<VerificationReport, SignatureError> {
+    let archive_path = archive_path.as_ref();
+    let bytes = fs::read(archive_path).map_err(|source| SignatureError::ReadArchive {
+        path: archive_path.to_path_buf(),
+        source,
+    })?;
+    verify_glass_archive_bytes(bytes, signature_path, trust_store)
+}
+
+pub fn verify_glass_archive_bytes(
+    archive_bytes: impl AsRef<[u8]>,
+    signature_path: impl AsRef<Path>,
+    trust_store: &TrustStore,
+) -> Result<VerificationReport, SignatureError> {
+    let signature_path = normalize_relative_path(signature_path.as_ref())?;
+    let mut archive = ZipArchive::new(Cursor::new(archive_bytes.as_ref()))?;
+    let files = read_zip_files(&mut archive)?;
+    let envelope_bytes = files
+        .get(&path_to_string(&signature_path))
+        .ok_or_else(|| SignatureError::MissingSubject(path_to_string(&signature_path)))?;
+    let envelope: DsseEnvelope = serde_json::from_slice(envelope_bytes)?;
+    let file_set = ArchiveFileSet {
+        files,
+        signature_path: path_to_string(&signature_path),
+    };
+    verify_envelope_with_files(&file_set, &envelope, trust_store)
 }
 
 pub fn verify_envelope(
     glass_root: &Path,
     signature_path: &Path,
+    envelope: &DsseEnvelope,
+    trust_store: &TrustStore,
+) -> Result<VerificationReport, SignatureError> {
+    let signature_path = normalize_relative_path(signature_path)?;
+    let file_set = DirectoryFileSet::new(glass_root, &signature_path);
+    verify_envelope_with_files(&file_set, envelope, trust_store)
+}
+
+fn verify_envelope_with_files(
+    file_set: &dyn FileSet,
     envelope: &DsseEnvelope,
     trust_store: &TrustStore,
 ) -> Result<VerificationReport, SignatureError> {
@@ -239,7 +300,7 @@ pub fn verify_envelope(
         .map_err(|_| SignatureError::SignatureVerificationFailed)?;
 
     let statement: Statement = serde_json::from_slice(&payload)?;
-    verify_statement(glass_root, signature_path, &statement, trusted)?;
+    verify_statement(file_set, &statement, trusted)?;
 
     Ok(VerificationReport {
         publisher_name: statement.predicate.publisher.name,
@@ -250,8 +311,7 @@ pub fn verify_envelope(
 }
 
 fn verify_statement(
-    glass_root: &Path,
-    signature_path: &Path,
+    file_set: &dyn FileSet,
     statement: &Statement,
     trusted: &TrustedPublisher,
 ) -> Result<(), SignatureError> {
@@ -285,12 +345,7 @@ fn verify_statement(
             .digest
             .get("sha256")
             .expect("sha256 digest is required by schema");
-        let path = glass_root.join(&subject.name);
-        if !path.is_file() {
-            return Err(SignatureError::MissingSubject(subject.name.clone()));
-        }
-        let bytes =
-            fs::read(&path).map_err(|source| SignatureError::ReadSignedFile { path, source })?;
+        let bytes = file_set.read(&subject.name)?;
         let actual = hex_sha256(&bytes);
         if actual != *expected {
             return Err(SignatureError::DigestMismatch {
@@ -301,7 +356,7 @@ fn verify_statement(
         }
     }
 
-    for file in list_signed_candidate_files(glass_root, signature_path)? {
+    for file in file_set.candidate_files()? {
         if !expected_subjects.contains(&file) {
             return Err(SignatureError::UnsignedFile(file));
         }
@@ -310,20 +365,101 @@ fn verify_statement(
     Ok(())
 }
 
-fn list_signed_candidate_files(
-    root: &Path,
-    signature_path: &Path,
-) -> Result<Vec<String>, SignatureError> {
-    let mut files = Vec::new();
-    collect_files(root, root, signature_path, &mut files)?;
-    files.sort();
+trait FileSet {
+    fn read(&self, path: &str) -> Result<Vec<u8>, SignatureError>;
+    fn candidate_files(&self) -> Result<Vec<String>, SignatureError>;
+}
+
+struct DirectoryFileSet<'a> {
+    root: &'a Path,
+    signature_path: String,
+}
+
+impl<'a> DirectoryFileSet<'a> {
+    fn new(root: &'a Path, signature_path: &Path) -> Self {
+        Self {
+            root,
+            signature_path: path_to_string(signature_path),
+        }
+    }
+}
+
+impl FileSet for DirectoryFileSet<'_> {
+    fn read(&self, path: &str) -> Result<Vec<u8>, SignatureError> {
+        let normalized = normalize_relative_path(Path::new(path))?;
+        let path = self.root.join(&normalized);
+        if !path.is_file() {
+            return Err(SignatureError::MissingSubject(path_to_string(&normalized)));
+        }
+        fs::read(&path).map_err(|source| SignatureError::ReadSignedFile { path, source })
+    }
+
+    fn candidate_files(&self) -> Result<Vec<String>, SignatureError> {
+        let mut files = Vec::new();
+        collect_directory_files(self.root, self.root, &self.signature_path, &mut files)?;
+        files.sort();
+        Ok(files)
+    }
+}
+
+struct ArchiveFileSet {
+    files: BTreeMap<String, Vec<u8>>,
+    signature_path: String,
+}
+
+impl FileSet for ArchiveFileSet {
+    fn read(&self, path: &str) -> Result<Vec<u8>, SignatureError> {
+        let normalized = path_to_string(&normalize_relative_path(Path::new(path))?);
+        self.files
+            .get(&normalized)
+            .cloned()
+            .ok_or(SignatureError::MissingSubject(normalized))
+    }
+
+    fn candidate_files(&self) -> Result<Vec<String>, SignatureError> {
+        Ok(self
+            .files
+            .keys()
+            .filter(|path| *path != &self.signature_path)
+            .cloned()
+            .collect())
+    }
+}
+
+fn read_zip_files<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+) -> Result<BTreeMap<String, Vec<u8>>, SignatureError> {
+    let mut files = BTreeMap::new();
+
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index)?;
+        let name = entry.name().to_string();
+        let normalized = normalize_archive_name(&name)?;
+
+        if entry.is_dir() {
+            continue;
+        }
+
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).map_err(|source| {
+            SignatureError::ReadSignedFile {
+                path: PathBuf::from(&normalized),
+                source,
+            }
+        })?;
+
+        if files.insert(normalized.clone(), bytes).is_some() {
+            return Err(SignatureError::DuplicateArchiveEntry(normalized));
+        }
+    }
+
     Ok(files)
 }
 
-fn collect_files(
+fn collect_directory_files(
     root: &Path,
     current: &Path,
-    signature_path: &Path,
+    signature_path: &str,
     files: &mut Vec<String>,
 ) -> Result<(), SignatureError> {
     for entry in fs::read_dir(current).map_err(|source| SignatureError::ReadSignedFile {
@@ -336,19 +472,56 @@ fn collect_files(
         })?;
         let path = entry.path();
         if path.is_dir() {
-            collect_files(root, &path, signature_path, files)?;
+            collect_directory_files(root, &path, signature_path, files)?;
         } else if path.is_file() {
             let relative = path.strip_prefix(root).expect("path is inside root");
+            let relative = path_to_string(relative);
             if relative == signature_path {
                 continue;
             }
+            // Directory-form fixture verification allows generated images to be absent
+            // or unsigned. Production archive verification does not apply this exclusion.
             if path.extension().is_some_and(|extension| extension == "img") {
                 continue;
             }
-            files.push(relative.to_string_lossy().replace('\\', "/"));
+            files.push(relative);
         }
     }
     Ok(())
+}
+
+fn normalize_archive_name(name: &str) -> Result<String, SignatureError> {
+    if name.contains('\\') || name.starts_with('/') {
+        return Err(SignatureError::UnsafeArchivePath(name.to_string()));
+    }
+    let path = normalize_relative_path(Path::new(name))?;
+    Ok(path_to_string(&path))
+}
+
+fn normalize_relative_path(path: &Path) -> Result<PathBuf, SignatureError> {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => normalized.push(part),
+            Component::CurDir | Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(SignatureError::UnsafeArchivePath(
+                    path.to_string_lossy().to_string(),
+                ));
+            }
+        }
+    }
+
+    if normalized.as_os_str().is_empty() {
+        return Err(SignatureError::UnsafeArchivePath(
+            path.to_string_lossy().to_string(),
+        ));
+    }
+
+    Ok(normalized)
+}
+
+fn path_to_string(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 fn dsse_pae(payload_type: &[u8], payload: &[u8]) -> Vec<u8> {
@@ -372,7 +545,10 @@ fn hex_sha256(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
     use std::time::{SystemTime, UNIX_EPOCH};
+    use zip::CompressionMethod;
+    use zip::write::SimpleFileOptions;
 
     #[test]
     fn verifies_sample_glass_fixture() {
@@ -385,6 +561,46 @@ mod tests {
 
         assert_eq!(report.publisher_identity, "rootglass.dev/examples");
         assert_eq!(report.subject_count, 3);
+    }
+
+    #[test]
+    fn verifies_sample_glass_zip_archive() {
+        let archive = build_sample_archive([]);
+        let report = verify_glass_archive_bytes(
+            archive,
+            "signatures/glass.dsse.json",
+            &TrustStore::example_fixture(),
+        )
+        .expect("sample archive verifies");
+
+        assert_eq!(report.publisher_identity, "rootglass.dev/examples");
+        assert_eq!(report.subject_count, 3);
+    }
+
+    #[test]
+    fn archive_rejects_unsigned_extra_file() {
+        let archive = build_sample_archive([("extra.txt", b"extra".as_slice())]);
+        let error = verify_glass_archive_bytes(
+            archive,
+            "signatures/glass.dsse.json",
+            &TrustStore::example_fixture(),
+        )
+        .expect_err("archive with unsigned file should fail");
+
+        assert!(matches!(error, SignatureError::UnsignedFile(path) if path == "extra.txt"));
+    }
+
+    #[test]
+    fn archive_rejects_unsafe_path() {
+        let archive = build_archive([("../escape.txt", b"nope".as_slice())]);
+        let error = verify_glass_archive_bytes(
+            archive,
+            "signatures/glass.dsse.json",
+            &TrustStore::example_fixture(),
+        )
+        .expect_err("archive with unsafe path should fail");
+
+        assert!(matches!(error, SignatureError::UnsafeArchivePath(_)));
     }
 
     #[test]
@@ -425,6 +641,45 @@ mod tests {
 
         assert!(matches!(error, SignatureError::DigestMismatch { .. }));
         fs::remove_dir_all(temp).expect("remove temp fixture");
+    }
+
+    fn build_sample_archive<const N: usize>(extras: [(&str, &[u8]); N]) -> Vec<u8> {
+        let files = [
+            ("README.md", include_bytes!("../../../examples/hello-world.glass/README.md").as_slice()),
+            (
+                "metadata/README.md",
+                include_bytes!("../../../examples/hello-world.glass/metadata/README.md").as_slice(),
+            ),
+            (
+                "rootglass.toml",
+                include_bytes!("../../../examples/hello-world.glass/rootglass.toml").as_slice(),
+            ),
+            (
+                "signatures/glass.dsse.json",
+                include_bytes!("../../../examples/hello-world.glass/signatures/glass.dsse.json").as_slice(),
+            ),
+        ];
+
+        let mut entries = Vec::new();
+        entries.extend(files);
+        entries.extend(extras);
+        build_archive(entries)
+    }
+
+    fn build_archive<I>(entries: I) -> Vec<u8>
+    where
+        I: IntoIterator<Item = (&'static str, &'static [u8])>,
+    {
+        let cursor = Cursor::new(Vec::new());
+        let mut writer = zip::ZipWriter::new(cursor);
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+
+        for (name, bytes) in entries {
+            writer.start_file(name, options).expect("start file");
+            writer.write_all(bytes).expect("write file");
+        }
+
+        writer.finish().expect("finish archive").into_inner()
     }
 
     fn copy_sample_glass_to_temp() -> PathBuf {
