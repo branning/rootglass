@@ -1,7 +1,9 @@
+pub mod runtime_profile;
 pub mod storage;
 
 use rootglass_manifest::{Glass, ManifestError};
-use rootglass_signature::{verify_glass_dir, SignatureError, TrustStore, VerificationReport};
+use rootglass_signature::{SignatureError, TrustStore, VerificationReport, verify_glass_dir};
+use runtime_profile::{ResolvedRuntimeAssets, RuntimeAssetResolver, RuntimeProfileError};
 use std::path::{Path, PathBuf};
 use storage::{OverlayStore, StorageSelection};
 use thiserror::Error;
@@ -52,6 +54,9 @@ pub enum CoreError {
 
     #[error("signature verification failed: {0}")]
     Signature(#[from] SignatureError),
+
+    #[error("runtime profile resolution failed: {0}")]
+    RuntimeProfile(#[from] RuntimeProfileError),
 }
 
 impl CoreError {
@@ -79,6 +84,14 @@ impl CoreError {
                 stage,
                 suggestion: Some(
                     "Only open signed glasses from trusted publishers. Re-download the glass or contact the publisher if verification fails.".to_string(),
+                ),
+            },
+            CoreError::RuntimeProfile(error) => UserFacingError {
+                summary: "This glass uses a runtime profile that cannot be resolved.".to_string(),
+                detail: error.to_string(),
+                stage,
+                suggestion: Some(
+                    "Install or generate the required Rootglass runtime assets, then try again.".to_string(),
                 ),
             },
         }
@@ -192,8 +205,11 @@ pub struct LaunchRequest {
     pub glass_root: PathBuf,
     pub runtime_profile: String,
     pub architecture: String,
-    pub kernel: String,
-    pub device_tree: String,
+    pub kernel_ref: String,
+    pub device_tree_ref: String,
+    pub kernel: PathBuf,
+    pub device_tree: Option<PathBuf>,
+    pub initrd: Option<PathBuf>,
     pub rootfs: PathBuf,
     pub writable_overlay: Option<PathBuf>,
     pub storage: StorageSelection,
@@ -210,6 +226,7 @@ pub struct RootglassRuntime {
     status: RuntimeStatus,
     overlay_store: OverlayStore,
     trust_store: TrustStore,
+    asset_resolver: RuntimeAssetResolver,
     selected_local_overlay: Option<String>,
 }
 
@@ -219,6 +236,7 @@ impl Default for RootglassRuntime {
             status: RuntimeStatus::default(),
             overlay_store: OverlayStore::new(".rootglass/overlays"),
             trust_store: TrustStore::example_fixture(),
+            asset_resolver: RuntimeAssetResolver::default(),
             selected_local_overlay: None,
         }
     }
@@ -239,6 +257,13 @@ impl RootglassRuntime {
     pub fn with_trust_store(trust_store: TrustStore) -> Self {
         Self {
             trust_store,
+            ..Self::default()
+        }
+    }
+
+    pub fn with_asset_resolver(asset_resolver: RuntimeAssetResolver) -> Self {
+        Self {
+            asset_resolver,
             ..Self::default()
         }
     }
@@ -291,6 +316,17 @@ impl RootglassRuntime {
             }
         };
 
+        let runtime_assets = match self
+            .asset_resolver
+            .resolve(&glass.manifest.boot.kernel, &glass.manifest.boot.device_tree)
+        {
+            Ok(assets) => assets,
+            Err(error) => {
+                self.fail(CoreError::RuntimeProfile(error), LifecycleState::Validating)?;
+                unreachable!("fail always returns Err")
+            }
+        };
+
         self.transition(LifecycleState::Verifying);
 
         let signature = match verify_glass_dir(
@@ -309,6 +345,7 @@ impl RootglassRuntime {
         Ok(LaunchRequest::from_glass(
             &glass,
             accelerator,
+            runtime_assets,
             signature,
             &self.overlay_store,
             self.selected_local_overlay.as_deref(),
@@ -379,6 +416,7 @@ impl LaunchRequest {
     pub fn from_glass(
         glass: &Glass,
         accelerator: Option<HostAccelerator>,
+        runtime_assets: ResolvedRuntimeAssets,
         signature: SignatureVerification,
         overlay_store: &OverlayStore,
         selected_local_overlay: Option<&str>,
@@ -400,8 +438,11 @@ impl LaunchRequest {
             glass_root: glass.root.clone(),
             runtime_profile: manifest.runtime.profile.clone(),
             architecture: manifest.runtime.architecture.clone(),
-            kernel: manifest.boot.kernel.clone(),
-            device_tree: manifest.boot.device_tree.clone(),
+            kernel_ref: manifest.boot.kernel.clone(),
+            device_tree_ref: manifest.boot.device_tree.clone(),
+            kernel: runtime_assets.kernel,
+            device_tree: runtime_assets.device_tree,
+            initrd: runtime_assets.initrd,
             rootfs: storage.read_only_rootfs.clone(),
             writable_overlay,
             storage,
@@ -435,6 +476,15 @@ mod tests {
         assert_eq!(
             request.signature.publisher_identity,
             "rootglass.dev/examples"
+        );
+        assert_eq!(
+            request.kernel,
+            PathBuf::from("runtime-assets/alpine-aarch64/vmlinuz-virt")
+        );
+        assert_eq!(request.device_tree, None);
+        assert_eq!(
+            request.initrd,
+            Some(PathBuf::from("runtime-assets/alpine-aarch64/initramfs-virt"))
         );
         assert!(request.rootfs.ends_with("rootfs.img"));
         assert!(matches!(
