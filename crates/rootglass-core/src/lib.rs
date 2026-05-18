@@ -152,7 +152,9 @@ impl HostCapabilities {
             platform,
             hvf_available: platform == HostPlatform::MacOs,
             whpx_available: platform == HostPlatform::Windows,
-            kvm_available: platform == HostPlatform::Linux && Path::new("/dev/kvm").exists(),
+            kvm_available: platform == HostPlatform::Linux
+                && cfg!(target_arch = "aarch64")
+                && Path::new("/dev/kvm").exists(),
         }
     }
 
