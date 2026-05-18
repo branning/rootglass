@@ -203,3 +203,9 @@ rootglass/
 ## Milestone 1
 
 See [docs/milestone-1.md](docs/milestone-1.md) for current completion criteria and scope.
+
+## License and notices
+
+Rootglass is licensed under the [MIT License](LICENSE).
+
+See [NOTICE.md](NOTICE.md) for notes about generated runtime assets, QEMU, Alpine Linux example assets, and Rust dependencies.
