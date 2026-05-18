@@ -58,6 +58,10 @@ plan-with-assets: materialize-assets
 boot: materialize-assets
     cargo run --locked -p rootglass-cli -- boot {{glass}}
 
+# Run a bounded automated boot smoke test and look for the Alpine login marker.
+boot-smoke:
+    ./scripts/smoke-boot-example.sh
+
 # Clean generated example assets and local Rootglass build state.
 clean-assets:
     rm -f {{glass}}/rootfs.img {{glass}}/state.img
