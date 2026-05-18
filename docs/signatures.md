@@ -41,7 +41,7 @@ example.glass/
 Serialized archive form:
 
 ```text
-example.glass
+example.glass     # ZIP archive with .glass extension
   rootglass.toml
   rootfs.img
   state.img
@@ -49,7 +49,19 @@ example.glass
   signatures/glass.dsse.json
 ```
 
-The DSSE signature file is excluded from the signed file set. All other bundle files are included unless a later version explicitly defines additional exclusions.
+The DSSE signature file is excluded from the signed file set. In production archive verification, all other files in the ZIP archive must be listed as signed subjects. Directory-form fixture verification may temporarily exclude generated `.img` files so the repository can test manifests and metadata without committing large images.
+
+## Archive path rules
+
+Serialized `.glass` files are ZIP archives with strict path handling:
+
+- entry names must use `/`, not `\\`;
+- entry names must be relative;
+- absolute paths are invalid;
+- `.` and `..` components are invalid;
+- duplicate normalized entry names are invalid;
+- directory entries are ignored for signature subjects;
+- every file except `signatures/glass.dsse.json` must be covered by the signed statement.
 
 ## Signed payload
 
@@ -108,7 +120,7 @@ Draft envelope shape:
 
 ## Verification flow
 
-1. Open the `.glass` directory/archive.
+1. Open the `.glass` directory or ZIP archive.
 2. Read `signatures/glass.dsse.json`.
 3. Decode the DSSE envelope.
 4. Verify the DSSE signature with a trusted Ed25519 public key.
@@ -116,7 +128,8 @@ Draft envelope shape:
 6. Verify statement type and Rootglass predicate type.
 7. Verify publisher identity and key ID against the local Rootglass trust policy.
 8. Hash every signed bundle file and compare it against the statement subjects.
-9. Reject missing files, extra unsigned files, digest mismatches, unsupported signature versions, unknown publishers, or untrusted keys.
+9. For production archives, reject any file not covered by the signed statement, except the DSSE envelope itself.
+10. Reject missing files, unsafe archive paths, duplicate archive entries, digest mismatches, unsupported signature versions, unknown publishers, or untrusted keys.
 
 ## Trust policy
 
@@ -141,13 +154,14 @@ Riparium can use JFrog as the upstream signing/provenance system while still emb
 
 Expected downstream flow:
 
-1. Build the `.glass` file or directory.
+1. Build the `.glass` ZIP archive or development directory.
 2. Generate the Rootglass file-digest statement.
 3. Sign the statement using a key controlled by the release pipeline.
-4. Store the signed `.glass` in JFrog.
-5. Optionally attach JFrog Evidence/AppTrust provenance to the artifact in JFrog.
-6. Distribute the `.glass` to users.
-7. Rootglass/Riparium verifies the embedded DSSE signature offline at open time.
+4. Embed `signatures/glass.dsse.json` in the `.glass` archive.
+5. Store the signed `.glass` in JFrog.
+6. Optionally attach JFrog Evidence/AppTrust provenance to the artifact in JFrog.
+7. Distribute the `.glass` to users.
+8. Rootglass/Riparium verifies the embedded DSSE signature offline at open time.
 
 ## Why not raw minisign/signify for MVP
 
@@ -166,4 +180,4 @@ Initial Rust implementation should prefer:
 - A small DSSE verifier implemented in `rootglass-signature` or similar.
 - No shelling out to external verification tools.
 - Deterministic lexicographic file-path ordering when generating statements.
-- Clear user-facing errors for unsigned, tampered, unknown publisher, and unsupported signature cases.
+- Clear user-facing errors for unsafe archive paths, unsigned files, tampering, unknown publisher, and unsupported signature cases.
