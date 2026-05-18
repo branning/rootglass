@@ -94,12 +94,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: x64 TCG
+          - name: x64 hosted
             runner: ubuntu-latest
             expected_accel: ""
-          - name: arm64 KVM
+          - name: arm64 hosted
             runner: ubuntu-24.04-arm
-            expected_accel: kvm
+            expected_accel: ""
 
     steps:
       - name: Checkout
@@ -118,6 +118,15 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y qemu-system-arm e2fsprogs
+
+      - name: Report KVM availability
+        run: |
+          uname -m
+          if [[ -e /dev/kvm ]]; then
+            ls -l /dev/kvm
+          else
+            echo "/dev/kvm is not available on this hosted runner"
+          fi
 
       - name: Run boot smoke
         env:
