@@ -13,7 +13,7 @@ set -euo pipefail
 #   runtime-assets/alpine-aarch64/initramfs-virt
 #
 # Dependencies:
-#   curl, tar, dd, mkfs.ext4, sudo, mount, umount
+#   curl, tar, dd, mkfs.ext4, sudo, mountpoint, mount, umount
 #
 # Linux is currently required for rootfs image creation because this script
 # mounts an ext4 image locally. macOS/Windows users can run this inside an
@@ -23,6 +23,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GLASS_DIR="${ROOT_DIR}/examples/hello-world.glass"
 ASSET_DIR="${ROOT_DIR}/runtime-assets/alpine-aarch64"
 WORK_DIR="${ROOT_DIR}/.rootglass/build/hello-world-assets"
+MOUNT_DIR="${WORK_DIR}/mnt-rootfs"
 
 ALPINE_RELEASE="${ALPINE_RELEASE:-latest-stable}"
 ALPINE_BASE_URL="${ALPINE_BASE_URL:-https://dl-cdn.alpinelinux.org/alpine/${ALPINE_RELEASE}/releases/aarch64}"
@@ -42,10 +43,11 @@ require_cmd tar
 require_cmd dd
 require_cmd mkfs.ext4
 require_cmd sudo
+require_cmd mountpoint
 require_cmd mount
 require_cmd umount
 
-mkdir -p "${GLASS_DIR}" "${ASSET_DIR}" "${WORK_DIR}"
+mkdir -p "${GLASS_DIR}" "${ASSET_DIR}" "${WORK_DIR}" "${MOUNT_DIR}"
 
 MINIROOTFS_URL="${ALPINE_BASE_URL}/${ALPINE_MINIROOTFS}"
 MINIROOTFS_SHA_URL="${MINIROOTFS_URL}.sha256"
@@ -55,6 +57,14 @@ INITRAMFS_URL="${ALPINE_BASE_URL}/netboot/initramfs-virt"
 MINIROOTFS_TARBALL="${ASSET_DIR}/${ALPINE_MINIROOTFS}"
 ROOTFS_IMG="${GLASS_DIR}/rootfs.img"
 STATE_IMG="${GLASS_DIR}/state.img"
+
+cleanup_mount() {
+  if mountpoint -q "${MOUNT_DIR}"; then
+    echo "unmount: ${MOUNT_DIR}"
+    sudo umount "${MOUNT_DIR}"
+  fi
+}
+trap cleanup_mount EXIT
 
 curl_if_missing() {
   local url="$1"
@@ -67,54 +77,49 @@ curl_if_missing() {
   curl --fail --location --show-error --output "${output}" "${url}"
 }
 
+create_ext4_image() {
+  local path="$1"
+  local size_mb="$2"
+  local label="$3"
+
+  if [[ -f "${path}" ]]; then
+    echo "exists: ${path}"
+    return 0
+  fi
+
+  echo "create ${label} image: ${path}"
+  dd if=/dev/zero of="${path}" bs=1M count="${size_mb}" status=progress
+  mkfs.ext4 -F "${path}"
+}
+
 curl_if_missing "${MINIROOTFS_URL}" "${MINIROOTFS_TARBALL}"
 curl_if_missing "${MINIROOTFS_SHA_URL}" "${MINIROOTFS_TARBALL}.sha256"
 curl_if_missing "${KERNEL_URL}" "${ASSET_DIR}/vmlinuz-virt"
 curl_if_missing "${INITRAMFS_URL}" "${ASSET_DIR}/initramfs-virt"
 
-if command -v sha256sum >/dev/null 2>&1; then
-  (
-    cd "${ASSET_DIR}"
-    sha256sum --check "${ALPINE_MINIROOTFS}.sha256"
-  )
-else
-  echo "sha256sum not available; skipping minirootfs checksum verification" >&2
-fi
+(
+  cd "${ASSET_DIR}"
+  sha256sum --check "${ALPINE_MINIROOTFS}.sha256"
+)
 
 if [[ ! -f "${ROOTFS_IMG}" ]]; then
-  echo "create rootfs image: ${ROOTFS_IMG}"
-  dd if=/dev/zero of="${ROOTFS_IMG}" bs=1M count="${ROOTFS_SIZE_MB}" status=progress
-  mkfs.ext4 -F "${ROOTFS_IMG}"
-
-  MOUNT_DIR="${WORK_DIR}/mnt-rootfs"
-  mkdir -p "${MOUNT_DIR}"
+  create_ext4_image "${ROOTFS_IMG}" "${ROOTFS_SIZE_MB}" "rootfs"
   sudo mount -o loop "${ROOTFS_IMG}" "${MOUNT_DIR}"
-  cleanup_mount() {
-    if mountpoint -q "${MOUNT_DIR}"; then
-      sudo umount "${MOUNT_DIR}"
-    fi
-  }
-  trap cleanup_mount EXIT
-
   sudo tar -xzf "${MINIROOTFS_TARBALL}" -C "${MOUNT_DIR}"
 
   # Make the minirootfs slightly friendlier for an interactive serial boot.
-  echo 'ttyAMA0::respawn:/sbin/getty -L ttyAMA0 115200 vt100' | sudo tee -a "${MOUNT_DIR}/etc/inittab" >/dev/null
+  if ! sudo grep -q '^ttyAMA0::respawn:' "${MOUNT_DIR}/etc/inittab"; then
+    echo 'ttyAMA0::respawn:/sbin/getty -L ttyAMA0 115200 vt100' \
+      | sudo tee -a "${MOUNT_DIR}/etc/inittab" >/dev/null
+  fi
   echo 'rootglass-hello' | sudo tee "${MOUNT_DIR}/etc/hostname" >/dev/null
 
   cleanup_mount
-  trap - EXIT
 else
   echo "exists: ${ROOTFS_IMG}"
 fi
 
-if [[ ! -f "${STATE_IMG}" ]]; then
-  echo "create writable state image: ${STATE_IMG}"
-  dd if=/dev/zero of="${STATE_IMG}" bs=1M count="${STATE_SIZE_MB}" status=progress
-  mkfs.ext4 -F "${STATE_IMG}"
-else
-  echo "exists: ${STATE_IMG}"
-fi
+create_ext4_image "${STATE_IMG}" "${STATE_SIZE_MB}" "writable state"
 
 cat <<EOF
 
@@ -125,8 +130,7 @@ Generated assets:
   ${ASSET_DIR}/initramfs-virt
 
 Next:
-  cargo run -p rootglass-cli -- validate examples/hello-world.glass
-  cargo run -p rootglass-cli -- plan examples/hello-world.glass
-
-Note: QEMU boot still requires runtime-profile asset resolution wiring in Rootglass.
+  cargo run --locked -p rootglass-cli -- validate examples/hello-world.glass
+  cargo run --locked -p rootglass-cli -- plan examples/hello-world.glass
+  cargo run --locked -p rootglass-cli -- boot examples/hello-world.glass
 EOF
