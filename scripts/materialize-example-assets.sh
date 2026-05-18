@@ -30,6 +30,8 @@ ALPINE_BASE_URL="${ALPINE_BASE_URL:-https://dl-cdn.alpinelinux.org/alpine/${ALPI
 ALPINE_MINIROOTFS="${ALPINE_MINIROOTFS:-alpine-minirootfs-3.23.4-aarch64.tar.gz}"
 ROOTFS_SIZE_MB="${ROOTFS_SIZE_MB:-256}"
 STATE_SIZE_MB="${STATE_SIZE_MB:-64}"
+ROOTFS_LABEL="rootglass-root"
+STATE_LABEL="rootglass-state"
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -80,16 +82,17 @@ curl_if_missing() {
 create_ext4_image() {
   local path="$1"
   local size_mb="$2"
-  local label="$3"
+  local description="$3"
+  local label="$4"
 
   if [[ -f "${path}" ]]; then
     echo "exists: ${path}"
     return 0
   fi
 
-  echo "create ${label} image: ${path}"
+  echo "create ${description} image: ${path}"
   dd if=/dev/zero of="${path}" bs=1M count="${size_mb}" status=progress
-  mkfs.ext4 -F "${path}"
+  mkfs.ext4 -F -L "${label}" "${path}"
 }
 
 curl_if_missing "${MINIROOTFS_URL}" "${MINIROOTFS_TARBALL}"
@@ -103,7 +106,7 @@ curl_if_missing "${INITRAMFS_URL}" "${ASSET_DIR}/initramfs-virt"
 )
 
 if [[ ! -f "${ROOTFS_IMG}" ]]; then
-  create_ext4_image "${ROOTFS_IMG}" "${ROOTFS_SIZE_MB}" "rootfs"
+  create_ext4_image "${ROOTFS_IMG}" "${ROOTFS_SIZE_MB}" "rootfs" "${ROOTFS_LABEL}"
   sudo mount -o loop "${ROOTFS_IMG}" "${MOUNT_DIR}"
   sudo tar -xzf "${MINIROOTFS_TARBALL}" -C "${MOUNT_DIR}"
 
@@ -119,7 +122,7 @@ else
   echo "exists: ${ROOTFS_IMG}"
 fi
 
-create_ext4_image "${STATE_IMG}" "${STATE_SIZE_MB}" "writable state"
+create_ext4_image "${STATE_IMG}" "${STATE_SIZE_MB}" "writable state" "${STATE_LABEL}"
 
 cat <<EOF
 
