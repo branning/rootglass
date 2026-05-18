@@ -20,6 +20,12 @@ Run from the repository root on Linux:
 ./scripts/materialize-example-assets.sh
 ```
 
+Or with `just`:
+
+```bash
+just materialize-assets
+```
+
 Generated files:
 
 ```text
@@ -41,15 +47,61 @@ STATE_SIZE_MB=64 \
 ./scripts/materialize-example-assets.sh
 ```
 
-## Current limitations
+## Validate and plan
 
-This gives Rootglass concrete local files to work with, but a real boot still needs runtime-profile asset resolution wiring:
+These commands do not require generated `.img` files:
 
-- `builtin:aarch64-linux` should resolve to `runtime-assets/alpine-aarch64/vmlinuz-virt` or another chosen kernel path.
-- `builtin:aarch64-virt` may either resolve to a device tree file or be represented as a QEMU-generated device tree for the `virt` machine.
-- The QEMU command currently includes the manifest references rather than resolved host paths.
+```bash
+just validate
+just plan
+```
 
-See the runtime-profile asset resolution backlog issue for the next step.
+`rootglass plan` resolves the builtin aarch64 profile into local runtime-asset paths:
+
+```text
+runtime-assets/alpine-aarch64/vmlinuz-virt
+runtime-assets/alpine-aarch64/initramfs-virt
+```
+
+QEMU synthesizes the aarch64 `virt` device tree for the MVP profile, so the launch plan does not pass a `-dtb` argument.
+
+## Boot
+
+Once assets are materialized, boot the example glass interactively:
+
+```bash
+just boot
+```
+
+Equivalent command:
+
+```bash
+cargo run --locked -p rootglass-cli -- boot examples/hello-world.glass
+```
+
+The `boot` command:
+
+1. validates the manifest,
+2. verifies the DSSE/Ed25519 signature,
+3. resolves runtime assets,
+4. checks that kernel/initrd/rootfs/state files exist,
+5. spawns QEMU with inherited terminal I/O.
+
+With `-nographic -serial mon:stdio`, exit QEMU with:
+
+```text
+Ctrl-a x
+```
+
+## Expected preflight failure before materialization
+
+If generated assets are missing, `boot` should fail before starting QEMU. For example:
+
+```text
+error: missing kernel asset: runtime-assets/alpine-aarch64/vmlinuz-virt
+```
+
+This behavior is intentional and is covered by tests.
 
 ## Why Alpine
 
