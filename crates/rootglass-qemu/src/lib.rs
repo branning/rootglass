@@ -92,6 +92,20 @@ impl QemuLaunchPlan {
             args.push(initrd.display().to_string());
         }
 
+        // On QEMU's aarch64 virt machine, the generated virtio-mmio block
+        // devices appear in the guest in reverse of this append order. Add the
+        // optional state disk first so the required rootfs lands at /dev/vda,
+        // matching the example manifest's kernel args.
+        if let Some(overlay) = &request.writable_overlay {
+            args.push("-drive".to_string());
+            args.push(format!(
+                "if=none,file={},format=raw,id=state",
+                overlay.display()
+            ));
+            args.push("-device".to_string());
+            args.push("virtio-blk-device,drive=state".to_string());
+        }
+
         args.extend([
             "-drive".to_string(),
             format!(
@@ -108,16 +122,6 @@ impl QemuLaunchPlan {
         if let Some(accel) = accelerator.qemu_arg() {
             args.push("-accel".to_string());
             args.push(accel.to_string());
-        }
-
-        if let Some(overlay) = &request.writable_overlay {
-            args.push("-drive".to_string());
-            args.push(format!(
-                "if=none,file={},format=raw,id=state",
-                overlay.display()
-            ));
-            args.push("-device".to_string());
-            args.push("virtio-blk-device,drive=state".to_string());
         }
 
         if !request.kernel_args.is_empty() {
@@ -212,6 +216,7 @@ mod tests {
         assert!(command_line.contains("readonly=on"));
         assert!(command_line.contains("rootfs.img"));
         assert!(command_line.contains("state.img"));
+        assert!(command_line.find("id=state").unwrap() < command_line.find("id=rootfs").unwrap());
         assert!(command_line.contains("console=ttyAMA0"));
     }
 
