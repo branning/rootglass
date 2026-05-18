@@ -110,4 +110,4 @@ jobs:
           sudo apt install -y qemu-system-arm e2fsprogs
 
       - name: Run boot smoke
-        run: just boot-smoke
+        run: bash scripts/smoke-boot-example.sh
