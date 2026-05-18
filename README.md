@@ -2,21 +2,176 @@
 
 Tiny worlds under glass.
 
-Rootglass is a cross-platform desktop shell for running self-contained embedded Linux applications on a regular computer. It presents a friendly desktop window around an emulated aarch64 system, booted with QEMU using an off-the-shelf Linux kernel and device tree, while allowing the application root filesystem to be swapped independently.
+Rootglass is a cross-platform shell for running self-contained embedded Linux application environments on a regular computer. The long-term product shape is a friendly desktop app; the current Milestone 1 implementation is a Rust CLI and runtime that can validate, verify, plan, and boot a signed `.glass` example environment through QEMU.
 
-The goal is a nontechnical user workflow: download an app bundle, double-click it, and get a window into a complete embedded environment without learning Docker, QEMU, command-line launch scripts, or board bring-up details.
+## Current status
 
-## Product shape
+Milestone 1 is CLI-first. It supports:
 
-Rootglass is composed of three layers:
+- directory-form `.glass/` fixtures for development,
+- ZIP-based serialized `.glass` archive verification,
+- manifest parsing and validation,
+- DSSE/Ed25519 signature verification,
+- builtin aarch64 runtime profile resolution,
+- read-only rootfs plus optional writable overlay modeling,
+- QEMU launch-plan generation,
+- an interactive CLI boot command once local assets exist,
+- CI for formatting, clippy, tests, and CLI smoke checks.
 
-1. **Desktop shell** — a Tauri application that provides the user-facing launcher, status UI, logs, controls, and app window.
-2. **Runtime core** — Rust code that validates bundles, prepares runtime state, starts and supervises QEMU, exposes lifecycle events, and manages host resources.
-3. **World bundle** — a packaged embedded application environment containing a manifest, root filesystem image, optional metadata, and references to the kernel/device tree/runtime profile required to boot it.
+The Tauri desktop shell and nontechnical double-click workflow are future work.
+
+## Quickstart
+
+### Prerequisites
+
+For normal development checks:
+
+- Rust stable toolchain
+- Cargo
+- [`just`](https://github.com/casey/just), optional but recommended
+
+For local example asset generation and boot:
+
+- Linux host or VM
+- `qemu-system-aarch64`
+- `curl`, `tar`, `dd`, `mkfs.ext4`, `sudo`, `mount`, and `umount`
+
+The asset materialization script currently mounts an ext4 image, so macOS and Windows users should run it inside a Linux VM or container with loop-device support.
+
+### Run CI-equivalent checks
+
+```bash
+just check
+```
+
+This runs formatting checks, clippy, tests, and CLI smoke tests.
+
+Equivalent manual commands:
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace --all-targets
+cargo run --locked -p rootglass-cli -- validate examples/hello-world.glass
+cargo run --locked -p rootglass-cli -- plan examples/hello-world.glass
+```
+
+### Validate the example glass
+
+```bash
+just validate
+```
+
+Equivalent:
+
+```bash
+cargo run --locked -p rootglass-cli -- validate examples/hello-world.glass
+```
+
+### Print the QEMU launch plan
+
+```bash
+just plan
+```
+
+Equivalent:
+
+```bash
+cargo run --locked -p rootglass-cli -- plan examples/hello-world.glass
+```
+
+This command does not require generated rootfs images. It verifies the manifest/signature path and prints the QEMU command that would be used after assets exist.
+
+### Materialize local example assets
+
+```bash
+just materialize-assets
+```
+
+Equivalent:
+
+```bash
+./scripts/materialize-example-assets.sh
+```
+
+This downloads canned Alpine Linux aarch64 assets and generates local files ignored by Git:
+
+```text
+examples/hello-world.glass/rootfs.img
+examples/hello-world.glass/state.img
+runtime-assets/alpine-aarch64/vmlinuz-virt
+runtime-assets/alpine-aarch64/initramfs-virt
+```
+
+### Boot the example glass
+
+```bash
+just boot
+```
+
+Equivalent:
+
+```bash
+cargo run --locked -p rootglass-cli -- boot examples/hello-world.glass
+```
+
+The boot command validates the manifest, verifies the DSSE/Ed25519 signature, checks that generated assets exist, and then starts QEMU interactively.
+
+With QEMU `-nographic -serial mon:stdio`, exit with:
+
+```text
+Ctrl-a x
+```
+
+If assets are missing, boot fails before QEMU starts, for example:
+
+```text
+error: missing kernel asset: runtime-assets/alpine-aarch64/vmlinuz-virt
+```
+
+## What is a `.glass`?
+
+A **glass** is a signed bundle describing a small runnable world.
+
+Rootglass supports two forms:
+
+- **Development directory form:** `examples/hello-world.glass/`
+- **Serialized archive form:** a ZIP archive with the `.glass` extension
+
+The archive form uses strict path rules and a canonical signed file set. Every file in a production archive must be covered by the DSSE statement except `signatures/glass.dsse.json` itself.
+
+See:
+
+- [Bundle format](docs/bundle-format.md)
+- [Signature format](docs/signatures.md)
+- [Writable overlays](docs/overlays.md)
+
+## Repository layout
+
+```text
+rootglass/
+  crates/
+    rootglass-cli/          # CLI entrypoint
+    rootglass-core/         # Runtime orchestration and preflight
+    rootglass-manifest/     # Manifest parsing and validation
+    rootglass-qemu/         # QEMU launch-plan and spawn adapter
+    rootglass-signature/    # DSSE/Ed25519 verification
+  docs/
+    architecture.md
+    bundle-format.md
+    example-assets.md
+    milestone-1.md
+    overlays.md
+    signatures.md
+  examples/
+    hello-world.glass/      # Signed development-form example glass
+  scripts/
+    materialize-example-assets.sh
+```
 
 ## Design goals
 
-- One-click desktop workflow for nontechnical users.
+- One-click desktop workflow for nontechnical users eventually.
 - Cross-platform host support: macOS, Windows, and Linux.
 - Swappable root filesystems for different embedded applications.
 - A stable host application that can run many app bundles over time.
@@ -25,52 +180,26 @@ Rootglass is composed of three layers:
 - Make logs and failure states visible enough for support/debugging.
 - Avoid turning the first version into a full board simulator or hardware-in-the-loop framework.
 
-## Non-goals for the first version
+## Non-goals for Milestone 1
 
+- Tauri desktop shell.
+- Nontechnical double-click workflow.
+- Bundled QEMU installers.
+- Production trust-store management.
+- Full signing release automation.
 - Cycle-accurate hardware simulation.
 - Arbitrary peripheral modeling.
-- Full Docker replacement.
 - Multi-node distributed simulation.
 - Real-time guarantees.
-- Recreating every target-board boot detail.
-
-## Initial repository layout
-
-```text
-rootglass/
-  apps/
-    desktop/              # Tauri UI shell
-  crates/
-    rootglass-core/       # Runtime orchestration
-    rootglass-manifest/   # Bundle manifest parsing and validation
-    rootglass-qemu/       # QEMU launch/supervision adapter
-  docs/
-    architecture.md
-    bundle-format.md
-    roadmap.md
-  examples/
-    hello-world/          # Minimal sample bundle metadata/rootfs recipe later
-```
-
-This layout is intentionally docs-first until the first Tauri project and Rust workspace are generated.
 
 ## Working vocabulary
 
 - **World** — the running embedded environment visible through Rootglass.
-- **Bundle** — the portable package containing a rootfs and launch metadata.
-- **Manifest** — the structured file describing how to boot the bundle.
+- **Glass** — the signed bundle containing a manifest, rootfs metadata, and launch metadata.
+- **Manifest** — the structured file describing how to boot the glass.
 - **Runtime** — the host-side Rust process supervision and QEMU orchestration layer.
-- **Shell** — the desktop app around the running world.
+- **Shell** — the future desktop app around the running world.
 
-## First milestone
+## Milestone 1
 
-The first useful milestone is a local developer prototype that can:
-
-1. Load a bundle manifest from disk.
-2. Validate that required assets exist.
-3. Start QEMU for an aarch64 Linux image.
-4. Attach the QEMU console/log stream to the desktop UI.
-5. Stop/restart the world cleanly.
-6. Swap to another rootfs by selecting a different bundle.
-
-See [docs/roadmap.md](docs/roadmap.md) for the proposed implementation sequence.
+See [docs/milestone-1.md](docs/milestone-1.md) for current completion criteria and scope.
