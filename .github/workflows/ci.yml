@@ -31,6 +31,26 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+  lockfile-bootstrap:
+    name: Lockfile bootstrap
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Generate lockfile
+        run: cargo generate-lockfile
+
+      - name: Print lockfile for bootstrapping
+        run: |
+          echo '---BEGIN CARGO LOCK---'
+          cat Cargo.lock
+          echo '---END CARGO LOCK---'
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
