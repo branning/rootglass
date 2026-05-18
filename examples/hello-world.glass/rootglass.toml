@@ -26,7 +26,7 @@ rootfs = "rootfs.img"
 writable_overlay = "state.img"
 kernel_args = [
   "console=ttyAMA0",
-  "root=/dev/vda",
+  "root=LABEL=rootglass-root",
   "rw"
 ]
 
