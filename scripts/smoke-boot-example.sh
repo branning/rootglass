@@ -39,15 +39,20 @@ set -e
 
 cat "${BOOT_LOG}"
 
-if grep -Eq "rootglass-hello login:|Welcome to Alpine Linux|Alpine Linux" "${BOOT_LOG}"; then
+if grep -Eq "Mounting root: failed|Launching initramfs emergency recovery shell|mount: mounting .* failed|Kernel panic|QEMU exited with status|error: QEMU exited" "${BOOT_LOG}"; then
+  echo "boot smoke failed: guest did not mount the intended root filesystem" >&2
+  exit 1
+fi
+
+if grep -Eq "rootglass-hello login:" "${BOOT_LOG}"; then
   echo "boot smoke succeeded"
   exit 0
 fi
 
 if [[ "${status}" -eq 124 ]]; then
-  echo "boot smoke timed out before seeing an expected boot marker" >&2
+  echo "boot smoke timed out before seeing the rootglass login prompt" >&2
 else
-  echo "boot command exited with status ${status} before seeing an expected boot marker" >&2
+  echo "boot command exited with status ${status} before seeing the rootglass login prompt" >&2
 fi
 
 exit 1
