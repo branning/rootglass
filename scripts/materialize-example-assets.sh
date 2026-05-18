@@ -26,7 +26,7 @@ WORK_DIR="${ROOT_DIR}/.rootglass/build/hello-world-assets"
 
 ALPINE_RELEASE="${ALPINE_RELEASE:-latest-stable}"
 ALPINE_BASE_URL="${ALPINE_BASE_URL:-https://dl-cdn.alpinelinux.org/alpine/${ALPINE_RELEASE}/releases/aarch64}"
-ALPINE_MINIROOTFS="${ALPINE_MINIROOTFS:-alpine-minirootfs-3.22.2-aarch64.tar.gz}"
+ALPINE_MINIROOTFS="${ALPINE_MINIROOTFS:-alpine-minirootfs-3.23.4-aarch64.tar.gz}"
 ROOTFS_SIZE_MB="${ROOTFS_SIZE_MB:-256}"
 STATE_SIZE_MB="${STATE_SIZE_MB:-64}"
 
