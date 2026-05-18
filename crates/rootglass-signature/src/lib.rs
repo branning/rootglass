@@ -1,5 +1,5 @@
-use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -441,12 +441,12 @@ fn read_zip_files<R: Read + Seek>(
         }
 
         let mut bytes = Vec::new();
-        entry.read_to_end(&mut bytes).map_err(|source| {
-            SignatureError::ReadSignedFile {
+        entry
+            .read_to_end(&mut bytes)
+            .map_err(|source| SignatureError::ReadSignedFile {
                 path: PathBuf::from(&normalized),
                 source,
-            }
-        })?;
+            })?;
 
         if files.insert(normalized.clone(), bytes).is_some() {
             return Err(SignatureError::DuplicateArchiveEntry(normalized));
@@ -503,7 +503,10 @@ fn normalize_relative_path(path: &Path) -> Result<PathBuf, SignatureError> {
     for component in path.components() {
         match component {
             Component::Normal(part) => normalized.push(part),
-            Component::CurDir | Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+            Component::CurDir
+            | Component::ParentDir
+            | Component::RootDir
+            | Component::Prefix(_) => {
                 return Err(SignatureError::UnsafeArchivePath(
                     path.to_string_lossy().to_string(),
                 ));
@@ -547,8 +550,8 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use zip::CompressionMethod;
     use zip::write::SimpleFileOptions;
+    use zip::CompressionMethod;
 
     #[test]
     fn verifies_sample_glass_fixture() {
@@ -643,9 +646,12 @@ mod tests {
         fs::remove_dir_all(temp).expect("remove temp fixture");
     }
 
-    fn build_sample_archive<const N: usize>(extras: [(&str, &[u8]); N]) -> Vec<u8> {
+    fn build_sample_archive<const N: usize>(extras: [(&'static str, &'static [u8]); N]) -> Vec<u8> {
         let files = [
-            ("README.md", include_bytes!("../../../examples/hello-world.glass/README.md").as_slice()),
+            (
+                "README.md",
+                include_bytes!("../../../examples/hello-world.glass/README.md").as_slice(),
+            ),
             (
                 "metadata/README.md",
                 include_bytes!("../../../examples/hello-world.glass/metadata/README.md").as_slice(),
@@ -656,7 +662,8 @@ mod tests {
             ),
             (
                 "signatures/glass.dsse.json",
-                include_bytes!("../../../examples/hello-world.glass/signatures/glass.dsse.json").as_slice(),
+                include_bytes!("../../../examples/hello-world.glass/signatures/glass.dsse.json")
+                    .as_slice(),
             ),
         ];
 
