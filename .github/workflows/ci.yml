@@ -86,3 +86,25 @@ jobs:
 
       - name: Smoke test CLI plan
         run: cargo run --locked -p rootglass-cli -- plan examples/hello-world.glass
+
+  boot-smoke:
+    name: Boot smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry and build outputs
+        uses: Swatinem/rust-cache@v2
+
+      - name: Prepare host tools
+        run: |
+          sudo apt update
+          sudo apt install -y qemu-system-arm e2fsprogs
+
+      - name: Run boot smoke
+        run: just boot-smoke
