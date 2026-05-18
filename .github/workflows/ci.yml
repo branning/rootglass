@@ -88,8 +88,18 @@ jobs:
         run: cargo run --locked -p rootglass-cli -- plan examples/hello-world.glass
 
   boot-smoke:
-    name: Boot smoke
-    runs-on: ubuntu-latest
+    name: Boot smoke (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: x64 TCG
+            runner: ubuntu-latest
+            expected_accel: ""
+          - name: arm64 KVM
+            runner: ubuntu-24.04-arm
+            expected_accel: kvm
 
     steps:
       - name: Checkout
@@ -110,4 +120,6 @@ jobs:
           sudo apt install -y qemu-system-arm e2fsprogs
 
       - name: Run boot smoke
+        env:
+          EXPECT_QEMU_ACCEL: ${{ matrix.expected_accel }}
         run: bash scripts/smoke-boot-example.sh
