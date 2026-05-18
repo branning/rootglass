@@ -16,7 +16,7 @@ if ! command -v qemu-system-aarch64 >/dev/null 2>&1; then
   exit 1
 fi
 
-./scripts/materialize-example-assets.sh
+bash scripts/materialize-example-assets.sh
 
 set +e
 timeout --foreground "${TIMEOUT_SECONDS}" \
