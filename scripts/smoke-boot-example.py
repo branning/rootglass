@@ -120,7 +120,7 @@ def main() -> int:
     failure: Exception | None = None
     try:
         wait_for(fd, child, rb"rootglass-hello login:\s*$", BOOT_TIMEOUT, log)
-        os.write(fd, b"rootglass-ci\n")
+        os.write(fd, b"root\n")
         wait_for(fd, child, rb"(?i)password:\s*$", 10, log)
         os.write(fd, (FIXTURE_PASSWORD + "\n").encode("ascii"))
         wait_for(fd, child, rb"(?m)#\s*$", 10, log)
