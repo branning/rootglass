@@ -1,10 +1,10 @@
 use rootglass_core::{HostCapabilities, LaunchRequest, RootglassRuntime};
+use rootglass_manifest::Glass;
+use rootglass_qemu::QemuLaunchPlan;
 use rootglass_signature::{
     load_signing_key, package_glass_directory, package_glass_directory_at, sign_glass_directory,
     sign_glass_directory_at, SigningReport,
 };
-use rootglass_manifest::Glass;
-use rootglass_qemu::QemuLaunchPlan;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -87,10 +87,7 @@ fn package_command(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn signing_options<'a>(
-    args: &'a [String],
-    start: usize,
-) -> Result<(&'a str, Option<&'a str>), String> {
+fn signing_options(args: &[String], start: usize) -> Result<(&str, Option<&str>), String> {
     let mut key = None;
     let mut created_at = None;
     let mut index = start;
