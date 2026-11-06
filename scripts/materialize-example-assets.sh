@@ -172,6 +172,10 @@ if ! sudo grep -q '^ttyAMA0::respawn:' "${MOUNT_DIR}/etc/inittab"; then
     | sudo tee -a "${MOUNT_DIR}/etc/inittab" >/dev/null
 fi
 echo 'rootglass-hello' | sudo tee "${MOUNT_DIR}/etc/hostname" >/dev/null
+if ! sudo grep -Fq '::sysinit:/bin/hostname rootglass-hello' "${MOUNT_DIR}/etc/inittab"; then
+  echo '::sysinit:/bin/hostname rootglass-hello' \
+    | sudo tee -a "${MOUNT_DIR}/etc/inittab" >/dev/null
+fi
 
 # This credential is only for the disposable, offline CI/developer fixture.
 # Production bundles must use their own locked-down account policy.
