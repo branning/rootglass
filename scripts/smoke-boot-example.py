@@ -42,8 +42,12 @@ def wait_for(fd: int, child: int, pattern: bytes, timeout: int, log: bytearray) 
             try:
                 data = os.read(fd, 65536)
             except OSError:
-                data = b""
+                if expression.search(log):
+                    return
+                raise SmokeFailure("guest serial console closed before expected output")
             if not data:
+                if expression.search(log):
+                    return
                 raise SmokeFailure("guest serial console closed before expected output")
             available = MAX_LOG_BYTES - len(log)
             if available > 0:
@@ -129,7 +133,7 @@ def main() -> int:
             b"printf 'ROOTGLASS_SMOKE_BEGIN\\n'; uname -a; "
             b"printf 'ROOTGLASS_SMOKE_DONE\\n'; poweroff -f\n",
         )
-        wait_for(fd, child, rb"(?m)^ROOTGLASS_SMOKE_DONE\r?$", 15, log)
+        wait_for(fd, child, rb"ROOTGLASS_SMOKE_DONE(?:\r\n|\n|\r)", 15, log)
         if not re.search(rb"(?m)^Linux rootglass-hello .*\baarch64\b", log):
             raise SmokeFailure("guest command completed without the expected aarch64 uname output")
         exit_code = drain_until_exit(fd, child, STOP_TIMEOUT, log)
