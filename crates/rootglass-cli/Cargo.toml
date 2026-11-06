@@ -13,3 +13,4 @@ path = "src/main.rs"
 rootglass-core.workspace = true
 rootglass-manifest.workspace = true
 rootglass-qemu.workspace = true
+rootglass-signature.workspace = true
