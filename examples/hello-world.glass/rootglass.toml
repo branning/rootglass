@@ -27,6 +27,7 @@ writable_overlay = "state.img"
 kernel_args = [
   "console=ttyAMA0",
   "root=LABEL=rootglass-root",
+  "rootfstype=ext4",
   "rw"
 ]
 
@@ -39,3 +40,4 @@ mode = "serial-console"
 
 [network]
 mode = "user"
+
