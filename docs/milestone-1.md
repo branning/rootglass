@@ -37,7 +37,7 @@ Milestone 1 includes:
 
 Milestone 1 does not include:
 
-- GPUI desktop shell.
+- GPUI Kit (`=0.9.0`) desktop shell.
 - Nontechnical double-click workflow.
 - Packaged app installers.
 - Bundled QEMU.
@@ -125,7 +125,7 @@ Milestone 1 is complete when:
 
 Important follow-on work that should not block Milestone 1:
 
-- GPUI desktop shell.
+- GPUI Kit (`=0.9.0`) desktop shell.
 - QEMU bundling/distribution strategy.
 - Production trusted publisher and key-rotation policy.
 - Bundle signing tool.
