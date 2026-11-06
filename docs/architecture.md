@@ -50,9 +50,9 @@ Rootglass is a desktop shell around a contained embedded Linux world. The applic
 +-----------------------------+
 ```
 
-The desktop frontend uses [Zed GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui), a native Rust UI framework. It calls `rootglass-core` as a library; there is no Tauri command bridge or JavaScript frontend. Keep QEMU supervision, signature decisions, and filesystem operations out of GPUI view code. Use asynchronous tasks and event subscriptions so boot and log streaming never block rendering.
+The desktop frontend uses [GPUI Kit](https://github.com/longbridge/gpui-kit), Longbridge's curated GPUI distribution and component library built on Zed's native Rust GPUI framework. For the first desktop crate, use the exact Cargo requirement `gpui-kit = "=0.9.0"` (the Kit's default `gpui-pre` snapshot backend, corresponding to `gpui-pre` 0.3.11), **not** a direct dependency on Zed's moving `main`, another GPUI fork, or the optional `gpui-fast` backend. GPUI Kit reexports its compatible GPUI types; import from `gpui_kit::*` and `gpui_kit::component` to avoid mixing versions. Upgrade the Kit and its transitive GPUI snapshot together deliberately, with `Cargo.lock` committed. It calls `rootglass-core` as a library; there is no Tauri command bridge or JavaScript frontend. Keep QEMU supervision, signature decisions, and filesystem operations out of GPUI view code. Use asynchronous tasks and event subscriptions so boot and log streaming never block rendering.
 
-Target desktop hosts: macOS, Windows 11, Ubuntu 24.04+. GPUI platform backends differ (Metal on macOS, Win32 on Windows, Wayland/X11 on Linux), so validate builds on all three before treating the shell as cross-platform. GPUI is pre-1.0; pin a known-compatible revision and update deliberately.
+Target desktop hosts: macOS, Windows 11, Ubuntu 24.04+. GPUI platform backends differ, so validate builds on all three before treating the shell as cross-platform. GPUI is pre-1.0; treat GPUI Kit 0.9.0 as a tested dependency baseline, not a guarantee of platform compatibility. See [GPUI Kit getting started](https://gpui-kit.com/docs/getting-started/) and [installation](https://gpui-kit.com/docs/installation/).
 
 ## Major components
 
