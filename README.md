@@ -4,6 +4,10 @@ Tiny worlds under glass.
 
 Rootglass is a cross-platform shell for running self-contained embedded Linux application environments on a regular computer. The long-term product shape is a friendly desktop app; the current Milestone 1 implementation is a Rust CLI and runtime that can validate, verify, plan, and boot a signed `.glass` example environment through QEMU.
 
+## Complete application build specification
+
+[**App spec and coding-agent swarm build contract**](docs/app-spec.md) describes the existing Rust implementation, GPUI Kit desktop UI, signed bundle install/release path, QEMU lifecycle, production trust, OS packaging, acceptance tests, and dependency-ordered work packages. Coding agents should start with [AGENTS.md](AGENTS.md).
+
 ## Current status
 
 Milestone 1 is CLI-first. It supports:
