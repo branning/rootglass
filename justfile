@@ -47,7 +47,7 @@ boot-preflight-missing-assets:
 
 # Download/generate local example assets. Requires Linux, sudo, curl, tar, dd, mkfs.ext4, mount, and umount.
 materialize-assets:
-    ./scripts/materialize-example-assets.sh
+    bash scripts/materialize-example-assets.sh
 
 # Print a bootable plan after local assets have been materialized.
 plan-with-assets: materialize-assets
@@ -60,7 +60,7 @@ boot: materialize-assets
 
 # Run a bounded automated boot smoke test and look for the Alpine login marker.
 boot-smoke:
-    ./scripts/smoke-boot-example.sh
+    bash scripts/smoke-boot-example.sh
 
 # Clean generated example assets and local Rootglass build state.
 clean-assets:

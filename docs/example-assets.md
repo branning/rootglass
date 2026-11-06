@@ -4,13 +4,15 @@ The repository does not commit large generated guest images. Instead, the `hello
 
 ## Source material
 
-The materialization script uses Alpine Linux aarch64 release artifacts:
+The materialization script uses a matched, pinned Alpine Linux aarch64 release set:
 
-- `alpine-minirootfs-*.tar.gz`
-- `netboot/vmlinuz-virt`
-- `netboot/initramfs-virt`
+- `v3.23/releases/aarch64/alpine-minirootfs-3.23.8-aarch64.tar.gz`
+- `v3.23/releases/aarch64/netboot-3.23.8/vmlinuz-virt`
+- `v3.23/releases/aarch64/netboot-3.23.8/initramfs-virt`
 
-By default, the script uses Alpine's `latest-stable` aarch64 release path and a pinned minirootfs filename. Override these with environment variables when needed.
+The versioned `netboot-3.23.8` directory keeps the kernel and initramfs aligned
+with the rootfs. Override `ALPINE_RELEASE` and `ALPINE_VERSION` together when
+testing another release.
 
 ## Generate assets
 
@@ -40,8 +42,8 @@ These paths are ignored by Git.
 ## Environment variables
 
 ```bash
-ALPINE_RELEASE=latest-stable \
-ALPINE_MINIROOTFS=alpine-minirootfs-3.22.2-aarch64.tar.gz \
+ALPINE_RELEASE=v3.23 \
+ALPINE_VERSION=3.23.8 \
 ROOTFS_SIZE_MB=256 \
 STATE_SIZE_MB=64 \
 ./scripts/materialize-example-assets.sh
@@ -102,6 +104,25 @@ error: missing kernel asset: runtime-assets/alpine-aarch64/vmlinuz-virt
 ```
 
 This behavior is intentional and is covered by tests.
+
+## End-to-end smoke boot
+
+`bash scripts/smoke-boot-example.sh` uses a PTY to exercise the real serial
+console. It waits for the fixture login, logs in as `root` with the
+developer/CI-only password `rootglass-ci`, runs `uname -a`, checks for the
+guest hostname and `aarch64`, then requests guest shutdown and requires QEMU
+to exit. The raw console transcript is saved to
+`.rootglass/build/hello-world-boot.log`. This disposable credential is only
+for the offline example fixture and must not be shipped in a production glass.
+
+When changing any signed example file, regenerate its development DSSE envelope:
+
+```bash
+cargo run --locked -p rootglass-signature --example sign_example_fixture
+```
+
+That example uses a deterministic, public fixture key. It is for the sample only
+and is not a production signing tool.
 
 ## Why Alpine
 
