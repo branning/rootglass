@@ -13,7 +13,8 @@ set -euo pipefail
 #   runtime-assets/alpine-aarch64/initramfs-virt
 #
 # Dependencies:
-#   curl, tar, dd, mkfs.ext4, sudo, mountpoint, mount, umount
+#   curl, tar, dd, mkfs.ext4, sudo, mountpoint, mount, umount,
+#   cpio, gzip, squashfs-tools
 #
 # Linux is currently required for rootfs image creation because this script
 # mounts an ext4 image locally. macOS/Windows users can run this inside an
@@ -36,6 +37,9 @@ STATE_LABEL="rootglass-state"
 EXPECTED_MINIROOTFS="alpine-minirootfs-${ALPINE_VERSION}-aarch64.tar.gz"
 PINNED_KERNEL="${ASSET_DIR}/vmlinuz-virt-${ALPINE_VERSION}"
 PINNED_INITRAMFS="${ASSET_DIR}/initramfs-virt-${ALPINE_VERSION}"
+PINNED_MODLOOP="${ASSET_DIR}/modloop-virt-${ALPINE_VERSION}"
+INITRAMFS_WORK="${WORK_DIR}/initramfs"
+MODLOOP_WORK="${WORK_DIR}/modloop"
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -53,6 +57,9 @@ require_cmd sudo
 require_cmd mountpoint
 require_cmd mount
 require_cmd umount
+require_cmd cpio
+require_cmd gzip
+require_cmd unsquashfs
 
 mkdir -p "${GLASS_DIR}" "${ASSET_DIR}" "${WORK_DIR}" "${MOUNT_DIR}"
 
@@ -66,6 +73,7 @@ MINIROOTFS_SHA_URL="${MINIROOTFS_URL}.sha256"
 NETBOOT_URL="${ALPINE_BASE_URL}/netboot-${ALPINE_VERSION}"
 KERNEL_URL="${NETBOOT_URL}/vmlinuz-virt"
 INITRAMFS_URL="${NETBOOT_URL}/initramfs-virt"
+MODLOOP_URL="${NETBOOT_URL}/modloop-virt"
 
 MINIROOTFS_TARBALL="${ASSET_DIR}/${ALPINE_MINIROOTFS}"
 ROOTFS_IMG="${GLASS_DIR}/rootfs.img"
@@ -111,8 +119,29 @@ curl_if_missing "${MINIROOTFS_URL}" "${MINIROOTFS_TARBALL}"
 curl_if_missing "${MINIROOTFS_SHA_URL}" "${MINIROOTFS_TARBALL}.sha256"
 curl_if_missing "${KERNEL_URL}" "${PINNED_KERNEL}"
 curl_if_missing "${INITRAMFS_URL}" "${PINNED_INITRAMFS}"
+curl_if_missing "${MODLOOP_URL}" "${PINNED_MODLOOP}"
 cp "${PINNED_KERNEL}" "${ASSET_DIR}/vmlinuz-virt"
-cp "${PINNED_INITRAMFS}" "${ASSET_DIR}/initramfs-virt"
+
+# Alpine's netboot initramfs omits most filesystem modules. Its normal disk
+# boot obtains those from modloop after mounting the root filesystem, which is
+# too late for this guest. Embed the matching module tree into a rebuilt initrd
+# so ext4 is available during the initial root mount.
+rm -rf "${INITRAMFS_WORK}" "${MODLOOP_WORK}"
+mkdir -p "${INITRAMFS_WORK}" "${MODLOOP_WORK}"
+gzip -dc "${PINNED_INITRAMFS}" \
+  | (cd "${INITRAMFS_WORK}" && cpio -id --quiet --no-absolute-filenames)
+unsquashfs -quiet -d "${MODLOOP_WORK}" "${PINNED_MODLOOP}"
+if [[ ! -d "${MODLOOP_WORK}/modules" ]]; then
+  echo "Alpine modloop does not contain its expected modules directory" >&2
+  exit 1
+fi
+mkdir -p "${INITRAMFS_WORK}/lib"
+rm -rf "${INITRAMFS_WORK}/lib/modules"
+cp -a "${MODLOOP_WORK}/modules" "${INITRAMFS_WORK}/lib/modules"
+(
+  cd "${INITRAMFS_WORK}"
+  find . -print0 | cpio --null -o --quiet -H newc | gzip -9n
+) > "${ASSET_DIR}/initramfs-virt"
 
 (
   cd "${ASSET_DIR}"
@@ -174,3 +203,4 @@ Next:
   cargo run --locked -p rootglass-cli -- plan examples/hello-world.glass
   cargo run --locked -p rootglass-cli -- boot examples/hello-world.glass
 EOF
+
