@@ -1,7 +1,7 @@
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -9,6 +9,12 @@ use std::io::{Cursor, Read, Seek};
 use std::path::{Component, Path, PathBuf};
 use thiserror::Error;
 use zip::ZipArchive;
+
+mod signing;
+pub use signing::{
+    load_signing_key, package_glass_directory, package_glass_directory_at, sign_glass_directory,
+    sign_glass_directory_at, SigningReport,
+};
 
 pub const DSSE_PAYLOAD_TYPE: &str = "application/vnd.in-toto+json";
 pub const STATEMENT_TYPE: &str = "https://in-toto.io/Statement/v1";
@@ -91,9 +97,44 @@ pub enum SignatureError {
         #[source]
         source: std::io::Error,
     },
-}
 
-#[derive(Debug, Clone, Deserialize)]
+    #[error("failed to read signing key at {path}: {source}")]
+    ReadSigningKey {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("signing key at {0} must contain a 32-byte Ed25519 seed or base64url-encoded seed")]
+    InvalidSigningKey(PathBuf),
+
+    #[error("symbolic link cannot be included in a signed glass: {0}")]
+    SymlinkInGlass(String),
+
+    #[error("glass path is not valid UTF-8: {0}")]
+    NonUtf8Path(PathBuf),
+
+    #[error("failed to write signature envelope at {path}: {source}")]
+    WriteEnvelope {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("package output already exists: {0}")]
+    PackageOutputExists(PathBuf),
+
+    #[error("failed to write package at {path}: {source}")]
+    WritePackage {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("invalid glass manifest: {0}")]
+    InvalidManifest(String),
+}
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DsseEnvelope {
     pub payload_type: String,
@@ -101,7 +142,7 @@ pub struct DsseEnvelope {
     pub signatures: Vec<DsseSignature>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DsseSignature {
     pub keyid: String,
     pub sig: String,
@@ -498,7 +539,7 @@ fn normalize_archive_name(name: &str) -> Result<String, SignatureError> {
     Ok(path_to_string(&path))
 }
 
-fn normalize_relative_path(path: &Path) -> Result<PathBuf, SignatureError> {
+pub(crate) fn normalize_relative_path(path: &Path) -> Result<PathBuf, SignatureError> {
     let mut normalized = PathBuf::new();
     for component in path.components() {
         match component {
@@ -523,11 +564,11 @@ fn normalize_relative_path(path: &Path) -> Result<PathBuf, SignatureError> {
     Ok(normalized)
 }
 
-fn path_to_string(path: &Path) -> String {
+pub(crate) fn path_to_string(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
-fn dsse_pae(payload_type: &[u8], payload: &[u8]) -> Vec<u8> {
+pub(crate) fn dsse_pae(payload_type: &[u8], payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(b"DSSEv1 ");
     out.extend_from_slice(payload_type.len().to_string().as_bytes());
@@ -540,7 +581,7 @@ fn dsse_pae(payload_type: &[u8], payload: &[u8]) -> Vec<u8> {
     out
 }
 
-fn hex_sha256(bytes: &[u8]) -> String {
+pub(crate) fn hex_sha256(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
