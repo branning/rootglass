@@ -18,7 +18,7 @@ Milestone 1 is CLI-first. It supports:
 - an interactive CLI boot command once local assets exist,
 - CI for formatting, clippy, tests, and CLI smoke checks.
 
-The Tauri desktop shell and nontechnical double-click workflow are future work.
+The native GPUI desktop shell and nontechnical double-click workflow are future work.
 
 ## Quickstart
 
@@ -182,7 +182,7 @@ rootglass/
 
 ## Non-goals for Milestone 1
 
-- Tauri desktop shell.
+- GPUI desktop shell.
 - Nontechnical double-click workflow.
 - Bundled QEMU installers.
 - Production trust-store management.
@@ -198,7 +198,7 @@ rootglass/
 - **Glass** — the signed bundle containing a manifest, rootfs metadata, and launch metadata.
 - **Manifest** — the structured file describing how to boot the glass.
 - **Runtime** — the host-side Rust process supervision and QEMU orchestration layer.
-- **Shell** — the future desktop app around the running world.
+- **Shell** — the future Rust/GPUI desktop app around the running world.
 
 ## Milestone 1
 
