@@ -18,7 +18,7 @@ Milestone 1 is CLI-first. It supports:
 - an interactive CLI boot command once local assets exist,
 - CI for formatting, clippy, tests, and CLI smoke checks.
 
-The native GPUI desktop shell and nontechnical double-click workflow are future work.
+The native desktop shell will use [GPUI Kit](https://github.com/longbridge/gpui-kit) `=0.9.0`, a curated distribution of Zed's GPUI with components, instead of Tauri or GPUI directly from Zed's moving branch. The desktop shell and nontechnical double-click workflow are future work; Milestone 1 remains CLI-first.
 
 ## Quickstart
 
