@@ -1,6 +1,6 @@
 # Rootglass agent instructions
 
-**Start here:** [docs/app-spec.md](docs/app-spec.md). It is the authoritative implementation contract. Read ``0`, `2`, `6`, `10` and `12` before editing code.
+**Start here:** [docs/app-spec.md](docs/app-spec.md). It is the authoritative implementation contract. Read sections 0, 2, 6, 10 and 12 before editing code.
 
 ## Rules for every coding agent
 
@@ -19,7 +19,7 @@
 
 1. Choose assigned `Sxx` package in [`12 swarm work packages](docs/app-spec.md#12-swarm-work-packages-assign-one-owner-per-package).
 2. Verify dependencies and path ownership; begin with source/tests.
-3. Implement smallest usable slice with tests. Use `docs/app-spec.md` `10` for exact acceptance criteria.
+3. Implement smallest usable slice with tests. Use section 10 of `docs/app-spec.md` for exact acceptance criteria.
 4. Run `cargo fmt --all -- --check`, relevant `cargo test --locked` and `cargo clippy --locked`, plus any guest/platform scenario affected.
 5. Open a focused PR with changes, tests, limits, follow-ups and the Sxx/A-xx IDs.
 
