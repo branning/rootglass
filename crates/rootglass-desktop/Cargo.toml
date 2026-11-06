@@ -1,0 +1,13 @@
+[package]
+name = "rootglass-desktop"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/branning/rootglass"
+
+[workspace]
+members = ["."]
+resolver = "2"
+
+[dependencies]
+gpui-kit = "=0.9.0"
