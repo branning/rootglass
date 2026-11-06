@@ -314,9 +314,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rootglass-app"
+version = "0.1.0"
+dependencies = [
+ "rootglass-core",
+ "rootglass-manifest",
+ "rootglass-qemu",
+]
+
+[[package]]
 name = "rootglass-cli"
 version = "0.1.0"
 dependencies = [
+ "rootglass-app",
  "rootglass-core",
  "rootglass-manifest",
  "rootglass-qemu",
