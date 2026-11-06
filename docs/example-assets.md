@@ -9,10 +9,13 @@ The materialization script uses a matched, pinned Alpine Linux aarch64 release s
 - `v3.23/releases/aarch64/alpine-minirootfs-3.23.8-aarch64.tar.gz`
 - `v3.23/releases/aarch64/netboot-3.23.8/vmlinuz-virt`
 - `v3.23/releases/aarch64/netboot-3.23.8/initramfs-virt`
+- `v3.23/releases/aarch64/netboot-3.23.8/modloop-virt`
 
 The versioned `netboot-3.23.8` directory keeps the kernel and initramfs aligned
-with the rootfs. Override `ALPINE_RELEASE` and `ALPINE_VERSION` together when
-testing another release.
+with the rootfs. The generated initramfs includes the matching kernel modules
+from `modloop-virt`; Alpine's stock netboot initramfs does not include ext4,
+which it otherwise loads only after mounting the root filesystem. Override
+`ALPINE_RELEASE` and `ALPINE_VERSION` together when testing another release.
 
 ## Generate assets
 
@@ -127,3 +130,4 @@ and is not a production signing tool.
 ## Why Alpine
 
 Alpine is small, boring, widely mirrored, and publishes canned aarch64 minirootfs/netboot artifacts. That makes it a good first fixture source without building a custom embedded distribution yet.
+
