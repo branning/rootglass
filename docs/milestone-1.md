@@ -1,6 +1,6 @@
 # Milestone 1
 
-Milestone 1 is the CLI-first developer milestone for Rootglass. It proves that Rootglass can describe, verify, plan, and boot a small embedded Linux world without requiring the Tauri desktop shell yet.
+Milestone 1 is the CLI-first developer milestone for Rootglass. It proves that Rootglass can describe, verify, plan, and boot a small embedded Linux world without requiring the GPUI desktop shell yet.
 
 ## Goal
 
@@ -37,7 +37,7 @@ Milestone 1 includes:
 
 Milestone 1 does not include:
 
-- Tauri desktop shell.
+- GPUI desktop shell.
 - Nontechnical double-click workflow.
 - Packaged app installers.
 - Bundled QEMU.
@@ -125,7 +125,7 @@ Milestone 1 is complete when:
 
 Important follow-on work that should not block Milestone 1:
 
-- Tauri desktop shell.
+- GPUI desktop shell.
 - QEMU bundling/distribution strategy.
 - Production trusted publisher and key-rotation policy.
 - Bundle signing tool.
