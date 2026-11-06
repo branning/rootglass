@@ -6,7 +6,7 @@ Rootglass is a desktop shell around a contained embedded Linux world. The applic
 
 ```text
 +-----------------------------+
-| Tauri desktop shell          |
+| GPUI desktop shell           |
 | - launcher UI                |
 | - status and lifecycle       |
 | - console/log view           |
@@ -14,7 +14,7 @@ Rootglass is a desktop shell around a contained embedded Linux world. The applic
 | - publisher/trust display    |
 +--------------+--------------+
                |
-               | Tauri commands / events
+               | direct Rust calls / events
                v
 +-----------------------------+
 | rootglass-core               |
@@ -50,9 +50,13 @@ Rootglass is a desktop shell around a contained embedded Linux world. The applic
 +-----------------------------+
 ```
 
+The desktop frontend uses [Zed GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui), a native Rust UI framework. It calls `rootglass-core` as a library; there is no Tauri command bridge or JavaScript frontend. Keep QEMU supervision, signature decisions, and filesystem operations out of GPUI view code. Use asynchronous tasks and event subscriptions so boot and log streaming never block rendering.
+
+Target desktop hosts: macOS, Windows 11, Ubuntu 24.04+. GPUI platform backends differ (Metal on macOS, Win32 on Windows, Wayland/X11 on Linux), so validate builds on all three before treating the shell as cross-platform. GPUI is pre-1.0; pin a known-compatible revision and update deliberately.
+
 ## Major components
 
-### Tauri desktop shell
+### GPUI desktop shell
 
 The shell owns the user experience. It should avoid exposing QEMU or Linux details unless the user asks for diagnostics.
 
@@ -65,11 +69,11 @@ Expected responsibilities:
 - Error rendering with suggested support actions.
 - Publisher identity and signature verification display.
 - Local writable overlay selection when multiple overlays exist.
-- Optional embedded webview or console view into the guest application.
+- Serial console and diagnostic logs initially; guest framebuffer/web content is separate future work.
 
 ### rootglass-core
 
-The core crate is the host-side application runtime. It should be UI-agnostic and testable outside Tauri.
+The core crate is the host-side application runtime. It should be UI-agnostic and testable outside GPUI.
 
 Expected responsibilities:
 
