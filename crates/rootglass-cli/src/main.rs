@@ -174,7 +174,9 @@ fn boot_glass(glass_root: PathBuf) -> Result<(), String> {
             .map_err(|error| error.to_string())?
             .1
     );
-    service.boot_interactive(&glass_root).map_err(|error| error.to_string())
+    service
+        .boot_interactive(&glass_root)
+        .map_err(|error| error.to_string())
 }
 
 fn print_verification(summary: &GlassSummary) {
