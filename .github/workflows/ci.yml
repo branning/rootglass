@@ -117,7 +117,7 @@ jobs:
       - name: Prepare host tools
         run: |
           sudo apt update
-          sudo apt install -y qemu-system-arm e2fsprogs
+          sudo apt install -y qemu-system-arm e2fsprogs cpio squashfs-tools
 
       - name: Report KVM availability
         run: |
@@ -132,3 +132,4 @@ jobs:
         env:
           EXPECT_QEMU_ACCEL: ${{ matrix.expected_accel }}
         run: bash scripts/smoke-boot-example.sh
+
