@@ -169,7 +169,7 @@ impl TrustStore {
             name: "Rootglass Examples".to_string(),
             identity: "rootglass.dev/examples".to_string(),
             key_id: "ed25519:rootglass-example-fixture".to_string(),
-            public_key_base64url: "FrtQPQofbex46km54joj4L1k_7Bp_iDDewj7h1cRz4s".to_string(),
+            public_key_base64url: "2To2Sg0jWnaNlkRA4GCUa3qbqmZkaw5IMCHh0vRnRpw".to_string(),
         }])
     }
 
