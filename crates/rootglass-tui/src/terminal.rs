@@ -1307,6 +1307,41 @@ mod tests {
             !spawn_marker.exists(),
             "untrusted input reached the fake QEMU spawn"
         );
+
+        let invalid_source = signed_test_bundle(&root.join("invalid-case"));
+        fs::write(invalid_source.join("rootglass.toml"), b"not valid TOML").unwrap();
+        let mut invalid_service = AppService::with_trust_store(fixture_trust_store())
+            .with_library_root(root.join("invalid-library"))
+            .with_state_root(root.join("invalid-state"))
+            .with_verified_runtime_assets(runtime(), "tui-workflow-test");
+        let invalid_error = invalid_service
+            .start(&invalid_source, rootglass_app::RunOptions::default())
+            .expect_err("invalid manifest fails before spawn");
+        assert!(!invalid_error.detail.is_empty());
+        assert!(
+            !spawn_marker.exists(),
+            "invalid input reached the fake QEMU spawn"
+        );
+
+        let tampered_source = signed_test_bundle(&root.join("tampered-case"));
+        fs::write(
+            tampered_source.join("rootfs.img"),
+            b"tampered after signing",
+        )
+        .unwrap();
+        let mut tampered_service = AppService::with_trust_store(fixture_trust_store())
+            .with_library_root(root.join("tampered-library"))
+            .with_state_root(root.join("tampered-state"))
+            .with_verified_runtime_assets(runtime(), "tui-workflow-test");
+        let tampered_error = tampered_service
+            .start(&tampered_source, rootglass_app::RunOptions::default())
+            .expect_err("tampered input fails before spawn");
+        assert!(tampered_error.detail.contains("subject digest mismatch"));
+        assert!(
+            !spawn_marker.exists(),
+            "tampered input reached the fake QEMU spawn"
+        );
+
         drop(trusted_worker);
         drop(denied_worker);
         let _ = fs::remove_dir_all(root);
