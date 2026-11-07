@@ -89,3 +89,8 @@
 {"version":1,"task_id":"UJJ6VB","kind":"created","at":"2026-11-07T10:32:49.07251148Z"}
 {"version":1,"task_id":"UJJ6VB","kind":"open","at":"2026-11-07T10:33:11.870583044Z"}
 {"version":1,"task_id":"MJPX6T","kind":"result","at":"2026-11-07T10:35:57.148777034Z","agent":"codex@worker-1","text":"Refined S16 graph in PR #51; Ergo JSON and diff checks pass. Next: review/merge."}
+{"version":1,"task_id":"MJPX6T","kind":"result","at":"2026-11-07T15:24:41.519458705Z","agent":"codex@worker-1","text":"PR #49 merged; maintainer accepted the contract and all CI checks passed."}
+{"version":1,"task_id":"MJPX6T","kind":"done","at":"2026-11-07T15:24:41.526248747Z","agent":"codex@worker-1","text":"Merged PR #49 at 8560e0a; contract and task graph are on main."}
+{"version":1,"task_id":"RKX2EW","kind":"claim","at":"2026-11-07T15:24:41.533066742Z","agent":"codex@worker-1"}
+{"version":1,"task_id":"RKX2EW","kind":"result","at":"2026-11-07T15:44:16.115635562Z","agent":"codex@worker-1","text":"Checks: 11 TestBackend tests pass; clippy -D warnings, fmt and desktop headless check pass."}
+{"version":1,"task_id":"RKX2EW","kind":"result","at":"2026-11-07T15:44:16.123736147Z","agent":"codex@worker-1","text":"PR pending: S16.2 implementation; full GPUI desktop check hit workspace disk limit."}
