@@ -104,7 +104,7 @@ Rich guest framebuffer, embedding guest HTTP UI, guest agent/RPC, auto-updating 
 
 - **F-19 (R1):** Keep the immutable base rootfs attached read-only. A bundled state image is a *template*, never the mutable installed copy. The application copies or creates local instance state under its own data directory.
 - **F-20 (R2):** An instance has exactly one selected writable state image and exclusive ownership while running. Multiple named local states per glass are allowed, one active at a time. Preserve state across reboot; reset-to-pristine requires confirmation.
-- **F-21 (R2):** Distinguish **second block device** from **actual writable overlay filesystem**. Today the runtime only models/attaches a state disk; that does *not* magically make a readonly rootfs writable. For v1 either (a) implement and test guest initramfs `overlayfs` over readonly rootfs with state as upper/work, or (b) explicitly document read-only-root behavior and only support guest apps that persist under the separately mounted state disk. **Preferred v1:** (a), with upper and work on the same state filesystem; mount by stable LABEL/UUID, never by `/dev/vdX` enumeration.
+- **F-21 (R2):** Distinguish **second block device** from **actual writable overlay filesystem**. The current reference guest chooses the documented `/state` option: Rootglass keeps the rootfs readonly and mounts the separate state disk by its `rootglass-state` label at `/state`, using BusyBox-compatible `LABEL=` mount syntax. The guest does not have a writable root overlay. Guest applications that need persistence must write under `/state`. Do not claim that attaching a second disk makes `/` writable. OverlayFS upper/work support remains future work requiring a separate implementation and guest test. See [overlays.md](overlays.md).
 - **F-22 (R2):** Never modify the signed bundle/rootfs when resetting, booting, installing, or removing an instance. Protect active state from deletion; clone/copy atomically where needed.
 
 ### 4.5 Trust, signing and publishing
@@ -379,7 +379,7 @@ Do not conflate a GitHub `ubuntu-24.04-arm` runner with KVM-enabled hardware. Ho
 5. Harness requests controlled shutdown, waits for QEMU process exit, and checks that no child remains.
 6. Every timeout, kernel panic, root mount error, failed login, missing uname response, unexpected exit or forced kill returns nonzero. Capture console logs as CI artifacts on failure.
 
-**A-05** With a local state image, write a file inside the guest, restart, and read back the same content; hash the readonly base before and after to assert immutability (after the preferred OverlayFS path is implemented).
+**A-05** With a local state image, write a file under the guest's documented persistent path, restart, and read back the same content; hash the readonly base and bundled state template before and after to assert immutability. The current reference guest uses `/state`; this evidence does not claim OverlayFS behavior.
 
 **A-06** Build a ZIP `.glass` through the package/sign tool, then import from outside source checkout, verify, boot and stop. Reject unsigned files, traversal, symlinks, corrupted bytes and zip bombs.
 
