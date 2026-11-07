@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 const MAX_CONSOLE_BYTES: usize = 80_000;
+const CONSOLE_TRUNCATED_NOTICE: &str = "[older console output was dropped]\n";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UiState {
@@ -121,6 +122,9 @@ pub struct UiActions {
     /// State management is intentionally disabled until the named-state UI is implemented.
     pub reset_state: bool,
     pub console_input: bool,
+    pub console_pause: bool,
+    pub console_clear: bool,
+    pub console_copy: bool,
 }
 
 #[derive(Clone)]
@@ -308,11 +312,17 @@ pub struct UiModel {
     pub selected_path: Option<PathBuf>,
     pub run_id: Option<RunId>,
     pub console: String,
+    pub console_paused: bool,
+    pub console_scroll_offset: usize,
+    pub console_truncated: bool,
+    pub console_notice: Option<String>,
     service: SharedService,
     next_generation: u64,
     active_operation: Option<OperationTicket>,
     last_preview: Option<GlassPreview>,
     ansi: AnsiStripper,
+    utf8_tail: Vec<u8>,
+    paused_console: Option<String>,
 }
 
 impl UiModel {
@@ -325,11 +335,17 @@ impl UiModel {
             selected_path: None,
             run_id: None,
             console: String::new(),
+            console_paused: false,
+            console_scroll_offset: 0,
+            console_truncated: false,
+            console_notice: None,
             service: Arc::new(Mutex::new(Box::new(service))),
             next_generation: 0,
             active_operation: None,
             last_preview: None,
             ansi: AnsiStripper::default(),
+            utf8_tail: Vec::new(),
+            paused_console: None,
         }
     }
 
@@ -347,6 +363,7 @@ impl UiModel {
             UiState::Ready(preview) if matches!(&preview.signature, SignatureStatus::Verified(_))
         );
         let has_run = self.run_id.is_some();
+        let has_console = has_run || !self.console.is_empty();
         let busy = matches!(
             self.state,
             UiState::Loading
@@ -379,7 +396,47 @@ impl UiModel {
             refresh: !stopping,
             reset_state: false,
             console_input: running && has_run,
+            console_pause: has_console,
+            console_clear: !self.console.is_empty(),
+            console_copy: !self.visible_console().is_empty(),
         }
+    }
+
+    pub fn visible_console(&self) -> &str {
+        self.paused_console.as_deref().unwrap_or(&self.console)
+    }
+
+    pub fn toggle_console_pause(&mut self) {
+        if self.console_paused {
+            self.console_paused = false;
+            self.paused_console = None;
+            self.console_scroll_offset = 0;
+        } else {
+            self.console_paused = true;
+            self.paused_console = Some(self.console.clone());
+            self.console_scroll_offset = 0;
+        }
+    }
+
+    pub fn clear_console(&mut self) {
+        self.console.clear();
+        self.paused_console = self.console_paused.then(String::new);
+        self.console_scroll_offset = 0;
+        self.console_truncated = false;
+        self.console_notice = None;
+        self.ansi.reset();
+        self.utf8_tail.clear();
+    }
+
+    pub fn scroll_console_up(&mut self, lines: usize) {
+        if self.visible_console().is_empty() {
+            return;
+        }
+        self.console_scroll_offset = self.console_scroll_offset.saturating_add(lines);
+    }
+
+    pub fn scroll_console_down(&mut self, lines: usize) {
+        self.console_scroll_offset = self.console_scroll_offset.saturating_sub(lines);
     }
 
     pub fn selected_installed(&self) -> Option<&InstalledGlass> {
@@ -634,8 +691,7 @@ impl UiModel {
             .as_ref()
             .map(|preview| preview.name.clone())
             .unwrap_or_else(|| "Selected glass".to_string());
-        self.console.clear();
-        self.ansi.reset();
+        self.reset_console();
         let ticket = self.begin_operation(UiState::Booting(RunDetails {
             name,
             status: "Starting guest".to_string(),
@@ -758,8 +814,7 @@ impl UiModel {
                     .as_ref()
                     .map(|preview| preview.name.clone())
                     .unwrap_or_else(|| "Selected glass".to_string());
-                self.console.clear();
-                self.ansi.reset();
+                self.reset_console();
                 self.state = UiState::Booting(RunDetails {
                     name,
                     status: "Booting; waiting for guest login prompt".to_string(),
@@ -794,10 +849,55 @@ impl UiModel {
         };
         for event in events {
             match event {
-                RuntimeEvent::SerialChunk { run, bytes, .. } if run == current_run => {
-                    self.append_console(&bytes);
+                RuntimeEvent::StateChanged { run, state }
+                    if run == current_run && self.run_id.as_ref() == Some(&run) =>
+                {
+                    match state {
+                        LifecycleState::Starting => {
+                            self.state = UiState::Booting(self.run_details("Starting guest"));
+                        }
+                        LifecycleState::Booting => {
+                            self.state = UiState::Booting(
+                                self.run_details("Booting; waiting for profile-ready evidence"),
+                            );
+                        }
+                        LifecycleState::Running => {
+                            // The service state alone is not sufficient evidence to
+                            // show a guest as ready. Wait for its explicit signal.
+                            self.state = UiState::Booting(self.run_details(
+                                "Runtime is active; waiting for profile-ready evidence",
+                            ));
+                        }
+                        LifecycleState::Stopping => {
+                            self.state = UiState::Stopping(self.run_details("Stopping guest"));
+                        }
+                        LifecycleState::Stopped => {
+                            self.run_id = None;
+                            self.restore_preview();
+                        }
+                        LifecycleState::Failed => {
+                            self.state = UiState::Failed(FailureDetails {
+                                path: self.selected_path.clone(),
+                                phase: "Guest".to_string(),
+                                summary: "The guest runtime reported a failure.".to_string(),
+                                detail: "The runtime entered the failed state without additional details.".to_string(),
+                            });
+                        }
+                        LifecycleState::Validating
+                        | LifecycleState::Verifying
+                        | LifecycleState::Ready => {}
+                    }
                 }
-                RuntimeEvent::GuestReady { run, .. } if run == current_run => {
+                RuntimeEvent::SerialChunk {
+                    run,
+                    bytes,
+                    truncated,
+                } if run == current_run && self.run_id.as_ref() == Some(&run) => {
+                    self.append_console(&bytes, truncated);
+                }
+                RuntimeEvent::GuestReady { run, evidence }
+                    if run == current_run && self.run_id.as_ref() == Some(&run) =>
+                {
                     let name = self
                         .last_preview
                         .as_ref()
@@ -805,7 +905,7 @@ impl UiModel {
                         .unwrap_or_else(|| "Selected glass".to_string());
                     self.state = UiState::Running(RunDetails {
                         name,
-                        status: "Running".to_string(),
+                        status: format!("Running · ready evidence: {evidence}"),
                         elapsed: String::new(),
                     });
                 }
@@ -813,7 +913,7 @@ impl UiModel {
                     run,
                     exit_code,
                     expected,
-                } if run == current_run => {
+                } if run == current_run && self.run_id.as_ref() == Some(&run) => {
                     self.run_id = None;
                     if expected {
                         self.restore_preview();
@@ -831,7 +931,7 @@ impl UiModel {
                     phase,
                     summary,
                     detail,
-                } if run == current_run => {
+                } if run == current_run && self.run_id.as_ref() == Some(&run) => {
                     self.run_id = None;
                     self.state = UiState::Failed(FailureDetails {
                         path: self.selected_path.clone(),
@@ -917,17 +1017,126 @@ impl UiModel {
         }
     }
 
-    fn append_console(&mut self, bytes: &[u8]) {
+    fn run_details(&self, status: &str) -> RunDetails {
+        RunDetails {
+            name: self
+                .last_preview
+                .as_ref()
+                .map(|preview| preview.name.clone())
+                .unwrap_or_else(|| "Selected glass".to_string()),
+            status: status.to_string(),
+            elapsed: String::new(),
+        }
+    }
+
+    fn reset_console(&mut self) {
+        self.console.clear();
+        self.console_paused = false;
+        self.paused_console = None;
+        self.console_scroll_offset = 0;
+        self.console_truncated = false;
+        self.console_notice = None;
+        self.ansi.reset();
+        self.utf8_tail.clear();
+    }
+
+    fn append_console(&mut self, bytes: &[u8], runtime_truncated: bool) {
+        if self.console.is_empty() {
+            self.console_scroll_offset = 0;
+        }
+        if runtime_truncated {
+            self.ansi.reset();
+            self.utf8_tail.clear();
+        }
         let clean = self.ansi.push(bytes);
-        self.console.push_str(&String::from_utf8_lossy(&clean));
+        let decoded = self.decode_console_utf8(&clean);
+        let safe = sanitize_console_text(&decoded);
+        if runtime_truncated {
+            self.console_truncated = true;
+            if !self.console.is_empty() && !self.console.ends_with('\n') {
+                self.console.push('\n');
+            }
+            self.console
+                .push_str("[serial output was truncated by the runtime buffer]\n");
+        }
+        self.console.push_str(&safe);
         if self.console.len() > MAX_CONSOLE_BYTES {
             let mut drain = self.console.len() - MAX_CONSOLE_BYTES;
             while !self.console.is_char_boundary(drain) {
                 drain += 1;
             }
             self.console.drain(..drain);
+            if !self.console.starts_with(CONSOLE_TRUNCATED_NOTICE) {
+                self.console_truncated = true;
+                let excess = self
+                    .console
+                    .len()
+                    .saturating_add(CONSOLE_TRUNCATED_NOTICE.len())
+                    .saturating_sub(MAX_CONSOLE_BYTES);
+                let mut marker_drain = excess;
+                while marker_drain < self.console.len()
+                    && !self.console.is_char_boundary(marker_drain)
+                {
+                    marker_drain += 1;
+                }
+                self.console.drain(..marker_drain);
+                self.console.insert_str(0, CONSOLE_TRUNCATED_NOTICE);
+            }
         }
     }
+
+    fn decode_console_utf8(&mut self, bytes: &[u8]) -> String {
+        let mut pending = std::mem::take(&mut self.utf8_tail);
+        pending.extend_from_slice(bytes);
+        let mut decoded = String::with_capacity(pending.len());
+        let mut remaining = pending.as_slice();
+        loop {
+            match std::str::from_utf8(remaining) {
+                Ok(valid) => {
+                    decoded.push_str(valid);
+                    break;
+                }
+                Err(error) => {
+                    let valid_len = error.valid_up_to();
+                    decoded.push_str(
+                        std::str::from_utf8(&remaining[..valid_len])
+                            .expect("valid UTF-8 prefix is valid"),
+                    );
+                    match error.error_len() {
+                        Some(invalid_len) => {
+                            decoded.push('\u{fffd}');
+                            remaining = &remaining[valid_len + invalid_len..];
+                        }
+                        None => {
+                            self.utf8_tail.extend_from_slice(&remaining[valid_len..]);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        decoded
+    }
+}
+
+fn sanitize_console_text(input: &str) -> String {
+    let mut safe = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(character) = chars.next() {
+        match character {
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                safe.push('\n');
+            }
+            '\n' => safe.push('\n'),
+            '\t' => safe.push_str("    "),
+            control if control.is_control() => safe.push('\u{fffd}'),
+            visible => safe.push(visible),
+        }
+    }
+    safe
 }
 
 impl Default for UiModel {
@@ -1079,6 +1288,8 @@ enum AnsiState {
     Csi,
     Osc,
     OscEscape,
+    String,
+    StringEscape,
 }
 
 impl AnsiStripper {
@@ -1097,9 +1308,11 @@ impl AnsiStripper {
                 }
                 AnsiState::Escape if byte == b'[' => AnsiState::Csi,
                 AnsiState::Escape if byte == b']' => AnsiState::Osc,
+                AnsiState::Escape if matches!(byte, b'P' | b'X' | b'^' | b'_') => AnsiState::String,
                 AnsiState::Escape if (0x40..=0x5f).contains(&byte) => AnsiState::Text,
                 AnsiState::Escape => AnsiState::Text,
                 AnsiState::Csi if (0x40..=0x7e).contains(&byte) => AnsiState::Text,
+                AnsiState::Csi if byte == 0x1b => AnsiState::Escape,
                 AnsiState::Csi => AnsiState::Csi,
                 AnsiState::Osc if byte == 0x07 => AnsiState::Text,
                 AnsiState::Osc if byte == 0x1b => AnsiState::OscEscape,
@@ -1108,6 +1321,11 @@ impl AnsiStripper {
                 AnsiState::OscEscape if byte == 0x07 => AnsiState::Text,
                 AnsiState::OscEscape if byte == 0x1b => AnsiState::OscEscape,
                 AnsiState::OscEscape => AnsiState::Osc,
+                AnsiState::String if byte == 0x1b => AnsiState::StringEscape,
+                AnsiState::String => AnsiState::String,
+                AnsiState::StringEscape if byte == b'\\' => AnsiState::Text,
+                AnsiState::StringEscape if byte == 0x1b => AnsiState::StringEscape,
+                AnsiState::StringEscape => AnsiState::String,
             };
         }
         output
@@ -1453,7 +1671,7 @@ mod tests {
     }
 
     #[test]
-    fn console_strips_split_ansi_sequences_preserves_lines_and_is_bounded() {
+    fn console_sanitizes_split_control_sequences_and_preserves_split_utf8() {
         let mut model = ready_model();
         let (ticket, _) = model.begin_start().unwrap();
         model.finish_start(&ticket, Ok(RunId(2)));
@@ -1465,17 +1683,241 @@ mod tests {
             },
             RuntimeEvent::SerialChunk {
                 run: RunId(2),
-                bytes: b"1m world\x1b[0m\r\n".to_vec(),
+                bytes: b"1m world\x1b[0m\r\n\x1b]52;c;host clipboard contents".to_vec(),
+                truncated: false,
+            },
+            RuntimeEvent::SerialChunk {
+                run: RunId(2),
+                bytes: b"\x07\x1bPignored device-control data".to_vec(),
+                truncated: false,
+            },
+            RuntimeEvent::SerialChunk {
+                run: RunId(2),
+                bytes: b"\x1b\\done\x00\x07".to_vec(),
+                truncated: false,
+            },
+            RuntimeEvent::SerialChunk {
+                run: RunId(2),
+                bytes: vec![0xe2, 0x82],
+                truncated: false,
+            },
+            RuntimeEvent::SerialChunk {
+                run: RunId(2),
+                bytes: vec![0xac],
+                truncated: false,
+            },
+            RuntimeEvent::SerialChunk {
+                run: RunId(2),
+                bytes: vec![0xff],
                 truncated: false,
             },
         ]));
-        assert_eq!(model.console, "hello world\r\n");
+        assert_eq!(model.console, "hello world\ndone��€�");
+        assert!(model
+            .console
+            .chars()
+            .all(|character| !character.is_control() || character == '\n'));
+    }
+
+    #[test]
+    fn runtime_truncation_resets_an_incomplete_escape_sequence() {
+        let mut model = ready_model();
+        let (ticket, _) = model.begin_start().unwrap();
+        model.finish_start(&ticket, Ok(RunId(2)));
         model.apply_poll_result(Ok(vec![RuntimeEvent::SerialChunk {
             run: RunId(2),
-            bytes: vec![b'x'; MAX_CONSOLE_BYTES + 10],
+            bytes: b"\x1b]unfinished terminal string".to_vec(),
             truncated: false,
         }]));
+        assert!(model.console.is_empty());
+
+        model.apply_poll_result(Ok(vec![RuntimeEvent::SerialChunk {
+            run: RunId(2),
+            bytes: b"recovered after dropped bytes".to_vec(),
+            truncated: true,
+        }]));
+        assert!(model.console.ends_with("recovered after dropped bytes"));
+    }
+
+    #[test]
+    fn console_reports_runtime_and_local_scrollback_truncation_after_output_floods() {
+        let mut model = ready_model();
+        let (ticket, _) = model.begin_start().unwrap();
+        model.finish_start(&ticket, Ok(RunId(2)));
+        for _ in 0..160 {
+            model.apply_poll_result(Ok(vec![RuntimeEvent::SerialChunk {
+                run: RunId(2),
+                bytes: vec![b'x'; 1024],
+                truncated: false,
+            }]));
+        }
         assert!(model.console.len() <= MAX_CONSOLE_BYTES);
+        assert!(model.console_truncated);
+        assert!(model.console.starts_with(CONSOLE_TRUNCATED_NOTICE));
+
+        model.apply_poll_result(Ok(vec![RuntimeEvent::SerialChunk {
+            run: RunId(2),
+            bytes: b"last chunk".to_vec(),
+            truncated: true,
+        }]));
+        assert!(model
+            .console
+            .contains("[serial output was truncated by the runtime buffer]"));
+        assert!(model.console.ends_with("last chunk"));
+    }
+
+    #[test]
+    fn pause_clear_and_resume_keep_the_display_and_scrollback_bounded() {
+        let mut model = ready_model();
+        let (ticket, _) = model.begin_start().unwrap();
+        model.finish_start(&ticket, Ok(RunId(2)));
+        model.apply_poll_result(Ok(vec![RuntimeEvent::SerialChunk {
+            run: RunId(2),
+            bytes: b"before pause\n".to_vec(),
+            truncated: false,
+        }]));
+
+        model.toggle_console_pause();
+        model.apply_poll_result(Ok(vec![RuntimeEvent::SerialChunk {
+            run: RunId(2),
+            bytes: b"while paused\n".to_vec(),
+            truncated: false,
+        }]));
+        assert_eq!(model.visible_console(), "before pause\n");
+        assert!(model.console.contains("while paused"));
+
+        model.scroll_console_up(10);
+        model.clear_console();
+        assert!(model.visible_console().is_empty());
+        assert_eq!(model.console_scroll_offset, 0);
+        model.apply_poll_result(Ok(vec![RuntimeEvent::SerialChunk {
+            run: RunId(2),
+            bytes: b"after clear\n".to_vec(),
+            truncated: false,
+        }]));
+        assert!(model.visible_console().is_empty());
+        model.toggle_console_pause();
+        assert_eq!(model.visible_console(), "after clear\n");
+    }
+
+    #[test]
+    fn running_state_requires_and_displays_explicit_guest_ready_evidence() {
+        let mut model = ready_model();
+        let (ticket, _) = model.begin_start().unwrap();
+        model.finish_start(&ticket, Ok(RunId(2)));
+        model.apply_poll_result(Ok(vec![RuntimeEvent::StateChanged {
+            run: RunId(2),
+            state: LifecycleState::Running,
+        }]));
+        assert!(
+            matches!(&model.state, UiState::Booting(details) if details.status.contains("waiting for profile-ready evidence"))
+        );
+        assert!(!model.actions().console_input);
+
+        model.apply_poll_result(Ok(vec![RuntimeEvent::GuestReady {
+            run: RunId(2),
+            evidence: "rootglass-hello login prompt".into(),
+        }]));
+        assert!(
+            matches!(&model.state, UiState::Running(details) if details.status.contains("rootglass-hello login prompt"))
+        );
+        assert!(model.actions().console_input);
+    }
+
+    #[test]
+    fn input_errors_remain_visible_and_keep_stop_available() {
+        let mut model = ready_model();
+        let (ticket, _) = model.begin_start().unwrap();
+        model.finish_start(&ticket, Ok(RunId(2)));
+        model.apply_poll_result(Ok(vec![RuntimeEvent::GuestReady {
+            run: RunId(2),
+            evidence: "fixture login".into(),
+        }]));
+
+        model.finish_input(
+            &RunId(2),
+            Err(AppError {
+                phase: LifecycleState::Running,
+                summary: "Guest console input failed.".into(),
+                detail: "serial pipe is closed".into(),
+            }),
+        );
+
+        assert!(
+            matches!(&model.state, UiState::Failed(failure) if failure.detail == "serial pipe is closed")
+        );
+        assert_eq!(model.run_id, Some(RunId(2)));
+        assert!(model.actions().stop);
+        assert!(!model.actions().console_input);
+    }
+
+    #[test]
+    fn failed_and_unexpected_exit_events_preserve_runtime_details() {
+        let mut model = ready_model();
+        let (ticket, _) = model.begin_start().unwrap();
+        model.finish_start(&ticket, Ok(RunId(2)));
+        model.apply_poll_result(Ok(vec![RuntimeEvent::Failed {
+            run: RunId(2),
+            phase: LifecycleState::Booting,
+            summary: "Kernel panic".into(),
+            detail: "panic at init".into(),
+        }]));
+        assert!(
+            matches!(&model.state, UiState::Failed(failure) if failure.summary == "Kernel panic" && failure.detail == "panic at init")
+        );
+        assert!(model.run_id.is_none());
+
+        let mut exit_model = ready_model();
+        let (ticket, _) = exit_model.begin_start().unwrap();
+        exit_model.finish_start(&ticket, Ok(RunId(3)));
+        exit_model.apply_poll_result(Ok(vec![RuntimeEvent::Exited {
+            run: RunId(3),
+            exit_code: Some(0),
+            expected: false,
+        }]));
+        assert!(
+            matches!(&exit_model.state, UiState::Failed(failure) if failure.summary.contains("unexpectedly") && failure.detail.contains("Some(0)"))
+        );
+        assert!(exit_model.run_id.is_none());
+    }
+
+    #[test]
+    fn stopped_state_event_reconciles_the_active_run_and_ignores_later_events() {
+        let mut model = ready_model();
+        let (ticket, _) = model.begin_start().unwrap();
+        model.finish_start(&ticket, Ok(RunId(2)));
+        model.apply_poll_result(Ok(vec![
+            RuntimeEvent::StateChanged {
+                run: RunId(2),
+                state: LifecycleState::Stopped,
+            },
+            RuntimeEvent::GuestReady {
+                run: RunId(2),
+                evidence: "late stale ready".into(),
+            },
+        ]));
+        assert!(matches!(model.state, UiState::Ready(_)));
+        assert!(model.run_id.is_none());
+    }
+
+    #[test]
+    fn console_scroll_offset_is_clamped_when_the_buffer_is_cleared() {
+        let mut model = ready_model();
+        let (ticket, _) = model.begin_start().unwrap();
+        model.finish_start(&ticket, Ok(RunId(2)));
+        model.apply_poll_result(Ok(vec![RuntimeEvent::SerialChunk {
+            run: RunId(2),
+            bytes: (0..30)
+                .map(|line| format!("line {line}\n"))
+                .collect::<String>()
+                .into_bytes(),
+            truncated: false,
+        }]));
+        model.scroll_console_up(10);
+        assert_eq!(model.console_scroll_offset, 10);
+        model.clear_console();
+        assert!(model.console.len() <= MAX_CONSOLE_BYTES);
+        assert_eq!(model.console_scroll_offset, 0);
     }
 
     #[test]
