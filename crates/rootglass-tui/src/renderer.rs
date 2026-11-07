@@ -76,17 +76,139 @@ pub fn render_with_prompt(frame: &mut Frame<'_>, model: &UiModel, prompt: Option
 
     if model.developer_is_open() {
         render_developer_panel(frame, &model.developer_panel, columns[1]);
+    } else if model.operations_panel_open {
+        render_operations_panel(frame, model, columns[1]);
     } else if model.run_id.is_some() || !model.console.is_empty() {
         let details = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(5), Constraint::Percentage(42)])
             .split(columns[1]);
-        render_details(frame, &model.state, details[0]);
+        render_details(frame, model, details[0]);
         render_console(frame, model, details[1]);
     } else {
-        render_details(frame, &model.state, columns[1]);
+        render_details(frame, model, columns[1]);
     }
     render_actions(frame, model, actions_area);
+}
+
+fn render_operations_panel(frame: &mut Frame<'_>, model: &UiModel, area: Rect) {
+    let mut lines = vec![Line::from(Span::styled("Named state", TITLE_STYLE))];
+    lines.push(field(
+        "Used on boot",
+        if model.state_loaded {
+            if model.state_error.is_some() {
+                "Selection unavailable; see state error"
+            } else {
+                &model.selected_state_id
+            }
+        } else {
+            "Loading saved selection…"
+        },
+    ));
+    if model.state_records.is_empty() {
+        lines.push(Line::from(
+            "No named images yet. The default image is created from the template on first boot.",
+        ));
+    } else {
+        for (index, state) in model.state_records.iter().enumerate() {
+            let focused = index == model.state_cursor;
+            let selected = state.id == model.selected_state_id;
+            let marker = match (focused, selected) {
+                (true, true) => "▶ * ",
+                (true, false) => "▶   ",
+                (false, true) => "  * ",
+                (false, false) => "    ",
+            };
+            let style = if focused {
+                SELECTED_STYLE
+            } else {
+                Style::default()
+            };
+            lines.push(Line::from(vec![
+                Span::styled(marker, style),
+                Span::styled(
+                    if state.image_bytes == 0 {
+                        format!("{} · created from template on first boot", state.name)
+                    } else {
+                        format!("{} · {} bytes", state.name, state.image_bytes)
+                    },
+                    style,
+                ),
+            ]));
+        }
+    }
+    if let Some(error) = &model.state_error {
+        lines.push(Line::from(Span::styled(
+            format!("State operation failed: {error}"),
+            ERROR_STYLE,
+        )));
+    }
+    if model.state_busy {
+        lines.push(Line::from("State operation in progress…"));
+    }
+    if model.state_locked {
+        lines.push(Line::from(Span::styled(
+            "A guest owns this state store; state changes are disabled.",
+            WARNING_STYLE,
+        )));
+    } else {
+        lines.push(Line::from("↑/↓ focus  [s] select  [c] create  [l] clone"));
+        lines.push(Line::from(
+            "[r] reset (confirmation)  [d] delete (confirmation)",
+        ));
+    }
+    lines.push(Line::from(Span::styled("Publisher trust", TITLE_STYLE)));
+    if let Some(path) = &model.trust_policy.config_path {
+        lines.push(field("Configuration", path.display()));
+    } else {
+        lines.push(field("Configuration", "in-memory or unavailable"));
+    }
+    if let Some(error) = &model.trust_policy.error {
+        lines.push(Line::from(Span::styled(
+            format!("Trust loading error: {error}"),
+            ERROR_STYLE,
+        )));
+    }
+    if model.trust_policy.trusted_publishers.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "No trusted publishers are active.",
+            WARNING_STYLE,
+        )));
+    } else {
+        for publisher in &model.trust_policy.trusted_publishers {
+            lines.push(field(
+                "Trusted",
+                format!(
+                    "{} · {} · {}",
+                    publisher.name, publisher.identity, publisher.key_id
+                ),
+            ));
+        }
+    }
+    if model.trust_policy.revoked_key_ids.is_empty() {
+        lines.push(field("Revoked keys", "none"));
+    } else {
+        for key_id in &model.trust_policy.revoked_key_ids {
+            lines.push(Line::from(Span::styled(
+                format!("Revoked: {key_id}"),
+                WARNING_STYLE,
+            )));
+        }
+    }
+    lines.push(Line::from(
+        "No private key material is available in this view.",
+    ));
+    lines.push(Line::from("[t/Esc] Return to Rootglass controls"));
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("State and trust"),
+            )
+            .wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
 fn render_library(frame: &mut Frame<'_>, model: &UiModel, area: Rect) {
@@ -144,8 +266,14 @@ fn render_library(frame: &mut Frame<'_>, model: &UiModel, area: Rect) {
     );
 }
 
-fn render_details(frame: &mut Frame<'_>, state: &UiState, area: Rect) {
-    let (title, lines) = state_details(state);
+fn render_details(frame: &mut Frame<'_>, model: &UiModel, area: Rect) {
+    let (title, lines) = state_details(
+        &model.state,
+        &model.selected_state_id,
+        model.state_loaded,
+        model.state_locked,
+        model.state_error.is_some(),
+    );
     frame.render_widget(
         Paragraph::new(lines)
             .block(Block::default().borders(Borders::ALL).title(title))
@@ -204,8 +332,14 @@ fn render_developer_panel(frame: &mut Frame<'_>, panel: &DeveloperPanel, area: R
     );
 }
 
-fn state_details(state: &UiState) -> (&'static str, Vec<Line<'static>>) {
-    match state {
+fn state_details(
+    state: &UiState,
+    selected_state: &str,
+    state_loaded: bool,
+    state_locked: bool,
+    state_error: bool,
+) -> (&'static str, Vec<Line<'static>>) {
+    let (title, mut lines) = match state {
         UiState::Empty => (
             "Empty",
             vec![
@@ -258,7 +392,31 @@ fn state_details(state: &UiState) -> (&'static str, Vec<Line<'static>>) {
         UiState::Booting(run) => ("Booting", run_lines(run)),
         UiState::Stopping(run) => ("Stopping", run_lines(run)),
         UiState::Running(run) => ("Running", run_lines(run)),
+    };
+    if matches!(
+        state,
+        UiState::Ready(_)
+            | UiState::Planned(_)
+            | UiState::Booting(_)
+            | UiState::Stopping(_)
+            | UiState::Running(_)
+    ) {
+        lines.push(field(
+            "Writable state",
+            if state_loaded {
+                if state_locked {
+                    "Guest owns this state store"
+                } else if state_error {
+                    "Unavailable; see state diagnostics"
+                } else {
+                    selected_state
+                }
+            } else {
+                "Loading saved selection…"
+            },
+        ));
     }
+    (title, lines)
 }
 
 fn validation_lines(report: &ManifestValidationReport) -> Vec<Line<'static>> {
@@ -549,6 +707,7 @@ fn render_actions(frame: &mut Frame<'_>, model: &UiModel, area: Rect) {
         action_line([
             action("[q/Ctrl-Q] Quit", true),
             action("[Ctrl-C] Interrupt guest", actions.console_input),
+            action("[t] States/trust", actions.trust_details),
         ]),
     ];
     frame.render_widget(
@@ -594,7 +753,7 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     use rootglass_app::registry::InstalledGlass;
-    use rootglass_app::{AppError, RunId, RuntimeEvent};
+    use rootglass_app::{AppError, RunId, RuntimeEvent, TrustPolicyStatus, TrustedPublisherStatus};
     use rootglass_core::LifecycleState;
     use std::path::{Path, PathBuf};
 
@@ -653,7 +812,11 @@ mod tests {
     }
 
     fn snapshot(model: &UiModel) -> String {
-        let backend = TestBackend::new(100, 30);
+        snapshot_sized(model, 100, 30)
+    }
+
+    fn snapshot_sized(model: &UiModel, width: u16, height: u16) -> String {
+        let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).expect("test terminal is created");
         terminal
             .draw(|frame| render(frame, model))
@@ -667,6 +830,46 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn operations_panel_shows_state_selection_and_trust_policy_without_secret_material() {
+        let mut model = model(UiState::Empty);
+        model.operations_panel_open = true;
+        model.selected_state_id = "persistent".to_string();
+        model.state_records = vec![rootglass_app::state::StateRecord {
+            id: "persistent".to_string(),
+            name: "persistent".to_string(),
+            image_path: PathBuf::from("/states/persistent.img"),
+            image_bytes: 4096,
+        }];
+        model.trust_policy = TrustPolicyStatus {
+            config_path: Some(PathBuf::from("/config/rootglass/trust.json")),
+            trusted_publishers: vec![TrustedPublisherStatus {
+                name: "Publisher A".to_string(),
+                identity: "publisher.example/rootglass".to_string(),
+                key_id: "ed25519:trusted-id".to_string(),
+            }],
+            revoked_key_ids: vec!["ed25519:revoked-id".to_string()],
+            error: Some("trust file could not be parsed".to_string()),
+        };
+
+        let text = snapshot_sized(&model, 100, 45);
+        for value in [
+            "persistent",
+            "Used on boot",
+            "Publisher trust",
+            "trust.json",
+            "Publisher A",
+            "ed25519:revoked-id",
+            "trust file could not be parsed",
+        ] {
+            assert!(
+                text.contains(value),
+                "missing {value:?} in rendered panel:\n{text}"
+            );
+        }
+        assert!(!text.contains("private key bytes"));
     }
 
     fn preflight() -> PreflightDetails {
