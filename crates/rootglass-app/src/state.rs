@@ -191,12 +191,11 @@ impl InstanceStateStore {
                     record.id
                 )));
             }
-            let metadata = fs::symlink_metadata(&record.image_path).map_err(|source| {
-                StateError::Io {
+            let metadata =
+                fs::symlink_metadata(&record.image_path).map_err(|source| StateError::Io {
                     path: record.image_path.clone(),
                     source,
-                }
-            })?;
+                })?;
             if !metadata.file_type().is_file() {
                 return Err(StateError::InvalidImage(format!(
                     "state path is not a regular file: {}",
@@ -238,11 +237,7 @@ fn validate_name(name: &str) -> Result<String, StateError> {
     Ok(name.to_string())
 }
 
-fn copy_image_atomic(
-    source: &Path,
-    destination: &Path,
-    replace: bool,
-) -> Result<u64, StateError> {
+fn copy_image_atomic(source: &Path, destination: &Path, replace: bool) -> Result<u64, StateError> {
     let meta = fs::symlink_metadata(source).map_err(|source_err| StateError::Io {
         path: source.into(),
         source: source_err,
@@ -259,9 +254,7 @@ fn copy_image_atomic(
         source,
     })?;
     if destination.exists() && !replace {
-        return Err(StateError::AlreadyExists(
-            destination.display().to_string(),
-        ));
+        return Err(StateError::AlreadyExists(destination.display().to_string()));
     }
     let temp = temp_path(destination);
     let source_path = source;
@@ -346,7 +339,11 @@ fn replace_file(temp: &Path, destination: &Path) -> Result<(), StateError> {
         fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
     }
     let existing: Vec<u16> = temp.as_os_str().encode_wide().chain(Some(0)).collect();
-    let new: Vec<u16> = destination.as_os_str().encode_wide().chain(Some(0)).collect();
+    let new: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
     let succeeded = unsafe {
         MoveFileExW(
             existing.as_ptr(),
@@ -421,10 +418,8 @@ mod tests {
 
     fn temp_dir() -> PathBuf {
         let id = TEMP_ID.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!(
-        "rootglass-state-test-{}-{id}",
-        std::process::id()
-    ));
+        let path =
+            std::env::temp_dir().join(format!("rootglass-state-test-{}-{id}", std::process::id()));
         fs::create_dir_all(&path).unwrap();
         path
     }
@@ -499,8 +494,15 @@ mod tests {
         let created = store.create("safe").unwrap();
         let external = dir.join("outside.img");
         fs::write(&external, b"do not remove").unwrap();
-        let record = StateRecord { image_path: external.clone(), ..created };
-        fs::write(store.records_path(), serde_json::to_vec(&vec![record]).unwrap()).unwrap();
+        let record = StateRecord {
+            image_path: external.clone(),
+            ..created
+        };
+        fs::write(
+            store.records_path(),
+            serde_json::to_vec(&vec![record]).unwrap(),
+        )
+        .unwrap();
         assert!(matches!(
             store.delete("safe"),
             Err(StateError::InvalidImage(_))
@@ -522,4 +524,3 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 }
-
