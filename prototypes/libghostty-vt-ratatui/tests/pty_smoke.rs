@@ -1,152 +1,157 @@
-#![cfg(target_os = "linux")]
-
-use std::ffi::CString;
-use std::io;
-use std::os::fd::RawFd;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use libc::{c_char, c_int, pid_t, winsize};
-use libghostty_vt_ratatui_spike::{encode_bracketed_paste, write_all, GhosttyTerminal};
+use libghostty_vt_ratatui_spike::{encode_bracketed_paste, GhosttyTerminal};
+use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 use ratatui::text::Text;
 use ratatui::widgets::Paragraph;
 use ratatui::Terminal;
 
-#[link(name = "util")]
-unsafe extern "C" {
-    fn forkpty(
-        master: *mut c_int,
-        name: *mut c_char,
-        termp: *const libc::termios,
-        winp: *const winsize,
-    ) -> pid_t;
-}
-
 struct PtyChild {
-    fd: RawFd,
-    pid: pid_t,
+    master: Option<Box<dyn MasterPty + Send>>,
+    writer: Option<Box<dyn Write + Send>>,
+    child: Option<Box<dyn Child + Send + Sync>>,
+    output: Receiver<io::Result<Vec<u8>>>,
+    reader_thread: Option<JoinHandle<()>>,
 }
 
 impl PtyChild {
     fn spawn(executable: &Path) -> io::Result<Self> {
-        let mut fd = -1;
-        let initial_size = winsize {
-            ws_row: 24,
-            ws_col: 80,
-            ws_xpixel: 0,
-            ws_ypixel: 0,
-        };
-        let pid = unsafe {
-            forkpty(
-                &mut fd,
-                std::ptr::null_mut(),
-                std::ptr::null(),
-                &initial_size,
-            )
-        };
-        if pid < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if pid == 0 {
-            let no_color = CString::new("NO_COLOR").unwrap();
-            let term = CString::new("TERM").unwrap();
-            let term_value = CString::new("xterm-256color").unwrap();
-            unsafe {
-                libc::unsetenv(no_color.as_ptr());
-                libc::setenv(term.as_ptr(), term_value.as_ptr(), 1);
-            }
-            let executable = CString::new(executable.as_os_str().as_encoded_bytes()).unwrap();
-            let arg0 = executable.clone();
-            let arg1 = CString::new("--fixture-child").unwrap();
-            unsafe {
-                libc::execl(
-                    executable.as_ptr(),
-                    arg0.as_ptr(),
-                    arg1.as_ptr(),
-                    std::ptr::null::<c_char>(),
-                );
-                libc::_exit(127);
-            }
-        }
-        Ok(Self { fd, pid })
+        let pty_system = native_pty_system();
+        let pair = pty_system
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 640,
+                pixel_height: 384,
+            })
+            .map_err(io::Error::other)?;
+
+        let mut command = CommandBuilder::new(executable.as_os_str());
+        command.arg("--fixture-child");
+        command.env_remove("NO_COLOR");
+        command.env("TERM", "xterm-256color");
+        let child = pair
+            .slave
+            .spawn_command(command)
+            .map_err(io::Error::other)?;
+
+        let mut reader = pair.master.try_clone_reader().map_err(io::Error::other)?;
+        let writer = pair.master.take_writer().map_err(io::Error::other)?;
+        let (output_tx, output) = mpsc::sync_channel(64);
+        let reader_thread = thread::Builder::new()
+            .name("rootglass-pty-smoke-reader".to_string())
+            .spawn(move || {
+                let mut buffer = [0; 4096];
+                loop {
+                    match reader.read(&mut buffer) {
+                        Ok(0) => break,
+                        Ok(length) => {
+                            if output_tx.send(Ok(buffer[..length].to_vec())).is_err() {
+                                break;
+                            }
+                        }
+                        Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                        Err(error) => {
+                            let _ = output_tx.send(Err(error));
+                            break;
+                        }
+                    }
+                }
+            })?;
+
+        Ok(Self {
+            master: Some(pair.master),
+            writer: Some(writer),
+            child: Some(child),
+            output,
+            reader_thread: Some(reader_thread),
+        })
     }
 
     fn wait_for(&self, parser: &mut GhosttyTerminal, needle: &str) -> io::Result<String> {
         let deadline = Instant::now() + Duration::from_secs(5);
-        let mut bytes = [0u8; 4096];
         loop {
             let screen = parser.screen()?;
             if screen.contains(needle) {
                 return Ok(screen);
             }
-            if Instant::now() >= deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
                     format!("screen did not contain {needle:?}; last screen: {screen:?}"),
                 ));
             }
-            let mut pollfd = libc::pollfd {
-                fd: self.fd,
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            let ready = unsafe { libc::poll(&mut pollfd, 1, 100) };
-            if ready < 0 {
-                let error = io::Error::last_os_error();
-                if error.kind() == io::ErrorKind::Interrupted {
-                    continue;
+            match self
+                .output
+                .recv_timeout(remaining.min(Duration::from_millis(100)))
+            {
+                Ok(Ok(bytes)) => parser.write(&bytes),
+                Ok(Err(error)) => return Err(error),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "PTY child closed",
+                    ));
                 }
-                return Err(error);
             }
-            if ready == 0 {
-                continue;
-            }
-            let read = unsafe { libc::read(self.fd, bytes.as_mut_ptr().cast(), bytes.len()) };
-            if read < 0 {
-                let error = io::Error::last_os_error();
-                if error.kind() == io::ErrorKind::Interrupted {
-                    continue;
-                }
-                return Err(error);
-            }
-            if read == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "PTY child closed",
-                ));
-            }
-            parser.write(&bytes[..read as usize]);
         }
     }
 
+    fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
+        let writer = self
+            .writer
+            .as_mut()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "PTY writer is closed"))?;
+        writer.write_all(bytes)?;
+        writer.flush()
+    }
+
     fn resize(&self, cols: u16, rows: u16) -> io::Result<()> {
-        let size = winsize {
-            ws_row: rows,
-            ws_col: cols,
-            ws_xpixel: cols * 8,
-            ws_ypixel: rows * 16,
-        };
-        if unsafe { libc::ioctl(self.fd, libc::TIOCSWINSZ, &size) } < 0 {
-            return Err(io::Error::last_os_error());
+        self.master
+            .as_ref()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "PTY master is closed"))?
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: cols * 8,
+                pixel_height: rows * 16,
+            })
+            .map_err(io::Error::other)
+    }
+
+    fn stop_reader(&mut self) -> io::Result<()> {
+        if let Some(reader_thread) = self.reader_thread.take() {
+            reader_thread
+                .join()
+                .map_err(|_| io::Error::other("PTY output reader panicked"))?;
         }
         Ok(())
     }
 
     fn wait(mut self) -> io::Result<()> {
-        let mut status = 0;
-        if unsafe { libc::waitpid(self.pid, &mut status, 0) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        self.pid = -1;
-        unsafe { libc::close(self.fd) };
-        self.fd = -1;
-        if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0 {
+        let status = self
+            .child
+            .as_mut()
+            .expect("PTY child is present")
+            .wait()
+            .map_err(io::Error::other)?;
+        self.child.take();
+        self.writer.take();
+        self.master.take();
+        self.stop_reader()?;
+        if status.success() {
             Ok(())
         } else {
             Err(io::Error::other(format!(
-                "PTY child exited with wait status {status}"
+                "PTY child exited with status {status}"
             )))
         }
     }
@@ -154,22 +159,20 @@ impl PtyChild {
 
 impl Drop for PtyChild {
     fn drop(&mut self) {
-        if self.fd >= 0 {
-            unsafe { libc::close(self.fd) };
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
         }
-        if self.pid > 0 {
-            unsafe {
-                libc::kill(self.pid, libc::SIGKILL);
-                libc::waitpid(self.pid, std::ptr::null_mut(), 0);
-            }
-        }
+        self.writer.take();
+        self.master.take();
+        let _ = self.stop_reader();
     }
 }
 
 #[test]
 fn libghostty_vt_round_trips_ratatui_over_pty_headlessly() -> io::Result<()> {
     let binary = PathBuf::from(env!("CARGO_BIN_EXE_libghostty-vt-ratatui-spike"));
-    let child = PtyChild::spawn(&binary)?;
+    let mut child = PtyChild::spawn(&binary)?;
     let mut ghostty = GhosttyTerminal::new(80, 24)?;
 
     let screen = child.wait_for(&mut ghostty, "RATATUI-GHOSTTY-FIXTURE")?;
@@ -196,26 +199,25 @@ fn libghostty_vt_round_trips_ratatui_over_pty_headlessly() -> io::Result<()> {
     assert!(rendered.contains("RATATUI-GHOSTTY-FIXTURE"));
 
     // Copy a selection from the parsed terminal screen through Ghostty's public formatter.
-    write_all(child.fd, &ghostty.encode_left()?)?;
+    child.write_all(&ghostty.encode_left()?)?;
     let screen = child.wait_for(&mut ghostty, "LEFT:1")?;
     assert!(screen.contains("LEFT:1"));
     let copied = ghostty.copy_range(0, 1, 5, 1)?;
     assert_eq!(copied.trim(), "LEFT:1");
 
-    // TIOCSWINSZ reaches Ratatui as a Crossterm resize event; keep libghostty's grid in sync.
+    // The PTY resize reaches Ratatui as a Crossterm event; keep libghostty's grid in sync.
     child.resize(90, 30)?;
     ghostty.resize(90, 30)?;
     let screen = child.wait_for(&mut ghostty, "SIZE:90x30")?;
     assert!(screen.contains("SIZE:90x30"));
 
     let pasted = encode_bracketed_paste("headless paste")?;
-    write_all(child.fd, &pasted)?;
+    child.write_all(&pasted)?;
     let screen = child.wait_for(&mut ghostty, "PASTE:headless paste")?;
     assert!(screen.contains("PASTE:headless paste"));
 
     // A key event encoded from terminal modes exits the fixture; wait proves PTY cleanup.
-    write_all(child.fd, &ghostty.encode_left()?)?;
-    // Send q as the fixture's shutdown key through the PTY input path.
-    write_all(child.fd, b"q")?;
+    child.write_all(&ghostty.encode_left()?)?;
+    child.write_all(b"q")?;
     child.wait()
 }

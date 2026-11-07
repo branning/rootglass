@@ -5,14 +5,14 @@ on:
     paths:
       - .github/workflows/libghostty-vt-smoke.yml
       - prototypes/libghostty-vt-ratatui/**
-      - scripts/smoke-libghostty-vt-pty.sh
+      - scripts/smoke-libghostty-vt-pty.py
   push:
     branches:
       - main
     paths:
       - .github/workflows/libghostty-vt-smoke.yml
       - prototypes/libghostty-vt-ratatui/**
-      - scripts/smoke-libghostty-vt-pty.sh
+      - scripts/smoke-libghostty-vt-pty.py
   workflow_dispatch:
 
 permissions:
@@ -24,8 +24,18 @@ concurrency:
 
 jobs:
   pty-smoke:
-    name: PTY smoke (Linux x86_64)
-    runs-on: ubuntu-24.04
+    name: PTY smoke (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86_64
+            runner: ubuntu-24.04
+          - name: macOS arm64
+            runner: macos-15
+          - name: Windows x86_64
+            runner: windows-2025
 
     steps:
       - name: Checkout
@@ -34,10 +44,24 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install build tools
+      - name: Install Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install build tools (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential minisign
 
-      - name: Run signed libghostty-vt PTY smoke
-        run: bash scripts/smoke-libghostty-vt-pty.sh
+      - name: Install build tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install minisign
+
+      - name: Install build tools (Windows)
+        if: runner.os == 'Windows'
+        run: choco install minisign --yes
+
+      - name: Run signed native libghostty-vt PTY smoke
+        run: python scripts/smoke-libghostty-vt-pty.py

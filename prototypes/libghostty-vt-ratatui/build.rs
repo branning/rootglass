@@ -12,22 +12,34 @@ fn main() {
         "missing libghostty-vt headers under {}",
         include.display()
     );
+
+    let target_os = env::var("CARGO_CFG_TARGET_OS").expect("Cargo sets target OS");
+    let (library_file, library_name) = match target_os.as_str() {
+        "linux" => ("libghostty-vt.so", "ghostty-vt"),
+        "macos" => ("libghostty-vt.dylib", "ghostty-vt"),
+        // Ghostty's Windows package uses a GNU-ABI DLL and provides an import
+        // library that MSVC applications can link.
+        "windows" => ("ghostty-vt.lib", "ghostty-vt"),
+        other => panic!("unsupported libghostty-vt host target: {other}"),
+    };
     assert!(
-        lib.join("libghostty-vt.so").exists(),
-        "missing libghostty-vt shared library under {}",
+        lib.join(library_file).exists(),
+        "missing {library_file} under {}",
         lib.display()
     );
 
     cc::Build::new()
         .file("src/ghostty_shim.c")
         .include(include)
-        .flag_if_supported("-std=c11")
+        .std("c11")
         .warnings(true)
         .compile("rootglass_ghostty_vt_shim");
 
     println!("cargo:rustc-link-search=native={}", lib.display());
-    println!("cargo:rustc-link-lib=dylib=ghostty-vt");
-    println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib.display());
+    println!("cargo:rustc-link-lib=dylib={library_name}");
+    if target_os != "windows" {
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib.display());
+    }
     println!("cargo:rerun-if-env-changed=GHOSTTY_VT_PREFIX");
     println!("cargo:rerun-if-changed=src/ghostty_shim.c");
 }

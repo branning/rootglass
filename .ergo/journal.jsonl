@@ -145,3 +145,6 @@
 {"version":1,"task_id":"HC6FQ6","kind":"result","at":"2026-11-07T22:29:01.870258503Z","agent":"codex@worker-1","text":"Fixed CI zip compatibility; tests, Clippy, format, diff pass; awaiting rerun."}
 {"version":1,"task_id":"HC6FQ6","kind":"done","at":"2026-11-07T22:33:22.195377096Z","agent":"codex@worker-1","text":"PR #69 merged at e916271; CI 42420821187 passed 7/7; local tests, Clippy, format, and diff passed."}
 {"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-07T22:54:30.089507053Z","agent":"codex@worker-1","text":"Approved libghostty-vt/custom GPUI view; Ghostty uses SwiftUI/GTK/Raylib. PTY CI added; host qualification remains."}
+{"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-07T23:09:43.474958563Z","agent":"codex@worker-1","text":"cmux: Ratatui/libghostty-vt TUI and AppKit demo; no GPUI view. CI passed; platform/host proof pending."}
+{"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-07T23:13:04.808304792Z","agent":"codex@worker-1","text":"Maintainer approved Linux x86_64, macOS arm64, Windows x86_64; upstream vt Tier 1. Host qualification remains."}
+{"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-07T23:43:20.799089502Z","agent":"codex@worker-1","text":"Checks: signed Ghostty v1.0.0 build and Linux PTY smoke passed; fmt, Python, diff checks pass."}

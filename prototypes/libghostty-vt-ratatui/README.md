@@ -2,7 +2,7 @@
 
 This is a disposable S16.6 prototype, not the production Rootglass TUI or GPUI bridge. It pins the public `libghostty-vt` API to Ghostty tag `v1.0.0`, commit `0fa3d577a5614150ff8e2c152de5fb9d5c6d2dec`.
 
-The fixture runs a small Ratatui program in a Linux PTY. Its parent parses the PTY output with `GhosttyTerminal`, reads render state, encodes a key and bracketed paste with libghostty-vt, resizes the PTY and terminal grid, copies a selected range with the public formatter, then renders the parsed screen through Ratatui's `TestBackend`. The test also waits for the child to exit before dropping its PTY and terminal handles.
+The fixture runs a small Ratatui program in the host's native PTY (ConPTY on Windows). Its parent parses the PTY output with `GhosttyTerminal`, reads render state, encodes a key and bracketed paste with libghostty-vt, resizes the PTY and terminal grid, copies a selected range with the public formatter, then renders the parsed screen through Ratatui's `TestBackend`. The test also waits for the child to exit before dropping its PTY and terminal handles.
 
 ## Result and boundary
 
@@ -35,14 +35,14 @@ GHOSTTY_VT_PREFIX="/path/to/libghostty-vt-source/out" cargo test --manifest-path
   prototypes/libghostty-vt-ratatui/Cargo.toml -- --nocapture
 ```
 
-The prototype build also needs a C compiler and Linux `libutil` (for `forkpty`). It links the shared `libghostty-vt.so` from the supplied prefix. It is intentionally Linux-only; the checked fixture uses `forkpty`, `ioctl(TIOCSWINSZ)`, and POSIX process cleanup.
+The prototype build needs a C compiler and a host-native `libghostty-vt` build in the supplied prefix. The fixture uses `portable-pty` to select the native PTY implementation, including ConPTY on Windows; it does not call OS-specific PTY or process APIs directly.
 
 ## ABI, platforms, and licenses
 
 - The public library version is `1.0.0`; the C ABI is stable within major version 1 and the Linux shared library uses SONAME `libghostty-vt.so.1`. The build and CI should pin a specific upstream tag and consume the signed source/dependency artifacts.
-- The v1.0.0 packaging guide lists Tier 1 targets as Linux x86_64 and aarch64 (glibc and musl), macOS 13+, and Windows x86_64 GNU. Those are upstream library targets, not Rootglass embedding claims. This PTY fixture only runs on Linux.
+- The v1.0.0 packaging guide lists Tier 1 targets including Linux x86_64, macOS 13+, and Windows x86_64 GNU. The maintainer approved Linux x86_64, macOS arm64, and Windows x86_64 as Rootglass qualification targets. The CI matrix exercises those targets, but upstream library support and a headless PTY pass do not qualify Rootglass's GPUI host.
 - Ghostty is MIT. The packaged dependencies and notices listed by the upstream guide include Highway (`Apache-2.0 OR BSD-3-Clause`), simdutf (`Apache-2.0 OR MIT`), translate_c (`MIT`), uucode (`MIT AND Unicode-3.0`), and Wuffs (`Apache-2.0 OR MIT`). ARO is build-only (`MIT AND Unicode-3.0`). Preserve the upstream license files and notices in any shipped package.
-- The focused [`libghostty-vt smoke` workflow](../../.github/workflows/libghostty-vt-smoke.yml) builds the library from the signed v1.0.0 source and dependency tarballs, verifies the Zig 0.17.0 archive checksum, and runs this PTY test on Ubuntu 24.04 x86_64. It runs when the prototype, build script, or workflow changes and can also be dispatched manually. The standard workspace CI does not build Zig or this isolated prototype.
-- macOS and Windows host checks need separate native runners and GPUI integration; passing this Linux test does not qualify those platforms or any graphical surface.
+- The focused [`libghostty-vt smoke` workflow](../../.github/workflows/libghostty-vt-smoke.yml) builds the library from signed v1.0.0 source and dependency tarballs, verifies the Zig 0.17.0 archive checksum, then runs the PTY fixture on native Linux x86_64, macOS arm64, and Windows x86_64 runners. It runs when the prototype, build script, or workflow changes and can also be dispatched manually. The standard workspace CI does not build Zig or this isolated prototype.
+- These native PTY builds do not qualify the GPUI surface, native clipboard, focus/accessibility, or any graphical host. Ghostty's packaging guide notes that its Windows library uses the GNU ABI and provides an import library for MSVC applications.
 
-The spike leaves S16.6 open for graphical-host validation and an evidence-backed supported-platform set.
+The spike leaves S16.6 open for the native matrix to pass and for graphical-host validation on the approved target set.

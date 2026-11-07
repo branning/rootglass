@@ -9,8 +9,10 @@ publish = false
 
 [dependencies]
 crossterm = "0.28"
-libc = "0.2"
 ratatui = "0.29"
 
 [build-dependencies]
 cc = "1.2"
+
+[dev-dependencies]
+portable-pty = "0.9"

@@ -1,6 +1,5 @@
 use std::ffi::c_void;
 use std::io;
-use std::os::fd::RawFd;
 
 const BUFFER_CAP: usize = 64 * 1024;
 
@@ -147,27 +146,4 @@ pub fn encode_bracketed_paste(text: &str) -> io::Result<Vec<u8>> {
     }
     bytes.truncate(len);
     Ok(bytes)
-}
-
-pub fn write_all(fd: RawFd, bytes: &[u8]) -> io::Result<()> {
-    let mut written = 0;
-    while written < bytes.len() {
-        let result =
-            unsafe { libc::write(fd, bytes[written..].as_ptr().cast(), bytes.len() - written) };
-        if result < 0 {
-            let error = io::Error::last_os_error();
-            if error.kind() == io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(error);
-        }
-        if result == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::WriteZero,
-                "PTY accepted zero bytes",
-            ));
-        }
-        written += result as usize;
-    }
-    Ok(())
 }
