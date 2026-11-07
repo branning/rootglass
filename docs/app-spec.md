@@ -39,7 +39,7 @@ The S00–S11 implementation slices are merged to `main`. This inventory describ
 
 | Area | Merged implementation | Remaining v1 work |
 |---|---|---|
-| Manifest and bundle | Typed `.glass` manifest validation; development directory and ZIP archive paths; canonical signature coverage and archive safety checks | Confirm resource limits and negative-path coverage meet the final threat model; document any compatibility/migration policy |
+| Manifest and bundle | Typed `.glass` manifest validation with bounded strict parsing; shared bounded signature verification and signing; development directory and ZIP archive paths; canonical signature coverage and archive safety checks | Maintain threat-model regression coverage; document archive/install recovery evidence |
 | Signature and trust | DSSE/Ed25519 verification, signed fixture/publishing path, and trust reports consumed by the app | Production publisher-root provisioning, rotation/revocation operations, and release trust policy |
 | Runtime and CLI | Shared application service, QEMU supervision, lifecycle events, preflight, CLI validation/planning/boot, and hosted guest boot smoke | Keep A-03/A-04/A-07 covered as runtime changes land; record platform-specific acceleration/performance evidence |
 | Import and library | Verified archive import, installed-glass registry/library, and desktop library selection | Validate complete open/import/recovery behavior through GPUI; strengthen limits or migration behavior where needed |
@@ -290,11 +290,15 @@ Use OS-managed per-user directories, not relative `.rootglass/` in the desktop r
 
 Use established platform directory-location APIs. Directory form in the source repository remains developer-only and must not be silently rewritten by a production run. Use a scoped lock (per state image) to prevent two writers, even across multiple Rootglass processes. Avoid following attacker-controlled symlinks during import or state deletion.
 
+**Storage compatibility policy:** `registry.json` schema version 1 is the only supported registry format. Rootglass rejects unsupported versions, unknown v1 fields, oversized files, duplicate package digests, and malformed rows without rewriting or deleting the original file. There is no automatic in-place migration. A future schema change needs a separately versioned migrator that validates the source, writes and flushes a sibling temporary file, atomically replaces the registry only after success, and preserves a recoverable copy of the source. `settings.json` is not implemented; any future settings file must have an explicit schema version and the same bounded, atomic migration behavior. Current read bounds are 16 MiB/10,000 rows for the registry, 64 KiB for a manifest, and 16 MiB for a signature envelope. Archive verification and import share limits of 256 MiB compressed, 4,096 entries, 256 MiB per file, 512 MiB expanded total, and a 200:1 compression ratio. Path validation rejects traversal, ambiguous separators, portable-name collisions, links and unsupported entry types.
+
 ### 6.6 Bundle and cryptographic boundary
 
 The serialized `.glass` remains a ZIP with `rootglass.toml` and `signatures/glass.dsse.json`. Its in-toto-style signed subjects cover every other production archive file. The signed statement binds names to SHA-256 hashes; the DSSE envelope binds the statement to an Ed25519 publisher identity.
 
 **Import transaction:** open source → parse limits and safe paths → validate schema/signature/trusted key → hash every production subject (prefer streaming) → stage extraction into new temporary dir → verify staged file set and sizes → atomic move to digest-addressed immutable store → write registry atomically. Never accept partially verified extraction.
+
+Apply archive, member, aggregate expansion, compression-ratio, path, entry-count and envelope limits in the shared signature verifier as well as the app importer, signer and extractor. Mark the staged tree readonly before publishing its content-addressed path. If registry persistence fails after package publication, the package remains an unreferenced immutable object and is not listed as installed; a later import can verify and reuse it. Never rewrite an existing unsupported or corrupt registry automatically.
 
 **Explicit unresolved decision:** sample fixture `.img` files are excluded from development-directory verification; production archives must include them as signed subjects. Never carry this dev exception into production ZIP verification.
 

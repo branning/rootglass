@@ -9,9 +9,11 @@
 
 use crate::registry::{InstalledGlass, PackageRegistry, RegistryError};
 use rootglass_manifest::Glass;
-use rootglass_signature::{verify_glass_archive, verify_glass_dir, TrustStore};
+use rootglass_signature::{
+    verify_glass_archive_with_limits, verify_glass_dir_with_limits, TrustStore, VerificationLimits,
+};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -167,8 +169,23 @@ fn import_snapshot(
     limits: &ImportLimits,
     digest: &str,
 ) -> Result<InstalledGlass, ImportError> {
+    let verification_limits = VerificationLimits {
+        max_archive_bytes: limits.max_archive_bytes,
+        max_entries: limits.max_members,
+        max_member_bytes: limits.max_member_bytes,
+        max_total_uncompressed_bytes: limits.max_total_uncompressed_bytes,
+        max_compression_ratio: limits.max_compression_ratio,
+        max_signature_bytes: limits
+            .max_total_uncompressed_bytes
+            .min(rootglass_signature::MAX_SIGNATURE_ENVELOPE_BYTES),
+    };
+    let verification = verify_glass_archive_with_limits(
+        snapshot,
+        SIGNATURE_PATH,
+        trust_store,
+        &verification_limits,
+    )?;
     inspect_archive(snapshot, limits)?;
-    let verification = verify_glass_archive(snapshot, SIGNATURE_PATH, trust_store)?;
 
     let packages_dir = store_root.join("packages");
     fs::create_dir_all(&packages_dir).map_err(|source| io_at(&packages_dir, source))?;
@@ -199,17 +216,23 @@ fn import_snapshot(
             let _ = fs::remove_dir_all(&stage);
             return Err(error.into());
         }
+        if let Err(error) = make_tree_readonly(&stage) {
+            make_tree_writable(&stage);
+            let _ = fs::remove_dir_all(&stage);
+            return Err(error);
+        }
         match fs::rename(&stage, &final_path) {
             Ok(()) => {}
             Err(_error) if final_path.is_dir() => {
+                make_tree_writable(&stage);
                 let _ = fs::remove_dir_all(&stage);
             }
             Err(source) => {
+                make_tree_writable(&stage);
                 let _ = fs::remove_dir_all(&stage);
                 return Err(io_at(&final_path, source));
             }
         }
-        make_tree_readonly(&final_path)?;
         if let Ok(dir) = File::open(&packages_dir) {
             let _ = dir.sync_all();
         }
@@ -217,12 +240,18 @@ fn import_snapshot(
 
     // Loading from the content store also validates the manifest when the target
     // already existed, which prevents a stale/corrupt directory becoming trusted.
-    let installed_verification = verify_glass_dir(&final_path, SIGNATURE_PATH, trust_store)?;
+    let installed_verification = verify_glass_dir_with_limits(
+        &final_path,
+        SIGNATURE_PATH,
+        trust_store,
+        &verification_limits,
+    )?;
     if installed_verification.publisher_identity != verification.publisher_identity
         || installed_verification.key_id != verification.key_id
     {
         return Err(ImportError::ArchiveChanged);
     }
+    verify_installed_matches_archive(snapshot, &final_path, limits)?;
     let glass = Glass::load(&final_path)?;
     glass.validate_launch_ready()?;
     let manifest = glass.manifest;
@@ -260,37 +289,41 @@ fn inspect_archive(path: &Path, limits: &ImportLimits) -> Result<(), ImportError
         let entry = archive.by_index(index)?;
         let name = entry.name().to_owned();
         let normalized = normalized_name(&name, entry.is_dir())?;
-        if !seen.insert(normalized.clone()) {
+        let collision_key = normalized.to_lowercase();
+        if !seen.insert(collision_key.clone()) {
             return Err(ImportError::DuplicatePath(normalized));
         }
         let is_dir = entry.is_dir();
-        if let Some(existing_dir) = kinds.get(&normalized) {
+        if let Some(existing_dir) = kinds.get(&collision_key) {
             if *existing_dir != is_dir {
                 return Err(ImportError::DuplicatePath(normalized));
             }
         }
         // Reject file-as-parent conflicts, including order-independent collisions.
-        let mut parent = Path::new(&normalized).parent();
-        while let Some(path) = parent {
-            let parent_name = path.to_string_lossy().replace('\\', "/");
-            if kinds.get(&parent_name) == Some(&false) {
-                return Err(ImportError::DuplicatePath(parent_name));
+        let mut parent = collision_key.rsplit_once('/').map(|(parent, _)| parent);
+        while let Some(parent_name) = parent {
+            if kinds.get(parent_name) == Some(&false) {
+                return Err(ImportError::DuplicatePath(parent_name.to_owned()));
             }
-            parent = path.parent();
+            parent = parent_name.rsplit_once('/').map(|(parent, _)| parent);
         }
         if !is_dir {
             if let Some((child, _)) = kinds
                 .iter()
-                .find(|(p, _)| p.starts_with(&(normalized.clone() + "/")))
+                .find(|(p, _)| p.starts_with(&(collision_key.clone() + "/")))
             {
                 return Err(ImportError::DuplicatePath(child.clone()));
             }
         }
-        kinds.insert(normalized.clone(), is_dir);
+        kinds.insert(collision_key, is_dir);
 
         if let Some(mode) = entry.unix_mode() {
             let kind = mode & 0o170000;
-            if kind == 0o120000 || (kind != 0 && kind != 0o100000 && kind != 0o040000) {
+            if kind == 0o120000
+                || (kind != 0 && kind != 0o100000 && kind != 0o040000)
+                || (kind == 0o040000 && !is_dir)
+                || (kind == 0o100000 && is_dir)
+            {
                 return Err(ImportError::UnsupportedFileType(normalized));
             }
         }
@@ -406,6 +439,156 @@ fn extract_archive(
     Ok(())
 }
 
+fn verify_installed_matches_archive(
+    archive_path: &Path,
+    installed_root: &Path,
+    limits: &ImportLimits,
+) -> Result<(), ImportError> {
+    let file = File::open(archive_path).map_err(|source| io_at(archive_path, source))?;
+    let mut archive = ZipArchive::new(file)?;
+    if archive.len() > limits.max_members {
+        return Err(ImportError::TooManyMembers {
+            limit: limits.max_members,
+        });
+    }
+    let mut archive_files = BTreeSet::new();
+    let mut total = 0u64;
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index)?;
+        if entry.is_dir() {
+            continue;
+        }
+        let name = entry.name().to_owned();
+        let normalized = normalized_name(&name, false)?;
+        if !archive_files.insert(normalized.clone()) {
+            return Err(ImportError::DuplicatePath(normalized));
+        }
+        let size = entry.size();
+        if size > limits.max_member_bytes {
+            return Err(ImportError::MemberTooLarge {
+                path: normalized,
+                limit: limits.max_member_bytes,
+            });
+        }
+        total = total.checked_add(size).ok_or(ImportError::TotalTooLarge {
+            limit: limits.max_total_uncompressed_bytes,
+        })?;
+        if total > limits.max_total_uncompressed_bytes {
+            return Err(ImportError::TotalTooLarge {
+                limit: limits.max_total_uncompressed_bytes,
+            });
+        }
+
+        let relative = PathBuf::from(&normalized);
+        ensure_no_symlink_components(installed_root, &relative)?;
+        let installed_path = installed_root.join(&relative);
+        let metadata = fs::symlink_metadata(&installed_path)
+            .map_err(|source| io_at(&installed_path, source))?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(ImportError::UnsupportedFileType(
+                installed_path.display().to_string(),
+            ));
+        }
+        if metadata.len() != size {
+            return Err(ImportError::ArchiveChanged);
+        }
+        let mut installed =
+            File::open(&installed_path).map_err(|source| io_at(&installed_path, source))?;
+        let mut archived_buffer = [0u8; 64 * 1024];
+        let mut installed_buffer = [0u8; 64 * 1024];
+        let mut compared = 0u64;
+        loop {
+            let archived_count = entry
+                .read(&mut archived_buffer)
+                .map_err(|source| io_at(archive_path, source))?;
+            let installed_count = installed
+                .read(&mut installed_buffer)
+                .map_err(|source| io_at(&installed_path, source))?;
+            if archived_count != installed_count
+                || archived_buffer[..archived_count] != installed_buffer[..installed_count]
+            {
+                return Err(ImportError::ArchiveChanged);
+            }
+            if archived_count == 0 {
+                break;
+            }
+            compared =
+                compared
+                    .checked_add(archived_count as u64)
+                    .ok_or(ImportError::MemberTooLarge {
+                        path: normalized.clone(),
+                        limit: limits.max_member_bytes,
+                    })?;
+            if compared > limits.max_member_bytes {
+                return Err(ImportError::MemberTooLarge {
+                    path: normalized,
+                    limit: limits.max_member_bytes,
+                });
+            }
+        }
+        if compared != size {
+            return Err(ImportError::ArchiveChanged);
+        }
+    }
+
+    let mut installed_files = BTreeSet::new();
+    collect_installed_files(installed_root, installed_root, &mut installed_files)?;
+    if installed_files != archive_files {
+        return Err(ImportError::ArchiveChanged);
+    }
+    Ok(())
+}
+
+fn collect_installed_files(
+    root: &Path,
+    current: &Path,
+    files: &mut BTreeSet<String>,
+) -> Result<(), ImportError> {
+    for entry in fs::read_dir(current).map_err(|source| io_at(current, source))? {
+        let entry = entry.map_err(|source| io_at(current, source))?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path).map_err(|source| io_at(&path, source))?;
+        if metadata.file_type().is_symlink() {
+            return Err(ImportError::UnsupportedFileType(path.display().to_string()));
+        }
+        if metadata.is_dir() {
+            collect_installed_files(root, &path, files)?;
+        } else if metadata.is_file() {
+            let relative = path
+                .strip_prefix(root)
+                .expect("enumerated path is under installed root");
+            let name = relative
+                .to_str()
+                .ok_or_else(|| ImportError::UnsafePath(relative.display().to_string()))?
+                .replace(std::path::MAIN_SEPARATOR, "/");
+            let normalized = normalized_name(&name, false)?;
+            if !files.insert(normalized.clone()) {
+                return Err(ImportError::DuplicatePath(normalized));
+            }
+        } else {
+            return Err(ImportError::UnsupportedFileType(path.display().to_string()));
+        }
+    }
+    Ok(())
+}
+
+fn ensure_no_symlink_components(root: &Path, relative: &Path) -> Result<(), ImportError> {
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        let std::path::Component::Normal(component) = component else {
+            return Err(ImportError::UnsafePath(relative.display().to_string()));
+        };
+        current.push(component);
+        let metadata = fs::symlink_metadata(&current).map_err(|source| io_at(&current, source))?;
+        if metadata.file_type().is_symlink() {
+            return Err(ImportError::UnsupportedFileType(
+                current.display().to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn make_tree_readonly(root: &Path) -> Result<(), ImportError> {
     for entry in fs::read_dir(root).map_err(|source| io_at(root, source))? {
         let entry = entry.map_err(|source| io_at(root, source))?;
@@ -428,8 +611,44 @@ fn make_tree_readonly(root: &Path) -> Result<(), ImportError> {
     Ok(())
 }
 
+fn make_tree_writable(root: &Path) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if fs::symlink_metadata(&path)
+            .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
+        {
+            make_tree_writable(&path);
+        }
+        if let Ok(metadata) = fs::symlink_metadata(&path) {
+            make_path_writable(&path, metadata);
+        }
+    }
+    if let Ok(metadata) = fs::metadata(root) {
+        make_path_writable(root, metadata);
+    }
+}
+
+fn make_path_writable(path: &Path, metadata: fs::Metadata) {
+    if metadata.file_type().is_symlink() {
+        return;
+    }
+    let mut permissions = metadata.permissions();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        permissions.set_mode(permissions.mode() | 0o200);
+    }
+    #[cfg(not(unix))]
+    permissions.set_readonly(false);
+    let _ = fs::set_permissions(path, permissions);
+}
+
 fn normalized_name(name: &str, is_dir: bool) -> Result<String, ImportError> {
     if name.is_empty()
+        || name.len() > 4096
         || name.contains('\\')
         || name.starts_with('/')
         || name.contains(':')
@@ -444,7 +663,53 @@ fn normalized_name(name: &str, is_dir: bool) -> Result<String, ImportError> {
     };
     let mut path = PathBuf::new();
     for segment in trimmed.split('/') {
-        if segment.is_empty() || segment == "." || segment == ".." {
+        let device_name = segment
+            .split('.')
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches(' ')
+            .to_ascii_uppercase();
+        if segment.is_empty()
+            || segment == "."
+            || segment == ".."
+            || segment.len() > 255
+            || segment.ends_with('.')
+            || segment.ends_with(' ')
+            || segment
+                .chars()
+                .any(|ch| ch.is_control() || "<>|?*".contains(ch))
+            || matches!(
+                device_name.as_str(),
+                "CON"
+                    | "PRN"
+                    | "AUX"
+                    | "NUL"
+                    | "COM1"
+                    | "COM2"
+                    | "COM3"
+                    | "COM4"
+                    | "COM5"
+                    | "COM6"
+                    | "COM7"
+                    | "COM8"
+                    | "COM9"
+                    | "LPT1"
+                    | "LPT2"
+                    | "LPT3"
+                    | "LPT4"
+                    | "LPT5"
+                    | "LPT6"
+                    | "LPT7"
+                    | "LPT8"
+                    | "LPT9"
+                    | "COM¹"
+                    | "COM²"
+                    | "COM³"
+                    | "LPT¹"
+                    | "LPT²"
+                    | "LPT³"
+            )
+        {
             return Err(ImportError::UnsafePath(name.to_owned()));
         }
         path.push(segment);
@@ -567,6 +832,69 @@ mod tests {
             Err(ImportError::DuplicatePath(_))
         ));
         let _ = fs::remove_file(duplicate);
+    }
+
+    #[test]
+    fn rejects_case_collisions_and_nonportable_names() {
+        let collision = temp_file("case-collision");
+        archive(
+            &collision,
+            &[
+                ("rootglass.toml", b"manifest"),
+                (SIGNATURE_PATH, b"signature"),
+                ("Assets/Logo.png", b"one"),
+                ("assets/logo.png", b"two"),
+            ],
+        );
+        assert!(matches!(
+            inspect_archive(&collision, &ImportLimits::default()),
+            Err(ImportError::DuplicatePath(_))
+        ));
+        let _ = fs::remove_file(collision);
+
+        for name in ["CON.txt", "folder/.. ", "trailing.", "a\\b", "C:/root"] {
+            assert!(matches!(
+                normalized_name(name, false),
+                Err(ImportError::UnsafePath(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn import_stops_copying_when_archive_byte_limit_is_exceeded() {
+        let root = std::env::temp_dir().join(format!(
+            "rootglass-import-size-{}-{}",
+            std::process::id(),
+            TEMP_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("source.glass");
+        archive(
+            &source,
+            &[
+                ("rootglass.toml", b"manifest"),
+                (SIGNATURE_PATH, b"signature"),
+            ],
+        );
+        let mut registry = PackageRegistry::open(root.join("registry.json")).unwrap();
+        let store = root.join("store");
+        let limits = ImportLimits {
+            max_archive_bytes: 1,
+            ..ImportLimits::default()
+        };
+        assert!(matches!(
+            import_glass_archive(
+                &source,
+                &store,
+                &mut registry,
+                &TrustStore::default(),
+                &limits
+            ),
+            Err(ImportError::ArchiveTooLarge { .. })
+        ));
+        assert!(registry.packages().is_empty());
+        assert_eq!(fs::read_dir(store).unwrap().count(), 0);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

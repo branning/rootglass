@@ -139,3 +139,5 @@
 {"version":1,"task_id":"LQAYNN","kind":"result","at":"2026-11-07T21:19:40.523596794Z","agent":"codex@worker-1","text":"PR #66 merged at 3ae9827; CI 42414875065 passed all 7 jobs; 89 focused tests passed."}
 {"version":1,"task_id":"LQAYNN","kind":"done","at":"2026-11-07T21:19:40.529912664Z","agent":"codex@worker-1","text":"PR #66 merged at 3ae9827; CI 42414875065 passed all 7 jobs; 89 focused tests passed."}
 {"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-07T21:28:22.857633681Z","agent":"codex@worker-1","text":"PR #55 merged at 03c6df3; CI 42395510620 passed 7/7; Linux PTY smoke passes; GPUI/platform approval pending."}
+{"version":1,"task_id":"HC6FQ6","kind":"open","at":"2026-11-07T21:33:50.654184466Z","text":"Resuming after the Ratatui TestBackend/controller foundation and TUI screens merged; S16.2, S16.3, and S16.5 are on main."}
+{"version":1,"task_id":"HC6FQ6","kind":"claim","at":"2026-11-07T21:33:50.663187107Z","agent":"codex@worker-1"}

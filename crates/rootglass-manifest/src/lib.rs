@@ -1,9 +1,11 @@
 use serde::Deserialize;
-use std::fs;
+use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 pub const MANIFEST_FILE_NAME: &str = "rootglass.toml";
+pub const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 pub const SUPPORTED_SCHEMA_VERSION: u32 = 1;
 pub const SUPPORTED_ARCHITECTURE: &str = "aarch64";
 pub const SUPPORTED_RUNTIME_PROFILE: &str = "virt-linux";
@@ -18,6 +20,9 @@ pub enum ManifestError {
         #[source]
         source: std::io::Error,
     },
+
+    #[error("manifest at {path} exceeds the {limit}-byte limit")]
+    ManifestTooLarge { path: PathBuf, limit: u64 },
 
     #[error("failed to parse manifest at {path}: {source}")]
     ParseManifest {
@@ -70,6 +75,7 @@ pub enum ManifestError {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub schema_version: u32,
     pub name: String,
@@ -85,6 +91,7 @@ pub struct Manifest {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Publisher {
     pub name: String,
     pub identity: String,
@@ -92,6 +99,7 @@ pub struct Publisher {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Runtime {
     pub architecture: String,
     pub profile: String,
@@ -102,6 +110,7 @@ pub struct Runtime {
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct HostConstraints {
     pub macos: Option<MacOsConstraints>,
     pub windows: Option<WindowsConstraints>,
@@ -109,24 +118,28 @@ pub struct HostConstraints {
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct MacOsConstraints {
     #[serde(default)]
     pub hypervisor: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct WindowsConstraints {
     #[serde(default)]
     pub whpx: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct LinuxConstraints {
     #[serde(default)]
     pub kvm: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Boot {
     pub kernel: String,
     pub device_tree: String,
@@ -137,17 +150,20 @@ pub struct Boot {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Resources {
     pub memory_mb: u32,
     pub cpus: u32,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Display {
     pub mode: String,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Network {
     pub mode: String,
 }
@@ -197,10 +213,22 @@ impl Glass {
 impl Manifest {
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self, ManifestError> {
         let path = path.as_ref();
-        let content = fs::read_to_string(path).map_err(|source| ManifestError::ReadManifest {
-            path: path.to_path_buf(),
-            source,
-        })?;
+        let mut content = String::new();
+        File::open(path)
+            .and_then(|file| {
+                file.take(MAX_MANIFEST_BYTES + 1)
+                    .read_to_string(&mut content)
+            })
+            .map_err(|source| ManifestError::ReadManifest {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        if content.len() as u64 > MAX_MANIFEST_BYTES {
+            return Err(ManifestError::ManifestTooLarge {
+                path: path.to_path_buf(),
+                limit: MAX_MANIFEST_BYTES,
+            });
+        }
 
         Self::from_toml_str(&content).map_err(|source| ManifestError::ParseManifest {
             path: path.to_path_buf(),
@@ -209,6 +237,11 @@ impl Manifest {
     }
 
     pub fn from_toml_str(content: &str) -> Result<Self, toml::de::Error> {
+        if content.len() as u64 > MAX_MANIFEST_BYTES {
+            return Err(<toml::de::Error as serde::de::Error>::custom(format!(
+                "manifest text exceeds the {MAX_MANIFEST_BYTES}-byte limit"
+            )));
+        }
         toml::from_str(content)
     }
 
@@ -385,5 +418,44 @@ mode = "user"
             error,
             ManifestError::UnsupportedKernelReference { .. }
         ));
+    }
+
+    #[test]
+    fn rejects_unknown_manifest_fields() {
+        let content = include_str!("../../../examples/hello-world.glass/rootglass.toml");
+        let content = format!("{content}\n[unexpected]\nvalue = true\n");
+        assert!(Manifest::from_toml_str(&content).is_err());
+
+        let content = include_str!("../../../examples/hello-world.glass/rootglass.toml");
+        let content = content.replace("[runtime]", "[runtime]\nunknown_runtime_key = true");
+        assert!(Manifest::from_toml_str(&content).is_err());
+    }
+
+    #[test]
+    fn rejects_manifest_files_over_the_read_limit() {
+        use std::io::Write;
+        let path = std::env::temp_dir().join(format!(
+            "rootglass-manifest-{}-{}.toml",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(&vec![b'a'; MAX_MANIFEST_BYTES as usize + 1])
+            .unwrap();
+        drop(file);
+        assert!(matches!(
+            Manifest::from_path(&path),
+            Err(ManifestError::ManifestTooLarge { .. })
+        ));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn rejects_oversized_manifest_text_before_parsing() {
+        let content = "x".repeat(MAX_MANIFEST_BYTES as usize + 1);
+        assert!(Manifest::from_toml_str(&content).is_err());
     }
 }
