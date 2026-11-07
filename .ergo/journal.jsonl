@@ -57,3 +57,6 @@
 {"version":1,"task_id":"VTNG4C","kind":"result","at":"2026-11-07T08:28:02.392233041Z","agent":"codex@worker-1","text":"Checks: fmt; headless tests 8/8; desktop check passed; diff clean. GUI smoke remains in S13.2."}
 {"version":1,"task_id":"VTNG4C","kind":"result","at":"2026-11-07T08:32:02.135782871Z","agent":"codex@worker-1","text":"Checks: clippy passes for headless lib and desktop-ui bin with -D warnings."}
 {"version":1,"task_id":"VTNG4C","kind":"result","at":"2026-11-07T08:32:36.70838865Z","agent":"codex@worker-1","text":"PR #46 open: https://github.com/branning/rootglass/pull/46; merge/review and S13.2 GUI smoke remain."}
+{"version":1,"task_id":"VTNG4C","kind":"done","at":"2026-11-07T08:34:39.847808964Z","agent":"codex@worker-1","text":"Merged PR #46 (6b136af); fmt, 8/8 headless tests, desktop check, clippy and diff checks pass; GUI smoke is S13.2."}
+{"version":1,"task_id":"GOMUP3","kind":"claim","at":"2026-11-07T08:35:34.831080405Z","agent":"codex@worker-1"}
+{"version":1,"task_id":"GOMUP3","kind":"block","at":"2026-11-07T08:35:34.839712056Z","agent":"codex@worker-1","text":"No desktop/computer-use tool is exposed in executor ccarenv_b64_Y2NhcmVudl83YWYzNjhjNThiMTQ4MTkxYTE5ZGQzYmY0NzRmMWNjMg; provide a supported GUI host to run S13.2 smoke evidence."}
