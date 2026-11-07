@@ -38,7 +38,9 @@ Keep GPUI Kit `=0.9.0` as the application-window framework. Ratatui is the TUI r
 
 The exact libghostty surface is not yet approved or proven cross-platform. Upstream [`include/ghostty.h`](https://github.com/ghostty-org/ghostty/blob/main/include/ghostty.h) labels the full embedding C API internal, says the macOS app is its only consumer, and directs external embedders to [`libghostty-vt`](https://github.com/ghostty-org/ghostty/tree/main/include/ghostty/vt). Upstream [`src/apprt/embedded.zig`](https://github.com/ghostty-org/ghostty/blob/main/src/apprt/embedded.zig) describes the embedded runtime used by the macOS Swift/Xcode app. The repository is MIT licensed, but its transitive libraries and platform packaging still need review.
 
-S16.6 must pin an upstream source version/commit and prove that the documented external API supplies the render, input, resize, clipboard and lifecycle needs on each proposed host. It must record the C ABI/build/link route, dependency notices, and a maintainer decision on supported platforms. Do not claim Windows/Linux embedding or depend on the internal API without an explicit maintainer decision. If `libghostty-vt` requires a GPUI renderer adapter, demonstrate that before implementing S16.7; do not silently replace libghostty with the standalone Ghostty app or another emulator.
+The headless S16.6 spike in [`prototypes/libghostty-vt-ratatui`](../prototypes/libghostty-vt-ratatui/README.md) pins `libghostty-vt` 1.0.0 and exercises PTY output, render-state access, key and paste encoding, resize, selected-text extraction, and cleanup on Linux x86_64. It confirms that `libghostty-vt` leaves PTY and drawing to the embedder; the spike does not qualify the GPUI surface, native clipboard, accessibility, or any desktop platform.
+
+S16.6 still needs a maintainer decision on the public `libghostty-vt` plus GPUI renderer/session adapter and the supported platform set, along with graphical host validation. Do not claim Windows/Linux embedding or depend on the internal API without that decision. Do not silently replace libghostty with the standalone Ghostty app or another emulator.
 
 ## Headless and host validation
 

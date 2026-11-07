@@ -1,0 +1,16 @@
+[package]
+name = "libghostty-vt-ratatui-spike"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[workspace]
+
+[dependencies]
+crossterm = "0.28"
+libc = "0.2"
+ratatui = "0.29"
+
+[build-dependencies]
+cc = "1.2"
