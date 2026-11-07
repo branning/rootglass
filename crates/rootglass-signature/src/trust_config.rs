@@ -45,10 +45,7 @@ pub enum TrustConfigError {
         source: io::Error,
     },
     #[error("trust configuration at {path} exceeds the {limit}-byte limit")]
-    TooLarge {
-        path: PathBuf,
-        limit: u64,
-    },
+    TooLarge { path: PathBuf, limit: u64 },
     #[error("invalid trust configuration JSON: {0}")]
     Parse(#[from] serde_json::Error),
     #[error("unsupported trust configuration schema version {0}")]
@@ -148,7 +145,9 @@ pub fn parse_trust_store(bytes: &[u8]) -> Result<LoadedTrustStore, TrustConfigEr
     }
     let raw: RawTrustConfig = serde_json::from_slice(bytes)?;
     if raw.schema_version != SUPPORTED_SCHEMA_VERSION {
-        return Err(TrustConfigError::UnsupportedSchemaVersion(raw.schema_version));
+        return Err(TrustConfigError::UnsupportedSchemaVersion(
+            raw.schema_version,
+        ));
     }
 
     let mut publishers = BTreeMap::new();
@@ -168,15 +167,17 @@ pub fn parse_trust_store(bytes: &[u8]) -> Result<LoadedTrustStore, TrustConfigEr
                 key_id: key_id.clone(),
                 reason: error.to_string(),
             })?;
-        let key_bytes: [u8; 32] = key_bytes
-            .try_into()
-            .map_err(|_| TrustConfigError::InvalidPublicKeyLength {
+        let key_bytes: [u8; 32] =
+            key_bytes
+                .try_into()
+                .map_err(|_| TrustConfigError::InvalidPublicKeyLength {
+                    key_id: key_id.clone(),
+                })?;
+        VerifyingKey::from_bytes(&key_bytes).map_err(|_| {
+            TrustConfigError::InvalidEd25519PublicKey {
                 key_id: key_id.clone(),
-            })?;
-        VerifyingKey::from_bytes(&key_bytes)
-            .map_err(|_| TrustConfigError::InvalidEd25519PublicKey {
-                key_id: key_id.clone(),
-            })?;
+            }
+        })?;
         let expected_key_id = format!("ed25519:{}", hex_sha256(&key_bytes));
         if key_id != expected_key_id {
             return Err(TrustConfigError::KeyIdMismatch {
@@ -330,7 +331,10 @@ mod tests {
         let (actual_key_id, public_key) = fixture_public_key();
         let wrong_key_id = format!("ed25519:{}", "0".repeat(64));
         assert_ne!(wrong_key_id, actual_key_id);
-        let bytes = config(&format!("[{}]", publisher(&wrong_key_id, &public_key)), "[]");
+        let bytes = config(
+            &format!("[{}]", publisher(&wrong_key_id, &public_key)),
+            "[]",
+        );
         assert!(matches!(
             parse_trust_store(bytes.as_bytes()),
             Err(TrustConfigError::KeyIdMismatch { .. })
