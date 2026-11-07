@@ -100,3 +100,5 @@
 {"version":1,"task_id":"WS57HI","kind":"result","at":"2026-11-07T10:37:35.291801436Z","agent":"codex@worker-1","text":"Desktop: local check lacks fontconfig; CI desktop and arm64 TCG results pending."}
 {"version":1,"task_id":"WS57HI","kind":"result","at":"2026-11-07T10:37:35.297899869Z","agent":"codex@worker-1","text":"CI uploads the bounded boot transcript on failure, with no telemetry and 7-day retention."}
 {"version":1,"task_id":"WS57HI","kind":"result","at":"2026-11-07T10:38:04.91709408Z","agent":"codex@worker-1","text":"PR #52 open; CI/maintainer review pending. Next: resolve checks/review and merge before done."}
+{"version":1,"task_id":"WS57HI","kind":"result","at":"2026-11-07T10:43:20.615523613Z","agent":"codex@worker-1","text":"CI run 282 passed: fmt, CLI, tests, clippy, Linux desktop, x64 and arm64 boot smokes."}
+{"version":1,"task_id":"WS57HI","kind":"result","at":"2026-11-07T10:43:20.623643235Z","agent":"codex@worker-1","text":"PR #52 remains open and mergeable; maintainer review and merge are still required."}
