@@ -93,9 +93,12 @@ a limitation to record, never a passing test. Reuse evidence that still applies.
 ## 5. Record evidence, then hand off or finish
 
 ```sh
-ergo result TASK_ID "Checks: <commands>; results: <observations>; PR: <url>; remaining: <gates>"
+ergo result TASK_ID "Checks: <short command and observed result>"
+ergo result TASK_ID "PR: <url>; remaining: <gate and next owner>"
 ```
 
+Each result summary is one line, at most 120 characters. Use separate results
+for checks and handoff, or attach longer evidence with `--file`.
 Use `--file <project-relative-path>` only for an existing evidence file outside
 `.ergo`. Record results on leaf tasks, not epics. Keep backlog and journal changes
 in the same coherent commit. Do not commit `.ergo/lock`, prune history, or edit

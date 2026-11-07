@@ -47,3 +47,5 @@
 {"version":1,"task_id":"QDGHOD","kind":"created","at":"2026-11-07T07:31:50.999460275Z"}
 {"version":1,"task_id":"XHJH2U","kind":"created","at":"2026-11-07T07:34:11.416527908Z"}
 {"version":1,"task_id":"XHJH2U","kind":"claim","at":"2026-11-07T07:34:11.425171945Z","agent":"codex@rootglass"}
+{"version":1,"task_id":"XHJH2U","kind":"result","at":"2026-11-07T07:35:55.264221325Z","agent":"codex@rootglass","text":"PASS: local links, skill metadata, AGENTS-only discovery and scratch dependency/claim/block/resume/result/done."}
+{"version":1,"task_id":"XHJH2U","kind":"result","at":"2026-11-07T07:35:55.272236776Z","agent":"codex@rootglass","text":"PR https://github.com/branning/rootglass/pull/44 pending; integrator records done after required checks and merge."}
