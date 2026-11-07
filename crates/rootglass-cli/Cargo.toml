@@ -15,3 +15,7 @@ rootglass-core.workspace = true
 rootglass-manifest.workspace = true
 rootglass-qemu.workspace = true
 rootglass-signature.workspace = true
+rootglass-tui.workspace = true
+
+[dev-dependencies]
+libc.workspace = true
