@@ -103,3 +103,8 @@
 {"version":1,"task_id":"WS57HI","kind":"result","at":"2026-11-07T15:48:14.447539832Z","agent":"codex@worker-1","text":"CI uploads a bounded boot transcript on failure; telemetry is disabled and retention is 7 days."}
 {"version":1,"task_id":"WS57HI","kind":"result","at":"2026-11-07T15:59:12.062536124Z","agent":"codex@worker-1","text":"CI x64 timed out at BusyBox shell prompt; guest requested cursor position with ESC[6n over serial."}
 {"version":1,"task_id":"WS57HI","kind":"result","at":"2026-11-07T15:59:12.069232231Z","agent":"codex@worker-1","text":"Added DSR reply; split-query/raw-mode PTY checks, Python compile, and shell syntax pass; CI rerun pending."}
+{"version":1,"task_id":"MJPX6T","kind":"done","at":"2026-11-07T16:38:55.014480028Z","agent":"codex@worker-1","text":"Merged PR #51; format, clippy, tests, desktop compile, CLI smoke, and x64/arm64 boot checks passed."}
+{"version":1,"task_id":"RKX2EW","kind":"claim","at":"2026-11-07T16:38:55.02372795Z","agent":"codex@worker-1"}
+{"version":1,"task_id":"RKX2EW","kind":"result","at":"2026-11-07T16:38:55.031372555Z","agent":"codex@worker-1","text":"11 TestBackend tests pass; clippy, fmt, desktop headless check pass; PR #54 CI green before main sync."}
+{"version":1,"task_id":"RKX2EW","kind":"result","at":"2026-11-07T16:38:55.03856321Z","agent":"codex@worker-1","text":"Syncing current main after PR #50 merge because GitHub reports PR #54 conflict."}
+{"version":1,"task_id":"RKX2EW","kind":"result","at":"2026-11-07T16:39:44.357631712Z","agent":"codex@worker-1","text":"After syncing merged PR #50: 11 TUI tests, fmt and clippy pass; updated CI run pending."}
