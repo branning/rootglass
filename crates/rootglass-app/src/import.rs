@@ -536,7 +536,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_traversal_and_normalized_duplicates() {
+    fn rejects_traversal_and_file_parent_conflicts() {
         let traversal = temp_file("traversal");
         archive(
             &traversal,
@@ -556,7 +556,7 @@ mod tests {
         archive(
             &duplicate,
             &[
-                ("a/b", b"x"),
+                ("a", b"x"),
                 ("a/b", b"y"),
                 ("rootglass.toml", b"m"),
                 (SIGNATURE_PATH, b"s"),
