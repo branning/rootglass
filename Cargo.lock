@@ -661,14 +661,17 @@ dependencies = [
 name = "rootglass-tui"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "crossterm",
  "ed25519-dalek",
  "ratatui",
  "rootglass-app",
  "rootglass-core",
+ "rootglass-manifest",
  "rootglass-signature",
  "serde_json",
  "sha2",
+ "zip",
 ]
 
 [[package]]

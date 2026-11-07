@@ -1,7 +1,8 @@
 use crate::renderer::render_with_prompt;
 use crate::{
-    lock_service, FailureDetails, ImportCompletion, InspectionOutcome, OperationTicket,
-    SharedService, StartEffect, StopRequest, UiModel, UiState,
+    execute_developer_request, lock_service, DeveloperAction, DeveloperPanel, DeveloperRequest,
+    FailureDetails, ImportCompletion, InspectionOutcome, OperationTicket, SharedService,
+    StartEffect, StopRequest, UiModel, UiState,
 };
 use crossterm::cursor::Show;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -123,12 +124,25 @@ enum InputMode {
     LibraryFilter,
     Console,
     ConfirmRemoval,
+    DeveloperMenu,
+    DeveloperSource,
+    DeveloperKeyFile,
+    DeveloperCreatedAt,
+    DeveloperOutput,
 }
 
 #[derive(Default)]
 struct InputBuffer {
     mode: InputMode,
     text: String,
+    developer_form: Option<DeveloperForm>,
+}
+
+struct DeveloperForm {
+    action: DeveloperAction,
+    source: Option<PathBuf>,
+    key_file: Option<PathBuf>,
+    created_at: Option<String>,
 }
 
 impl InputBuffer {
@@ -151,12 +165,33 @@ impl InputBuffer {
                 "Remove {}?  [y] confirm  [n/Esc] cancel",
                 self.text
             )),
+            InputMode::DeveloperMenu => Some(
+                "Developer signing/package: [s] sign directory  [p] create .glass ZIP  [Esc] back"
+                    .to_string(),
+            ),
+            InputMode::DeveloperSource => Some(format!(
+                ".glass directory path: {}  (Enter continues, Esc cancels)",
+                self.text
+            )),
+            InputMode::DeveloperKeyFile => Some(format!(
+                "External secret-file path (key bytes stay in the worker): {}  (Enter continues, Esc cancels)",
+                self.text
+            )),
+            InputMode::DeveloperCreatedAt => Some(format!(
+                "Deterministic created-at RFC3339 (blank uses current time): {}  (Enter continues, Esc cancels)",
+                self.text
+            )),
+            InputMode::DeveloperOutput => Some(format!(
+                "Output canonical .glass path: {}  (Enter packages, Esc cancels)",
+                self.text
+            )),
         }
     }
 
     fn clear(&mut self) {
         self.mode = InputMode::Normal;
         self.text.clear();
+        self.developer_form = None;
     }
 
     fn push(&mut self, character: char) {
@@ -175,6 +210,11 @@ fn handle_key(
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
         return Ok(true);
     }
+    if key.code == KeyCode::Char('q')
+        && matches!(input.mode, InputMode::Normal | InputMode::DeveloperMenu)
+    {
+        return Ok(true);
+    }
     if key.modifiers.contains(KeyModifiers::CONTROL)
         && key.code == KeyCode::Char('c')
         && input.mode != InputMode::Console
@@ -182,13 +222,179 @@ fn handle_key(
         return Ok(true);
     }
 
+    if input.mode == InputMode::Normal && model.developer_is_open() {
+        return handle_developer_panel_key(model, input, key);
+    }
+
     match input.mode {
         InputMode::OpenPath => handle_path_key(model, input, key, worker),
         InputMode::LibraryFilter => handle_filter_key(model, input, key),
         InputMode::Console => handle_console_key(model, input, key, worker),
         InputMode::ConfirmRemoval => handle_remove_confirmation_key(model, input, key, worker),
+        InputMode::DeveloperMenu => handle_developer_menu_key(model, input, key),
+        InputMode::DeveloperSource
+        | InputMode::DeveloperKeyFile
+        | InputMode::DeveloperCreatedAt
+        | InputMode::DeveloperOutput => handle_developer_form_key(model, input, key, worker),
         InputMode::Normal => handle_normal_key(model, input, key, worker),
     }
+}
+
+fn handle_developer_panel_key(
+    model: &mut UiModel,
+    input: &mut InputBuffer,
+    key: KeyEvent,
+) -> Result<bool, String> {
+    if matches!(model.developer_panel, DeveloperPanel::Working(_)) {
+        return Ok(false);
+    }
+    match key.code {
+        KeyCode::Esc => {
+            model.close_developer();
+        }
+        KeyCode::Char('s') | KeyCode::Char('p') => {
+            model.developer_panel = DeveloperPanel::Menu;
+            input.mode = InputMode::DeveloperMenu;
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
+fn handle_developer_menu_key(
+    model: &mut UiModel,
+    input: &mut InputBuffer,
+    key: KeyEvent,
+) -> Result<bool, String> {
+    match key.code {
+        KeyCode::Esc => {
+            model.close_developer();
+            input.clear();
+        }
+        KeyCode::Char('s') => {
+            input.developer_form = Some(DeveloperForm {
+                action: DeveloperAction::SignDirectory,
+                source: None,
+                key_file: None,
+                created_at: None,
+            });
+            input.text.clear();
+            input.mode = InputMode::DeveloperSource;
+        }
+        KeyCode::Char('p') => {
+            input.developer_form = Some(DeveloperForm {
+                action: DeveloperAction::PackageArchive,
+                source: None,
+                key_file: None,
+                created_at: None,
+            });
+            input.text.clear();
+            input.mode = InputMode::DeveloperSource;
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
+fn handle_developer_form_key(
+    model: &mut UiModel,
+    input: &mut InputBuffer,
+    key: KeyEvent,
+    worker: &mut ServiceWorker,
+) -> Result<bool, String> {
+    if key.code == KeyCode::Esc {
+        input.text.clear();
+        input.developer_form = None;
+        input.mode = InputMode::DeveloperMenu;
+        return Ok(false);
+    }
+
+    match key.code {
+        KeyCode::Enter => {
+            let value = std::mem::take(&mut input.text);
+            let form = input
+                .developer_form
+                .as_mut()
+                .ok_or_else(|| "the developer workflow form was lost".to_string())?;
+            match input.mode {
+                InputMode::DeveloperSource if !value.trim().is_empty() => {
+                    form.source = Some(PathBuf::from(value));
+                    input.mode = InputMode::DeveloperKeyFile;
+                }
+                InputMode::DeveloperKeyFile if !value.trim().is_empty() => {
+                    form.key_file = Some(PathBuf::from(value));
+                    input.mode = InputMode::DeveloperCreatedAt;
+                }
+                InputMode::DeveloperCreatedAt => {
+                    form.created_at = (!value.trim().is_empty()).then(|| value.trim().to_string());
+                    if form.action == DeveloperAction::PackageArchive {
+                        input.mode = InputMode::DeveloperOutput;
+                    } else {
+                        submit_developer(model, input, worker)?;
+                    }
+                }
+                InputMode::DeveloperOutput if !value.trim().is_empty() => {
+                    let output = PathBuf::from(value);
+                    let request = developer_request(input, Some(output))?;
+                    worker.developer(request)?;
+                    let action = input
+                        .developer_form
+                        .as_ref()
+                        .expect("request came from a developer form")
+                        .action;
+                    model.begin_developer(action);
+                    input.clear();
+                }
+                _ => input.text = value,
+            }
+        }
+        KeyCode::Backspace => {
+            input.text.pop();
+        }
+        KeyCode::Char(character) if accepts_text_key(key) => input.push(character),
+        _ => {}
+    }
+    Ok(false)
+}
+
+fn submit_developer(
+    model: &mut UiModel,
+    input: &mut InputBuffer,
+    worker: &mut ServiceWorker,
+) -> Result<(), String> {
+    let request = developer_request(input, None)?;
+    worker.developer(request)?;
+    let action = input
+        .developer_form
+        .as_ref()
+        .expect("request came from a developer form")
+        .action;
+    model.begin_developer(action);
+    input.clear();
+    Ok(())
+}
+
+fn developer_request(
+    input: &InputBuffer,
+    output: Option<PathBuf>,
+) -> Result<DeveloperRequest, String> {
+    let form = input
+        .developer_form
+        .as_ref()
+        .ok_or_else(|| "the developer workflow form was lost".to_string())?;
+    Ok(DeveloperRequest {
+        action: form.action,
+        source: form
+            .source
+            .clone()
+            .ok_or_else(|| "a .glass directory path is required".to_string())?,
+        key_file: form
+            .key_file
+            .clone()
+            .ok_or_else(|| "an external signing-key file path is required".to_string())?,
+        output,
+        created_at: form.created_at.clone(),
+    })
 }
 
 fn handle_path_key(
@@ -316,6 +522,10 @@ fn handle_normal_key(
             input.mode = InputMode::LibraryFilter;
         }
         KeyCode::Char('f') if model.actions().refresh => worker.refresh_library()?,
+        KeyCode::Char('D') if model.actions().developer => {
+            model.open_developer();
+            input.mode = InputMode::DeveloperMenu;
+        }
         KeyCode::Char('P') if model.actions().console_pause => model.toggle_console_pause(),
         KeyCode::Char('c') if model.actions().console_clear => model.clear_console(),
         KeyCode::Char('y') if model.actions().console_copy => request_console_copy(model),
@@ -489,6 +699,7 @@ enum WorkerRequest {
     Restart(OperationTicket, RunId, PathBuf),
     PollEvents,
     WriteSerial(RunId, Vec<u8>),
+    Developer(DeveloperRequest),
     StopOrphan(RunId),
     Shutdown,
 }
@@ -513,6 +724,7 @@ enum WorkerCompletion {
     Restarted(OperationTicket, Result<RunId, AppError>),
     Polled(Result<Vec<RuntimeEvent>, AppError>),
     Written(RunId, Result<(), AppError>),
+    Developer(Result<crate::DeveloperResult, String>),
     OrphanStopped(RunId, Result<(), AppError>),
 }
 
@@ -593,6 +805,10 @@ impl ServiceWorker {
 
     fn write_serial(&mut self, run: RunId, bytes: Vec<u8>) -> Result<(), String> {
         self.send(WorkerRequest::WriteSerial(run, bytes))
+    }
+
+    fn developer(&mut self, request: DeveloperRequest) -> Result<(), String> {
+        self.send(WorkerRequest::Developer(request))
     }
 
     fn stop_orphan(&mut self, run: RunId) -> Result<(), String> {
@@ -738,6 +954,7 @@ impl ServiceWorker {
                 model.apply_poll_result(result);
             }
             WorkerCompletion::Written(run, result) => model.finish_input(&run, result),
+            WorkerCompletion::Developer(result) => model.finish_developer(result),
             WorkerCompletion::OrphanStopped(run, result) => {
                 let error = result.as_ref().err().map(ToString::to_string);
                 if let Some(detail) = error.clone() {
@@ -832,6 +1049,9 @@ fn service_worker_loop(
             WorkerRequest::WriteSerial(run, bytes) => Some(WorkerCompletion::Written(
                 run.clone(),
                 with_service(&service, |service| service.write_serial(&run, &bytes)),
+            )),
+            WorkerRequest::Developer(request) => Some(WorkerCompletion::Developer(
+                execute_developer_request(request),
             )),
             WorkerRequest::StopOrphan(run) => Some(WorkerCompletion::OrphanStopped(
                 run.clone(),
@@ -1621,6 +1841,7 @@ mod tests {
         let mut input = InputBuffer {
             mode: InputMode::Console,
             text: String::new(),
+            developer_form: None,
         };
         let mut worker = ServiceWorker::spawn(model.shared_service()).expect("worker starts");
 
@@ -1654,12 +1875,55 @@ mod tests {
     }
 
     #[test]
+    fn developer_signing_flow_reads_key_path_and_keeps_key_bytes_out_of_ui_state() {
+        let temp = temp_root();
+        fs::create_dir_all(&temp).expect("create test directory");
+        let key_file = temp.join("publisher.seed");
+        let private_material = b"PRIVATE-KEY-MATERIAL-MUST-NEVER-REACH-THE-UI";
+        fs::write(&key_file, private_material).expect("write external test key");
+        let source = temp.join("missing.glass");
+
+        let mut model = UiModel::with_service(FakeService::default(), UiState::Empty);
+        let mut input = InputBuffer::default();
+        let mut worker = ServiceWorker::spawn(model.shared_service()).expect("worker starts");
+        let mut press = |key: KeyEvent| {
+            handle_key(&mut model, &mut input, key, &mut worker).expect("developer key is handled");
+        };
+
+        press(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::NONE));
+        press(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+        for character in source.to_string_lossy().chars() {
+            press(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+        }
+        press(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        for character in key_file.to_string_lossy().chars() {
+            press(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+        }
+        press(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        press(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        drop(press);
+        assert_eq!(input.mode, InputMode::Normal);
+        assert!(matches!(model.developer_panel, DeveloperPanel::Working(_)));
+        worker
+            .drain_until_idle(&mut model)
+            .expect("developer workflow finishes on the worker");
+
+        let panel = format!("{:?}", model.developer_panel);
+        assert!(panel.contains("failed to read manifest"));
+        assert!(!panel.contains(std::str::from_utf8(private_material).unwrap()));
+        drop(worker);
+        fs::remove_dir_all(temp).expect("remove test directory");
+    }
+
+    #[test]
     fn ctrl_c_quits_outside_console_and_ctrl_q_quits_from_any_mode() {
         let mut model = UiModel::with_service(FakeService::default(), UiState::Empty);
         let mut worker = ServiceWorker::spawn(model.shared_service()).expect("worker starts");
         let mut input = InputBuffer {
             mode: InputMode::OpenPath,
             text: "unfinished".to_string(),
+            developer_form: None,
         };
 
         assert!(handle_key(
@@ -1679,6 +1943,16 @@ mod tests {
             &mut worker,
         )
         .expect("Ctrl-Q quits from console mode"));
+
+        model.open_developer();
+        input.mode = InputMode::DeveloperMenu;
+        assert!(handle_key(
+            &mut model,
+            &mut input,
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
+            &mut worker,
+        )
+        .expect("q quits from the developer menu"));
     }
 
     #[test]
@@ -1697,6 +1971,7 @@ mod tests {
         let mut input = InputBuffer {
             mode: InputMode::Console,
             text: String::new(),
+            developer_form: None,
         };
         let mut worker = ServiceWorker::spawn(model.shared_service()).expect("worker starts");
 
