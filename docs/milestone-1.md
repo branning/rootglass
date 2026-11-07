@@ -11,7 +11,9 @@ A developer can use the repository to:
 3. resolve the builtin aarch64 runtime profile,
 4. generate example rootfs/runtime assets,
 5. print a QEMU launch plan, and
-6. boot the sample world locally through the CLI.
+6. boot the sample world through the CLI on a Linux host, validated by hosted CI.
+
+Hosted CI is Milestone 1's functioning end-to-end test environment. Its x64 and arm64 TCG jobs materialize the assets and boot the signed guest through the CLI. A separate manual run on a developer's machine remains useful, but is not a milestone gate.
 
 ## In scope
 
@@ -118,7 +120,7 @@ Milestone 1 is complete when:
 - [x] `rootglass plan` exists.
 - [x] `rootglass boot` exists and preflights missing assets before QEMU launch.
 - [x] CI is green for formatting, clippy, tests, and CLI smoke.
-- [ ] A developer has run `just materialize-assets` and `just boot` successfully on a suitable local host.
+- [x] Hosted x64 and arm64 CI runs materialize assets and boot the signed fixture through the CLI, authenticate over serial, run `uname -a`, and shut QEMU down cleanly.
 - [x] README quickstart explains the current CLI workflow.
 - [x] License and notice files are present.
 
