@@ -86,6 +86,8 @@ struct RunDetails {
 struct UiModel {
     state: UiState,
     service: AppService,
+    installed_glasses: Vec<InstalledGlass>,
+    library_error: Option<String>,
     selected_path: Option<PathBuf>,
     run_id: Option<RunId>,
     console: String,
@@ -103,9 +105,15 @@ impl Default for UiModel {
             },
             Err(error) => (AppService::deny_all(), trust_config_failure(error)),
         };
+        let (installed_glasses, library_error) = match service.installed_glasses() {
+            Ok(glasses) => (glasses, None),
+            Err(error) => (Vec::new(), Some(error.to_string())),
+        };
         Self {
             state,
             service,
+            installed_glasses,
+            library_error,
             selected_path: None,
             run_id: None,
             console: String::new(),
@@ -171,6 +179,16 @@ fn local_trust_config_path() -> Result<PathBuf, String> {
 }
 
 impl UiModel {
+    fn refresh_library(&mut self) {
+        match self.service.installed_glasses() {
+            Ok(glasses) => {
+                self.installed_glasses = glasses;
+                self.library_error = None;
+            }
+            Err(error) => self.library_error = Some(error.to_string()),
+        }
+    }
+
     fn import_finished(&mut self, result: Result<InstalledGlass, rootglass_app::AppError>) {
         match result {
             Ok(installed) => {
@@ -182,6 +200,7 @@ impl UiModel {
                     publisher: installed.publisher_name,
                     digest: installed.content_sha256,
                 });
+                self.refresh_library();
             }
             Err(error) => {
                 self.state = UiState::Failed(FailureDetails {
@@ -443,7 +462,11 @@ impl Render for RootglassWindow {
                     .h_flex()
                     .size_full()
                     .gap_2()
-                    .child(library_view(&self.model.state))
+                    .child(library_view(
+                        &self.model.state,
+                        &self.model.installed_glasses,
+                        self.model.library_error.as_deref(),
+                    ))
                     .child(details_view(&self.model.state)),
             )
             .child(status_view(&self.model.state))
@@ -562,12 +585,27 @@ impl RootglassWindow {
     }
 }
 
-fn library_view(state: &UiState) -> Div {
-    let mut view = div()
-        .v_flex()
-        .child("Library")
-        .child("No glasses are installed.")
-        .child("Open an existing .glass bundle to inspect it.");
+fn library_view(
+    state: &UiState,
+    installed_glasses: &[InstalledGlass],
+    library_error: Option<&str>,
+) -> Div {
+    let mut view = div().v_flex().child("Library");
+    if installed_glasses.is_empty() {
+        view = view
+            .child("No glasses are installed.")
+            .child("Open an existing .glass bundle to inspect it.");
+    } else {
+        for glass in installed_glasses {
+            view = view
+                .child(format!("{} {}", glass.name, glass.version))
+                .child(format!("Publisher: {}", glass.publisher_name))
+                .child(format!("Installed at: {}", glass.package_path.display()));
+        }
+    }
+    if let Some(error) = library_error {
+        view = view.child(format!("The installed library could not be loaded: {error}"));
+    }
     if let UiState::Ready(glass) = state {
         view = view.child(format!("Selected: {} {}", glass.name, glass.version));
     }
