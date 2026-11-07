@@ -111,7 +111,9 @@ pub fn import_glass_archive(
         let mut reader = input;
         let mut buffer = [0u8; 64 * 1024];
         loop {
-            let n = reader.read(&mut buffer).map_err(|error| io_at(source, error))?;
+            let n = reader
+                .read(&mut buffer)
+                .map_err(|error| io_at(source, error))?;
             if n == 0 {
                 break;
             }
@@ -130,7 +132,9 @@ pub fn import_glass_archive(
                 .map_err(|source| io_at(&snapshot, source))?;
             hasher.update(&buffer[..n]);
         }
-        snapshot_file.sync_all().map_err(|source| io_at(&snapshot, source))?;
+        snapshot_file
+            .sync_all()
+            .map_err(|source| io_at(&snapshot, source))?;
         Ok(encode_hex(&hasher.finalize()))
     })();
     let digest = match snapshot_result {
@@ -171,7 +175,9 @@ fn import_snapshot(
     let final_path = packages_dir.join(digest);
     if let Ok(metadata) = fs::symlink_metadata(&final_path) {
         if metadata.file_type().is_symlink() || !metadata.is_dir() {
-            return Err(ImportError::UnsupportedFileType(final_path.display().to_string()));
+            return Err(ImportError::UnsupportedFileType(
+                final_path.display().to_string(),
+            ));
         }
     }
     if !final_path.exists() {
@@ -299,11 +305,9 @@ fn inspect_archive(path: &Path, limits: &ImportLimits) -> Result<(), ImportError
                 limit: limits.max_member_bytes,
             });
         }
-        total = total
-            .checked_add(size)
-            .ok_or(ImportError::TotalTooLarge {
-                limit: limits.max_total_uncompressed_bytes,
-            })?;
+        total = total.checked_add(size).ok_or(ImportError::TotalTooLarge {
+            limit: limits.max_total_uncompressed_bytes,
+        })?;
         if total > limits.max_total_uncompressed_bytes {
             return Err(ImportError::TotalTooLarge {
                 limit: limits.max_total_uncompressed_bytes,
@@ -408,9 +412,7 @@ fn make_tree_readonly(root: &Path) -> Result<(), ImportError> {
         let path = entry.path();
         let metadata = fs::symlink_metadata(&path).map_err(|source| io_at(&path, source))?;
         if metadata.file_type().is_symlink() {
-            return Err(ImportError::UnsupportedFileType(
-                path.display().to_string(),
-            ));
+            return Err(ImportError::UnsupportedFileType(path.display().to_string()));
         }
         if metadata.is_dir() {
             make_tree_readonly(&path)?;
@@ -497,7 +499,10 @@ mod tests {
     use zip::write::SimpleFileOptions;
 
     fn temp_file(label: &str) -> PathBuf {
-        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         std::env::temp_dir().join(format!(
             "rootglass-{label}-{}-{nonce}.zip",
             std::process::id()
@@ -508,7 +513,9 @@ mod tests {
         let file = File::create(path).unwrap();
         let mut writer = zip::ZipWriter::new(file);
         for (name, bytes) in entries {
-            writer.start_file(*name, SimpleFileOptions::default()).unwrap();
+            writer
+                .start_file(*name, SimpleFileOptions::default())
+                .unwrap();
             writer.write_all(bytes).unwrap();
         }
         writer.finish().unwrap();
@@ -519,7 +526,10 @@ mod tests {
         let path = temp_file("bounded");
         archive(
             &path,
-            &[("rootglass.toml", b"manifest"), (SIGNATURE_PATH, b"signature")],
+            &[
+                ("rootglass.toml", b"manifest"),
+                (SIGNATURE_PATH, b"signature"),
+            ],
         );
         assert!(inspect_archive(&path, &ImportLimits::default()).is_ok());
         let _ = fs::remove_file(path);
