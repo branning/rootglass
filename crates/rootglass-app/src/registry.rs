@@ -159,10 +159,7 @@ impl PackageRegistry {
             .and_then(|_| file.sync_all())
         {
             let _ = fs::remove_file(&temp);
-            return Err(RegistryError::Write {
-                path: temp,
-                source,
-            });
+            return Err(RegistryError::Write { path: temp, source });
         }
         drop(file);
         replace_registry_file(&temp, &self.path).map_err(|source| {
@@ -194,7 +191,11 @@ fn replace_registry_file(temp: &Path, destination: &Path) -> io::Result<()> {
         fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
     }
     let existing: Vec<u16> = temp.as_os_str().encode_wide().chain(Some(0)).collect();
-    let new: Vec<u16> = destination.as_os_str().encode_wide().chain(Some(0)).collect();
+    let new: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
     // Both paths are siblings, so the replacement stays on one volume.
     let succeeded = unsafe {
         MoveFileExW(
@@ -222,11 +223,11 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_root() -> PathBuf {
-        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        std::env::temp_dir().join(format!(
-            "rootglass-registry-{}-{nonce}",
-            std::process::id()
-        ))
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("rootglass-registry-{}-{nonce}", std::process::id()))
     }
 
     fn package() -> InstalledGlass {
