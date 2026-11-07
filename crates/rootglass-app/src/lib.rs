@@ -104,6 +104,8 @@ struct ActiveRun {
 pub struct AppService {
     runtime: RootglassRuntime,
     state_root: PathBuf,
+    library_root: PathBuf,
+    trust_store: TrustStore,
     next_run_id: u64,
     active: Option<ActiveRun>,
     pending: VecDeque<RuntimeEvent>,
@@ -112,14 +114,7 @@ pub struct AppService {
 
 impl Default for AppService {
     fn default() -> Self {
-        Self {
-            runtime: RootglassRuntime::new(),
-            state_root: default_state_root(),
-            next_run_id: 1,
-            active: None,
-            pending: VecDeque::new(),
-            last_stopped: None,
-        }
+        Self::with_trust_store(TrustStore::example_fixture())
     }
 }
 
@@ -128,8 +123,10 @@ impl AppService {
     /// local publisher trust configuration and pass its verifier-compatible store here.
     pub fn with_trust_store(trust_store: TrustStore) -> Self {
         Self {
-            runtime: RootglassRuntime::with_trust_store(trust_store),
+            runtime: RootglassRuntime::with_trust_store(trust_store.clone()),
             state_root: default_state_root(),
+            library_root: default_library_root(),
+            trust_store,
             next_run_id: 1,
             active: None,
             pending: VecDeque::new(),
@@ -156,6 +153,52 @@ impl AppService {
     pub fn with_state_root(mut self, root: impl Into<PathBuf>) -> Self {
         self.state_root = root.into();
         self
+    }
+
+    /// Override the per-user package and registry location.
+    pub fn with_library_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.library_root = root.into();
+        self
+    }
+
+    /// Verify and install a bounded ZIP `.glass` archive into the local library.
+    pub fn import_archive(&mut self, source: &Path) -> Result<registry::InstalledGlass, AppError> {
+        let registry_path = self.library_root.join("registry.json");
+        let mut registry = registry::PackageRegistry::open(&registry_path).map_err(|error| {
+            import_app_error("The installed-glass registry could not be opened.", error)
+        })?;
+        import::import_glass_archive(
+            source,
+            &self.library_root,
+            &mut registry,
+            &self.trust_store,
+            &import::ImportLimits::default(),
+        )
+        .map_err(|error| import_app_error("The .glass archive could not be verified or installed.", error))
+    }
+
+    /// Return the persisted verified releases in the local library.
+    pub fn installed_glasses(&self) -> Result<Vec<registry::InstalledGlass>, AppError> {
+        let registry = registry::PackageRegistry::open(self.library_root.join("registry.json"))
+            .map_err(|error| {
+                import_app_error("The installed-glass registry could not be opened.", error)
+            })?;
+        Ok(registry.packages().to_vec())
+    }
+
+    /// Remove a release from the visible library. Its immutable content may remain on disk
+    /// until a later garbage-collection pass.
+    pub fn remove_installed_glass(
+        &mut self,
+        content_sha256: &str,
+    ) -> Result<Option<registry::InstalledGlass>, AppError> {
+        let registry_path = self.library_root.join("registry.json");
+        let mut registry = registry::PackageRegistry::open(&registry_path).map_err(|error| {
+            import_app_error("The installed-glass registry could not be opened.", error)
+        })?;
+        registry
+            .remove(content_sha256)
+            .map_err(|error| import_app_error("The installed-glass registry could not be updated.", error))
     }
 
     pub fn new() -> Self {
@@ -610,6 +653,21 @@ fn default_state_root() -> PathBuf {
         }
     }
     std::env::temp_dir().join("rootglass").join("states")
+}
+
+fn default_library_root() -> PathBuf {
+    default_state_root()
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("library")
+}
+
+fn import_app_error(summary: &str, error: impl std::fmt::Display) -> AppError {
+    AppError {
+        phase: LifecycleState::Verifying,
+        summary: summary.to_string(),
+        detail: error.to_string(),
+    }
 }
 
 fn state_app_error(error: state::StateError) -> AppError {
