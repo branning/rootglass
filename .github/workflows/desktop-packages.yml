@@ -1,0 +1,95 @@
+name: Desktop packages
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-packages-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    name: ${{ matrix.name }} package
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64
+            runner: ubuntu-24.04
+            format: deb
+            extension: deb
+            config: linux
+          - name: macOS arm64
+            runner: macos-15
+            format: dmg
+            extension: dmg
+            config: macos
+          - name: Windows x64
+            runner: windows-2025
+            format: nsis
+            extension: exe
+            config: windows
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang g++ gcc dpkg-dev \
+            libasound2-dev libfontconfig-dev libssl-dev libvulkan1 \
+            libwayland-dev libwebkit2gtk-4.1-dev libx11-xcb-dev \
+            libxkbcommon-x11-dev libzstd-dev vulkan-validationlayers
+
+      - name: Install NSIS
+        if: runner.os == 'Windows'
+        run: choco install nsis --yes --no-progress
+
+      - name: Install Cargo Packager
+        run: cargo install cargo-packager --locked --version 0.11.8
+
+      - name: Build and package desktop
+        working-directory: crates/rootglass-desktop
+        run: |
+          cargo build --release
+          cargo packager --release --config Packager.${{ matrix.config }}.toml
+
+      - name: Write package checksum
+        if: runner.os == 'Linux'
+        working-directory: crates/rootglass-desktop
+        run: sha256sum target/release/*.${{ matrix.extension }} > target/release/SHA256SUMS.txt
+
+      - name: Write package checksum
+        if: runner.os == 'macOS'
+        working-directory: crates/rootglass-desktop
+        run: shasum -a 256 target/release/*.${{ matrix.extension }} > target/release/SHA256SUMS.txt
+
+      - name: Write package checksum
+        if: runner.os == 'Windows'
+        working-directory: crates/rootglass-desktop
+        shell: pwsh
+        run: |
+          Get-FileHash target/release/*.${{ matrix.extension }} -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLower())  $([IO.Path]::GetFileName($_.Path))" } |
+            Set-Content target/release/SHA256SUMS.txt
+
+      - name: Upload unsigned package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rootglass-${{ matrix.format }}-${{ runner.os }}-${{ runner.arch }}
+          path: |
+            crates/rootglass-desktop/target/release/*.${{ matrix.extension }}
+            crates/rootglass-desktop/target/release/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
