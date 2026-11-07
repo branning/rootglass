@@ -97,7 +97,7 @@ just materialize-assets
 Equivalent:
 
 ```bash
-./scripts/materialize-example-assets.sh
+bash scripts/materialize-example-assets.sh
 ```
 
 This downloads canned Alpine Linux aarch64 assets and generates local files ignored by Git:
