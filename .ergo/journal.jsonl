@@ -86,3 +86,5 @@
 {"version":1,"task_id":"Y4UJKY","kind":"open","at":"2026-11-07T08:56:29.10149311Z"}
 {"version":1,"task_id":"MJPX6T","kind":"result","at":"2026-11-07T09:07:43.274453859Z","agent":"codex@worker-1","text":"Parity/API docs and libghostty gates added; links, Ergo JSON, and diff checks pass. Awaiting PR review/merge."}
 {"version":1,"task_id":"MJPX6T","kind":"result","at":"2026-11-07T09:08:30.858596778Z","agent":"codex@worker-1","text":"Opened PR #49; doc checks pass; waiting for maintainer review and merge."}
+{"version":1,"task_id":"UJJ6VB","kind":"created","at":"2026-11-07T10:32:49.07251148Z"}
+{"version":1,"task_id":"UJJ6VB","kind":"open","at":"2026-11-07T10:33:11.870583044Z"}
