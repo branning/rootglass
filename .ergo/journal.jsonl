@@ -92,3 +92,4 @@
 {"version":1,"task_id":"6623ZQ","kind":"result","at":"2026-11-07T09:46:19.118990576Z","agent":"codex@worker-1","text":"A-05 guest mounted /state; nonce 0a9d3c42ff59796ac7c0e2fcf4b0cb7d survived reboot; read exact bytes."}
 {"version":1,"task_id":"6623ZQ","kind":"result","at":"2026-11-07T09:46:19.125147067Z","agent":"codex@worker-1","text":"Checks: fmt; 17 app + 3 qemu tests; clippy -D warnings; real A-05 guest smoke passed."}
 {"version":1,"task_id":"6623ZQ","kind":"result","at":"2026-11-07T09:46:19.131226132Z","agent":"codex@worker-1","text":"Limit: persistent guest writes use /state; OverlayFS remains unimplemented."}
+{"version":1,"task_id":"6623ZQ","kind":"result","at":"2026-11-07T09:50:36.070418514Z","agent":"codex@worker-1","text":"PR #50 is stacked on S16.1 PR #49; awaiting maintainer review and merge."}
