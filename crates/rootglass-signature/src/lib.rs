@@ -11,6 +11,7 @@ use thiserror::Error;
 use zip::ZipArchive;
 
 mod signing;
+pub mod trust_config;
 pub use signing::{
     load_signing_key, package_glass_directory, package_glass_directory_at, sign_glass_directory,
     sign_glass_directory_at, SigningReport,
