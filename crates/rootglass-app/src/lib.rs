@@ -3,8 +3,8 @@ pub mod import;
 pub mod registry;
 pub mod state;
 
-use rootglass_core::storage::{LocalWritableOverlay, WritableOverlaySelection};
 use rootglass_core::runtime_assets::RuntimeAssetsResolver;
+use rootglass_core::storage::{LocalWritableOverlay, WritableOverlaySelection};
 use rootglass_core::{HostCapabilities, LaunchRequest, LifecycleState, RootglassRuntime};
 use rootglass_qemu::{QemuLaunchPlan, QemuProcess, SerialChunk};
 use rootglass_signature::trust_config::{load_trust_store, LoadedTrustStore, TrustConfigError};
@@ -962,7 +962,10 @@ mod verified_runtime_launch_tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("rootglass-verified-runtime-{}-{nonce}", std::process::id()))
+        std::env::temp_dir().join(format!(
+            "rootglass-verified-runtime-{}-{nonce}",
+            std::process::id()
+        ))
     }
 
     fn digest(path: &Path) -> String {
@@ -1017,8 +1020,14 @@ mod verified_runtime_launch_tests {
             .expect("verified app launch plan should be prepared");
 
         assert!(command.starts_with(&version_root.join("qemu").display().to_string()));
-        assert!(command.contains(&format!("-kernel {}", version_root.join("kernel").display())));
-        assert!(command.contains(&format!("-initrd {}", version_root.join("initramfs").display())));
+        assert!(command.contains(&format!(
+            "-kernel {}",
+            version_root.join("kernel").display()
+        )));
+        assert!(command.contains(&format!(
+            "-initrd {}",
+            version_root.join("initramfs").display()
+        )));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1033,7 +1042,9 @@ mod verified_runtime_launch_tests {
             .launch_plan(&source)
             .expect_err("tampered runtime must not produce a launch plan");
 
-        assert!(error.detail.contains("runtime asset integrity check failed"));
+        assert!(error
+            .detail
+            .contains("runtime asset integrity check failed"));
         let _ = fs::remove_dir_all(root);
     }
 }
