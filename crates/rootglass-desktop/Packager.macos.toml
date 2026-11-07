@@ -9,6 +9,6 @@ binaries = [{ path = "rootglass-desktop", main = true }]
 out-dir = "target/release"
 resources = ["../../LICENSE", "../../NOTICE.md"]
 file-associations = [
-  { extensions = ["glass"], mime-type = "application/vnd.rootglass.glass", description = "Rootglass guest package", name = "Rootglass Glass", role = "Editor" }
+  { extensions = ["glass"], mime-type = "application/vnd.rootglass.glass", description = "Rootglass guest package", name = "Rootglass Glass", role = "editor" }
 ]
 formats = ["dmg"]
