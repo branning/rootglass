@@ -466,6 +466,7 @@ impl Render for RootglassWindow {
                         &self.model.state,
                         &self.model.installed_glasses,
                         self.model.library_error.as_deref(),
+                        cx,
                     ))
                     .child(details_view(&self.model.state)),
             )
@@ -589,6 +590,7 @@ fn library_view(
     state: &UiState,
     installed_glasses: &[InstalledGlass],
     library_error: Option<&str>,
+    cx: &mut Context<RootglassWindow>,
 ) -> Div {
     let mut view = div().v_flex().child("Library");
     if installed_glasses.is_empty() {
@@ -597,8 +599,16 @@ fn library_view(
             .child("Open an existing .glass bundle to inspect it.");
     } else {
         for glass in installed_glasses {
+            let path = glass.package_path.clone();
             view = view
-                .child(format!("{} {}", glass.name, glass.version))
+                .child(
+                    Button::new(format!("installed-{}", glass.content_sha256))
+                        .label(format!("{} {}", glass.name, glass.version))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.model.select_bundle(path.clone());
+                            cx.notify();
+                        })),
+                )
                 .child(format!("Publisher: {}", glass.publisher_name))
                 .child(format!("Installed at: {}", glass.package_path.display()));
         }
