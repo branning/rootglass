@@ -1,6 +1,32 @@
 # Rootglass agent instructions
 
-**Start here:** [docs/app-spec.md](docs/app-spec.md). It is the authoritative implementation contract. Read sections 0, 2, 6, 10 and 12 before editing code.
+**Start here for every model and harness:** read the local
+[Rootglass Ergo skill](.agents/skills/rootglass-ergo/SKILL.md) before planning,
+choosing, implementing, resuming or handing off work. If your harness does not
+auto-load skills, open that file explicitly. `AGENTS.md` is the shared entry
+point; no model-specific instruction file is needed.
+
+**First actions, from the repository root:**
+
+```sh
+ergo --help
+ergo quickstart
+ergo where
+ergo list --ready
+ergo show TASK_ID
+```
+
+Replace `TASK_ID` with an actual Ergo ID. Confirm the backlog belongs to this
+checkout, inspect prerequisite outcomes, then claim one authorized ready task
+with `ergo claim TASK_ID --agent YOUR_IDENTITY`. If Ergo is missing, follow the
+[install instructions](docs/agent-workflow.md#install-and-find-work); do not
+create another backlog or edit JSONL by hand. Failed/canceled prerequisites can
+appear ready in Ergo: verify their required results before starting.
+
+The [app spec](docs/app-spec.md) is the product/technical contract. Read sections
+0, 2, 6, 10 and 12 before editing code, plus your task's referenced requirements.
+Ergo owns current task status and dependencies; the spec's Sxx table is not a
+queue of new work.
 
 ## Rules for every coding agent
 
@@ -18,7 +44,7 @@
 
 ## Fast path
 
-1. Choose assigned `Sxx` package in [`12 swarm work packages](docs/app-spec.md#12-swarm-work-packages-assign-one-owner-per-package).
+1. Follow the local Ergo skill: inspect and claim one authorized ready task. For new user-requested work, create a focused task if none already covers it; retain its Sxx/A-xx references where applicable.
 2. Verify dependencies and path ownership; begin with source/tests.
 3. Implement smallest usable slice with tests. Use section 10 of `docs/app-spec.md` for exact acceptance criteria.
 4. Run `cargo fmt --all -- --check`, relevant `cargo test --locked` and `cargo clippy --locked`, plus any guest/platform scenario affected.

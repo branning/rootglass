@@ -6,6 +6,11 @@ work. The tracked `.ergo/backlog.jsonl` owns task status, dependencies and scope
 [app spec](app-spec.md) remains the product/technical contract and acceptance
 criteria. Its Sxx table is a historical index, not a second live task queue.
 
+The root [AGENTS.md](../AGENTS.md) directs every harness to the local
+[Rootglass Ergo skill](../.agents/skills/rootglass-ergo/SKILL.md). That skill is
+the step-by-step checklist for task discovery, execution, blockers and handoff;
+this document supplies installation, atomic delivery and migration details.
+
 ## Install and find work
 
 Install Ergo 6.0.6 (the version used for this migration), or a compatible v6
