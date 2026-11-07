@@ -171,7 +171,7 @@ impl QemuLaunchPlan {
     }
 
     pub fn command_line(&self) -> String {
-        let mut parts = vec![self.binary.path.display().to_string()];
+        let mut parts = vec![shell_quote(&self.binary.path.display().to_string())];
         parts.extend(self.args.iter().map(|arg| shell_quote(arg)));
         parts.join(" ")
     }
