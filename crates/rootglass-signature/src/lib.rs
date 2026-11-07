@@ -215,6 +215,11 @@ impl TrustStore {
         }])
     }
 
+    /// The public publisher metadata held by this verifier.
+    pub fn publishers(&self) -> impl Iterator<Item = &TrustedPublisher> {
+        self.publishers.values()
+    }
+
     fn get(&self, key_id: &str) -> Option<&TrustedPublisher> {
         self.publishers.get(key_id)
     }

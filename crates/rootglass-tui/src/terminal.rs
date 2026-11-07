@@ -64,6 +64,7 @@ fn run_session(
     let mut worker = ServiceWorker::spawn(model.shared_service())?;
     let mut poll_pending = false;
     worker.refresh_library()?;
+    worker.refresh_trust()?;
     if let Some(path) = initial_path {
         open_path(model, path, &mut worker)?;
     }
@@ -124,6 +125,10 @@ enum InputMode {
     LibraryFilter,
     Console,
     ConfirmRemoval,
+    StateCreateName,
+    StateCloneName,
+    ConfirmStateReset,
+    ConfirmStateDelete,
     DeveloperMenu,
     DeveloperSource,
     DeveloperKeyFile,
@@ -136,6 +141,7 @@ struct InputBuffer {
     mode: InputMode,
     text: String,
     developer_form: Option<DeveloperForm>,
+    state_id: Option<String>,
 }
 
 struct DeveloperForm {
@@ -165,6 +171,23 @@ impl InputBuffer {
                 "Remove {}?  [y] confirm  [n/Esc] cancel",
                 self.text
             )),
+            InputMode::StateCreateName => Some(format!(
+                "New state name: {}  (Enter creates, Esc cancels)",
+                self.text
+            )),
+            InputMode::StateCloneName => Some(format!(
+                "Clone {} as: {}  (Enter clones, Esc cancels)",
+                self.state_id.as_deref().unwrap_or("state"),
+                self.text
+            )),
+            InputMode::ConfirmStateReset => Some(format!(
+                "Reset state {} from the immutable template?  [y] confirm  [n/Esc] cancel",
+                self.state_id.as_deref().unwrap_or("state")
+            )),
+            InputMode::ConfirmStateDelete => Some(format!(
+                "Delete state {}?  [y] confirm  [n/Esc] cancel",
+                self.state_id.as_deref().unwrap_or("state")
+            )),
             InputMode::DeveloperMenu => Some(
                 "Developer signing/package: [s] sign directory  [p] create .glass ZIP  [Esc] back"
                     .to_string(),
@@ -192,6 +215,7 @@ impl InputBuffer {
         self.mode = InputMode::Normal;
         self.text.clear();
         self.developer_form = None;
+        self.state_id = None;
     }
 
     fn push(&mut self, character: char) {
@@ -211,7 +235,8 @@ fn handle_key(
         return Ok(true);
     }
     if key.code == KeyCode::Char('q')
-        && matches!(input.mode, InputMode::Normal | InputMode::DeveloperMenu)
+        && (input.mode == InputMode::DeveloperMenu
+            || (input.mode == InputMode::Normal && !model.operations_panel_open))
     {
         return Ok(true);
     }
@@ -225,12 +250,19 @@ fn handle_key(
     if input.mode == InputMode::Normal && model.developer_is_open() {
         return handle_developer_panel_key(model, input, key);
     }
+    if input.mode == InputMode::Normal && model.operations_panel_open {
+        return handle_operations_panel_key(model, input, key, worker);
+    }
 
     match input.mode {
         InputMode::OpenPath => handle_path_key(model, input, key, worker),
         InputMode::LibraryFilter => handle_filter_key(model, input, key),
         InputMode::Console => handle_console_key(model, input, key, worker),
         InputMode::ConfirmRemoval => handle_remove_confirmation_key(model, input, key, worker),
+        InputMode::StateCreateName
+        | InputMode::StateCloneName
+        | InputMode::ConfirmStateReset
+        | InputMode::ConfirmStateDelete => handle_state_input_key(model, input, key, worker),
         InputMode::DeveloperMenu => handle_developer_menu_key(model, input, key),
         InputMode::DeveloperSource
         | InputMode::DeveloperKeyFile
@@ -497,6 +529,141 @@ fn handle_remove_confirmation_key(
     Ok(false)
 }
 
+fn handle_operations_panel_key(
+    model: &mut UiModel,
+    input: &mut InputBuffer,
+    key: KeyEvent,
+    worker: &mut ServiceWorker,
+) -> Result<bool, String> {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('t') => model.operations_panel_open = false,
+        KeyCode::Up => model.move_state_cursor(false),
+        KeyCode::Down => model.move_state_cursor(true),
+        KeyCode::Char('c') if model.actions().state_create => {
+            input.text.clear();
+            input.mode = InputMode::StateCreateName;
+        }
+        KeyCode::Char('l') if model.actions().state_clone => {
+            if let Some(state) = model.focused_state() {
+                input.text.clear();
+                input.state_id = Some(state.id.clone());
+                input.mode = InputMode::StateCloneName;
+            }
+        }
+        KeyCode::Char('s') if model.actions().state_select => {
+            if let Some(state) = model.focused_state() {
+                let state_id = state.id.clone();
+                if state_id != model.selected_state_id {
+                    if let Some(path) = model.selected_path.clone() {
+                        request_state_action(
+                            model,
+                            worker,
+                            path,
+                            StateOperation::Select(state_id),
+                        )?;
+                    }
+                }
+            }
+        }
+        KeyCode::Char('r') if model.actions().reset_state => {
+            if let Some(state) = model.focused_state() {
+                input.state_id = Some(state.id.clone());
+                input.mode = InputMode::ConfirmStateReset;
+            }
+        }
+        KeyCode::Char('d') if model.actions().state_delete => {
+            if let Some(state) = model.focused_state() {
+                input.state_id = Some(state.id.clone());
+                input.mode = InputMode::ConfirmStateDelete;
+            }
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
+fn handle_state_input_key(
+    model: &mut UiModel,
+    input: &mut InputBuffer,
+    key: KeyEvent,
+    worker: &mut ServiceWorker,
+) -> Result<bool, String> {
+    match input.mode {
+        InputMode::ConfirmStateReset | InputMode::ConfirmStateDelete => match key.code {
+            KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => input.clear(),
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                let Some(state_id) = input.state_id.take() else {
+                    input.clear();
+                    return Ok(false);
+                };
+                let path = model.selected_path.clone();
+                let operation = if input.mode == InputMode::ConfirmStateReset {
+                    StateOperation::Reset(state_id.clone())
+                } else {
+                    StateOperation::Delete(state_id.clone())
+                };
+                input.clear();
+                if let Some(path) = path {
+                    request_state_action(model, worker, path, operation)?;
+                }
+            }
+            _ => {}
+        },
+        InputMode::StateCreateName | InputMode::StateCloneName => match key.code {
+            KeyCode::Esc => input.clear(),
+            KeyCode::Enter => {
+                let name = std::mem::take(&mut input.text);
+                let operation = if input.mode == InputMode::StateCreateName {
+                    StateOperation::Create(name.trim().to_string())
+                } else {
+                    let source_id = input.state_id.clone().unwrap_or_default();
+                    StateOperation::Clone {
+                        source_id,
+                        new_name: name.trim().to_string(),
+                    }
+                };
+                input.clear();
+                if let Some(path) = model.selected_path.clone() {
+                    request_state_action(model, worker, path, operation)?;
+                }
+            }
+            KeyCode::Backspace => {
+                input.text.pop();
+            }
+            KeyCode::Char(character) if accepts_text_key(key) => input.push(character),
+            _ => {}
+        },
+        _ => {}
+    }
+    Ok(false)
+}
+
+fn request_state_action(
+    model: &mut UiModel,
+    worker: &mut ServiceWorker,
+    path: PathBuf,
+    operation: StateOperation,
+) -> Result<(), String> {
+    if !model.begin_state_operation() {
+        return Ok(());
+    }
+    if let Err(error) = worker.state_action(path, operation) {
+        model.state_busy = false;
+        model.state_error = Some(error.clone());
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn refresh_state_selection(model: &mut UiModel, worker: &mut ServiceWorker) -> Result<(), String> {
+    if matches!(model.state, UiState::Ready(_) | UiState::Blocked(_)) {
+        if let Some(path) = model.selected_path.clone() {
+            request_state_action(model, worker, path, StateOperation::Refresh)?;
+        }
+    }
+    Ok(())
+}
+
 fn handle_normal_key(
     model: &mut UiModel,
     input: &mut InputBuffer,
@@ -525,6 +692,13 @@ fn handle_normal_key(
         KeyCode::Char('D') if model.actions().developer => {
             model.open_developer();
             input.mode = InputMode::DeveloperMenu;
+        }
+        KeyCode::Char('t') => {
+            model.operations_panel_open = true;
+            worker.refresh_trust()?;
+            if let Some(path) = model.selected_path.clone() {
+                request_state_action(model, worker, path, StateOperation::Refresh)?;
+            }
         }
         KeyCode::Char('P') if model.actions().console_pause => model.toggle_console_pause(),
         KeyCode::Char('c') if model.actions().console_clear => model.clear_console(),
@@ -630,7 +804,11 @@ fn open_path(model: &mut UiModel, path: PathBuf, worker: &mut ServiceWorker) -> 
 
 fn start_guest(model: &mut UiModel, worker: &mut ServiceWorker) -> Result<(), String> {
     if let Some((ticket, path)) = model.begin_start() {
-        worker.start(ticket, path)?;
+        let state_id = model
+            .state_loaded
+            .then_some(model.selected_state_id.clone())
+            .filter(|_| model.state_error.is_none());
+        worker.start(ticket, path, state_id)?;
     }
     Ok(())
 }
@@ -671,7 +849,11 @@ fn stop_guest(model: &mut UiModel, worker: &mut ServiceWorker) -> Result<(), Str
 
 fn restart_guest(model: &mut UiModel, worker: &mut ServiceWorker) -> Result<(), String> {
     if let Some((ticket, run, path)) = model.begin_restart() {
-        worker.restart(ticket, run, path)?;
+        let state_id = model
+            .state_loaded
+            .then_some(model.selected_state_id.clone())
+            .filter(|_| model.state_error.is_none());
+        worker.restart(ticket, run, path, state_id)?;
     }
     Ok(())
 }
@@ -690,13 +872,15 @@ fn stop_active_guest(model: &mut UiModel) -> Result<(), String> {
 
 enum WorkerRequest {
     RefreshLibrary,
+    RefreshTrust,
+    StateAction(PathBuf, StateOperation),
     Open(OperationTicket, PathBuf),
     ValidateManifest(OperationTicket, PathBuf),
     PlanBundle(OperationTicket, PathBuf),
     RemoveInstalled(OperationTicket, String),
-    Start(OperationTicket, PathBuf),
+    Start(OperationTicket, PathBuf, Option<String>),
     Stop(OperationTicket, RunId),
-    Restart(OperationTicket, RunId, PathBuf),
+    Restart(OperationTicket, RunId, PathBuf, Option<String>),
     PollEvents,
     WriteSerial(RunId, Vec<u8>),
     Developer(DeveloperRequest),
@@ -712,6 +896,8 @@ enum OpenedBundle {
 
 enum WorkerCompletion {
     Library(Result<Vec<InstalledGlass>, AppError>),
+    Trust(Result<rootglass_app::TrustPolicyStatus, AppError>),
+    States(PathBuf, Result<crate::StateSnapshot, AppError>),
     Opened(OperationTicket, OpenedBundle),
     Validated(
         OperationTicket,
@@ -726,6 +912,16 @@ enum WorkerCompletion {
     Written(RunId, Result<(), AppError>),
     Developer(Result<crate::DeveloperResult, String>),
     OrphanStopped(RunId, Result<(), AppError>),
+}
+
+#[derive(Clone, Debug)]
+enum StateOperation {
+    Refresh,
+    Select(String),
+    Create(String),
+    Clone { source_id: String, new_name: String },
+    Reset(String),
+    Delete(String),
 }
 
 struct ServiceWorker {
@@ -766,6 +962,14 @@ impl ServiceWorker {
         self.send(WorkerRequest::RefreshLibrary)
     }
 
+    fn refresh_trust(&mut self) -> Result<(), String> {
+        self.send(WorkerRequest::RefreshTrust)
+    }
+
+    fn state_action(&mut self, path: PathBuf, operation: StateOperation) -> Result<(), String> {
+        self.send(WorkerRequest::StateAction(path, operation))
+    }
+
     fn open(&mut self, ticket: OperationTicket, path: PathBuf) -> Result<(), String> {
         self.send(WorkerRequest::Open(ticket, path))
     }
@@ -782,8 +986,13 @@ impl ServiceWorker {
         self.send(WorkerRequest::RemoveInstalled(ticket, digest))
     }
 
-    fn start(&mut self, ticket: OperationTicket, path: PathBuf) -> Result<(), String> {
-        self.send(WorkerRequest::Start(ticket, path))
+    fn start(
+        &mut self,
+        ticket: OperationTicket,
+        path: PathBuf,
+        state_id: Option<String>,
+    ) -> Result<(), String> {
+        self.send(WorkerRequest::Start(ticket, path, state_id))
     }
 
     fn stop(&mut self, ticket: OperationTicket, run: RunId) -> Result<(), String> {
@@ -795,8 +1004,9 @@ impl ServiceWorker {
         ticket: OperationTicket,
         run: RunId,
         path: PathBuf,
+        state_id: Option<String>,
     ) -> Result<(), String> {
-        self.send(WorkerRequest::Restart(ticket, run, path))
+        self.send(WorkerRequest::Restart(ticket, run, path, state_id))
     }
 
     fn poll_events(&mut self) -> Result<(), String> {
@@ -909,14 +1119,25 @@ impl ServiceWorker {
     ) -> Result<Option<String>, String> {
         match completion {
             WorkerCompletion::Library(result) => model.finish_library_refresh(result),
+            WorkerCompletion::Trust(result) => model.finish_trust_policy(result),
+            WorkerCompletion::States(path, result) => {
+                if model.selected_path.as_ref() == Some(&path) {
+                    model.finish_state_operation(result);
+                }
+            }
             WorkerCompletion::Opened(_, OpenedBundle::Cancelled) => {}
             WorkerCompletion::Opened(ticket, OpenedBundle::Inspected(result)) => {
-                model.finish_inspection(&ticket, *result);
+                if model.finish_inspection(&ticket, *result) {
+                    refresh_state_selection(model, self)?;
+                }
             }
             WorkerCompletion::Opened(ticket, OpenedBundle::Imported(result)) => {
                 let imported = result.is_ok();
-                if !model.finish_import(&ticket, *result) && imported {
+                let applied = model.finish_import(&ticket, *result);
+                if !applied && imported {
                     self.refresh_library()?;
+                } else if applied {
+                    refresh_state_selection(model, self)?;
                 }
             }
             WorkerCompletion::Validated(ticket, result) => {
@@ -993,6 +1214,25 @@ fn service_worker_loop(
                 &service,
                 |service| service.installed_glasses(),
             ))),
+            WorkerRequest::RefreshTrust => {
+                Some(WorkerCompletion::Trust(with_service(&service, |service| {
+                    Ok(service.trust_policy_status())
+                })))
+            }
+            WorkerRequest::StateAction(path, operation) => {
+                let result = with_service(&service, |service| match &operation {
+                    StateOperation::Refresh => service.list_states(&path),
+                    StateOperation::Select(id) => service.select_state(&path, id),
+                    StateOperation::Create(name) => service.create_state(&path, name),
+                    StateOperation::Clone {
+                        source_id,
+                        new_name,
+                    } => service.clone_state(&path, source_id, new_name),
+                    StateOperation::Reset(id) => service.reset_state(&path, id),
+                    StateOperation::Delete(id) => service.delete_state(&path, id),
+                });
+                Some(WorkerCompletion::States(path, result))
+            }
             WorkerRequest::Open(ticket, path) => {
                 let opened = if ticket.is_cancelled() {
                     OpenedBundle::Cancelled
@@ -1022,7 +1262,7 @@ fn service_worker_loop(
                 ticket,
                 with_service(&service, |service| service.remove_installed(&digest)),
             )),
-            WorkerRequest::Start(ticket, path) => {
+            WorkerRequest::Start(ticket, path, state_id) => {
                 let result = if ticket.is_cancelled() {
                     Err(AppError {
                         phase: LifecycleState::Starting,
@@ -1030,7 +1270,9 @@ fn service_worker_loop(
                         detail: "The TUI canceled this operation before guest startup.".to_string(),
                     })
                 } else {
-                    with_service(&service, |service| service.start(&path))
+                    with_service(&service, |service| {
+                        service.start_with_state(&path, state_id.as_deref())
+                    })
                 };
                 Some(WorkerCompletion::Started(ticket, result))
             }
@@ -1038,10 +1280,14 @@ fn service_worker_loop(
                 ticket,
                 with_service(&service, |service| service.stop(&run)),
             )),
-            WorkerRequest::Restart(ticket, run, path) => Some(WorkerCompletion::Restarted(
-                ticket,
-                with_service(&service, |service| service.restart(&run, &path)),
-            )),
+            WorkerRequest::Restart(ticket, run, path, state_id) => {
+                Some(WorkerCompletion::Restarted(
+                    ticket,
+                    with_service(&service, |service| {
+                        service.restart_with_state(&run, &path, state_id.as_deref())
+                    }),
+                ))
+            }
             WorkerRequest::PollEvents => Some(WorkerCompletion::Polled(with_service(
                 &service,
                 |service| service.poll_events(),
@@ -1207,9 +1453,14 @@ fn keep_first_error(first_error: &mut Option<io::Error>, result: io::Result<()>)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{GlassPreview, PreflightDetails, SignatureStatus, TuiService, UiState};
+    use crate::{
+        GlassPreview, PreflightDetails, SignatureStatus, StateSnapshot, TuiService, UiState,
+    };
     use rootglass_app::registry::InstalledGlass;
-    use rootglass_app::{AppError, AppService, RunId, RuntimeEvent};
+    use rootglass_app::state::StateRecord;
+    use rootglass_app::{
+        AppError, AppService, RunId, RuntimeEvent, TrustPolicyStatus, TrustedPublisherStatus,
+    };
     use rootglass_core::runtime_assets::RuntimeAssetsResolver;
     use serde_json::json;
     use sha2::{Digest, Sha256};
@@ -1332,7 +1583,12 @@ mod tests {
     #[derive(Clone, Default)]
     struct FakeService {
         calls: Arc<Mutex<Vec<String>>>,
+        states_used: Arc<Mutex<Vec<String>>>,
         glasses: Vec<InstalledGlass>,
+        states: Vec<StateRecord>,
+        selected_state_id: String,
+        fail_state_ops: bool,
+        trust_status: TrustPolicyStatus,
         import_entered: Option<Arc<Barrier>>,
         import_release: Option<Arc<Barrier>>,
         start_entered: Option<Arc<Barrier>>,
@@ -1401,6 +1657,131 @@ mod tests {
                 .unwrap()
                 .push(format!("serial:{}", String::from_utf8_lossy(bytes)));
             Ok(())
+        }
+
+        fn trust_policy_status(&mut self) -> TrustPolicyStatus {
+            self.trust_status.clone()
+        }
+
+        fn list_states(&mut self, _source: &Path) -> Result<StateSnapshot, AppError> {
+            self.state_result()
+        }
+
+        fn select_state(&mut self, _source: &Path, id: &str) -> Result<StateSnapshot, AppError> {
+            self.check_state_operation()?;
+            if id != "default" && !self.states.iter().any(|state| state.id == id) {
+                return Err(state_not_found(id));
+            }
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("select-state:{id}"));
+            self.selected_state_id = id.to_string();
+            self.state_result()
+        }
+
+        fn create_state(&mut self, _source: &Path, name: &str) -> Result<StateSnapshot, AppError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("create-state:{name}"));
+            self.check_state_operation()?;
+            self.states.push(fake_state(name));
+            self.state_result()
+        }
+
+        fn clone_state(
+            &mut self,
+            _source: &Path,
+            source_id: &str,
+            new_name: &str,
+        ) -> Result<StateSnapshot, AppError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("clone-state:{source_id}:{new_name}"));
+            self.check_state_operation()?;
+            self.states.push(fake_state(new_name));
+            self.state_result()
+        }
+
+        fn reset_state(&mut self, _source: &Path, id: &str) -> Result<StateSnapshot, AppError> {
+            self.calls.lock().unwrap().push(format!("reset-state:{id}"));
+            self.check_state_operation()?;
+            self.state_result()
+        }
+
+        fn delete_state(&mut self, _source: &Path, id: &str) -> Result<StateSnapshot, AppError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("delete-state:{id}"));
+            self.check_state_operation()?;
+            self.states.retain(|state| state.id != id);
+            if self.selected_state_id == id {
+                self.selected_state_id = "default".to_string();
+            }
+            self.state_result()
+        }
+
+        fn start_with_state(
+            &mut self,
+            source: &Path,
+            state_id: Option<&str>,
+        ) -> Result<RunId, AppError> {
+            self.states_used
+                .lock()
+                .unwrap()
+                .push(state_id.unwrap_or("stored").to_string());
+            self.start(source)
+        }
+    }
+
+    impl FakeService {
+        fn check_state_operation(&self) -> Result<(), AppError> {
+            if self.fail_state_ops {
+                Err(AppError {
+                    phase: rootglass_core::LifecycleState::Ready,
+                    summary: "State change was denied.".to_string(),
+                    detail: "glass state is currently in use".to_string(),
+                })
+            } else {
+                Ok(())
+            }
+        }
+
+        fn state_result(&self) -> Result<StateSnapshot, AppError> {
+            self.check_state_operation()?;
+            let mut records = self.states.clone();
+            if !records.iter().any(|state| state.id == "default") {
+                records.insert(0, fake_state("default"));
+            }
+            Ok(StateSnapshot {
+                records,
+                locked: false,
+                selected_state_id: if self.selected_state_id.is_empty() {
+                    "default".to_string()
+                } else {
+                    self.selected_state_id.clone()
+                },
+            })
+        }
+    }
+
+    fn fake_state(name: &str) -> StateRecord {
+        StateRecord {
+            id: name.to_string(),
+            name: name.to_string(),
+            image_path: PathBuf::from(format!("/states/{name}.img")),
+            image_bytes: 32,
+        }
+    }
+
+    fn state_not_found(id: &str) -> AppError {
+        AppError {
+            phase: rootglass_core::LifecycleState::Ready,
+            summary: "The selected writable state could not be prepared.".to_string(),
+            detail: format!("state {id} does not exist"),
         }
     }
 
@@ -1746,7 +2127,12 @@ mod tests {
         let archive = root.join("archive.glass");
         fs::create_dir_all(&directory).unwrap();
         fs::write(&archive, b"zip fixture placeholder").unwrap();
-        let mut model = UiModel::with_service(FakeService::default(), UiState::Empty);
+        let service = FakeService {
+            states: vec![fake_state("saved")],
+            selected_state_id: "saved".to_string(),
+            ..FakeService::default()
+        };
+        let mut model = UiModel::with_service(service, UiState::Empty);
         let mut worker = ServiceWorker::spawn(model.shared_service()).expect("worker starts");
 
         open_path(&mut model, directory.clone(), &mut worker).expect("directory open is queued");
@@ -1755,6 +2141,8 @@ mod tests {
             .drain_until_idle(&mut model)
             .expect("directory inspection completes");
         assert!(matches!(model.state, UiState::Ready(_)));
+        assert!(model.state_loaded);
+        assert_eq!(model.selected_state_id, "saved");
 
         open_path(&mut model, archive.clone(), &mut worker).expect("archive open is queued");
         assert!(matches!(model.state, UiState::Opening(_)));
@@ -1762,6 +2150,8 @@ mod tests {
             .drain_until_idle(&mut model)
             .expect("archive import and inspection complete");
         assert!(matches!(model.state, UiState::Ready(_)));
+        assert!(model.state_loaded);
+        assert_eq!(model.selected_state_id, "saved");
         assert_eq!(model.installed_glasses.len(), 1);
         assert_eq!(model.installed_glasses[0].package_path, archive);
         drop(worker);
@@ -1842,6 +2232,7 @@ mod tests {
             mode: InputMode::Console,
             text: String::new(),
             developer_form: None,
+            state_id: None,
         };
         let mut worker = ServiceWorker::spawn(model.shared_service()).expect("worker starts");
 
@@ -1924,6 +2315,7 @@ mod tests {
             mode: InputMode::OpenPath,
             text: "unfinished".to_string(),
             developer_form: None,
+            state_id: None,
         };
 
         assert!(handle_key(
@@ -1972,6 +2364,7 @@ mod tests {
             mode: InputMode::Console,
             text: String::new(),
             developer_form: None,
+            state_id: None,
         };
         let mut worker = ServiceWorker::spawn(model.shared_service()).expect("worker starts");
 
@@ -2026,7 +2419,12 @@ mod tests {
         let start_release = Arc::new(Barrier::new(2));
         let service = FakeService {
             calls: Arc::clone(&calls),
+            states_used: Arc::new(Mutex::new(Vec::new())),
             glasses: Vec::new(),
+            states: Vec::new(),
+            selected_state_id: "default".to_string(),
+            fail_state_ops: false,
+            trust_status: TrustPolicyStatus::default(),
             import_entered: None,
             import_release: None,
             start_entered: Some(Arc::clone(&start_entered)),
@@ -2055,6 +2453,315 @@ mod tests {
 
         assert_eq!(*calls.lock().unwrap(), ["start", "stop"]);
         assert!(model.run_id.is_none());
+    }
+
+    #[test]
+    fn state_reset_requires_confirmation_and_lock_conflicts_disable_state_actions() {
+        let path = PathBuf::from("example.glass");
+        let service = FakeService {
+            states: vec![fake_state("default")],
+            ..FakeService::default()
+        };
+        let calls = Arc::clone(&service.calls);
+        let mut model = UiModel::with_service(service, UiState::Ready(preview(path.clone())));
+        model.selected_path = Some(path);
+        model.state_records = vec![fake_state("default")];
+        model.operations_panel_open = true;
+        let mut input = InputBuffer::default();
+        let mut worker = ServiceWorker::spawn(model.shared_service()).expect("worker starts");
+
+        handle_key(
+            &mut model,
+            &mut input,
+            KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE),
+            &mut worker,
+        )
+        .expect("reset opens confirmation");
+        assert_eq!(input.mode, InputMode::ConfirmStateReset);
+        handle_key(
+            &mut model,
+            &mut input,
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+            &mut worker,
+        )
+        .expect("cancel reset");
+        assert!(calls.lock().unwrap().is_empty());
+
+        handle_key(
+            &mut model,
+            &mut input,
+            KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE),
+            &mut worker,
+        )
+        .expect("reset opens a second confirmation");
+        handle_key(
+            &mut model,
+            &mut input,
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+            &mut worker,
+        )
+        .expect("confirmed reset is scheduled");
+        worker
+            .drain_until_idle(&mut model)
+            .expect("reset operation finishes");
+        assert_eq!(*calls.lock().unwrap(), ["reset-state:default"]);
+
+        let service = FakeService {
+            states: vec![fake_state("default")],
+            fail_state_ops: true,
+            ..FakeService::default()
+        };
+        let path = PathBuf::from("example.glass");
+        let mut locked_model =
+            UiModel::with_service(service, UiState::Ready(preview(path.clone())));
+        locked_model.selected_path = Some(path);
+        locked_model.state_records = vec![fake_state("default")];
+        locked_model.operations_panel_open = true;
+        let mut locked_input = InputBuffer::default();
+        let mut locked_worker =
+            ServiceWorker::spawn(locked_model.shared_service()).expect("worker starts");
+        handle_key(
+            &mut locked_model,
+            &mut locked_input,
+            KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE),
+            &mut locked_worker,
+        )
+        .expect("locked reset opens confirmation before lock status refresh");
+        handle_key(
+            &mut locked_model,
+            &mut locked_input,
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+            &mut locked_worker,
+        )
+        .expect("conflicting reset is sent to the service safety lock");
+        locked_worker
+            .drain_until_idle(&mut locked_model)
+            .expect("lock conflict is reported");
+        assert!(locked_model.state_locked);
+        assert!(locked_model
+            .state_error
+            .as_deref()
+            .is_some_and(|error| error.contains("currently in use")));
+        assert!(!locked_model.actions().state_create);
+        assert!(!locked_model.actions().state_delete);
+
+        locked_model.run_id = Some(RunId(7));
+        locked_model.state = UiState::Running(crate::RunDetails {
+            name: "Example".to_string(),
+            status: "Running".to_string(),
+            elapsed: String::new(),
+        });
+        assert!(!locked_model.actions().state_select);
+        assert!(!locked_model.actions().reset_state);
+        assert!(!locked_model.actions().state_delete);
+    }
+
+    #[test]
+    fn selected_state_is_used_for_boot_and_preserved_by_guest_restart() {
+        let path = PathBuf::from("example.glass");
+        let service = FakeService {
+            states: vec![fake_state("default"), fake_state("persistent")],
+            ..FakeService::default()
+        };
+        let used = Arc::clone(&service.states_used);
+        let mut model = UiModel::with_service(service, UiState::Ready(preview(path.clone())));
+        model.selected_path = Some(path);
+        model.state_records = vec![fake_state("default"), fake_state("persistent")];
+        model.state_cursor = 1;
+        model.operations_panel_open = true;
+        let mut input = InputBuffer::default();
+        let mut worker = ServiceWorker::spawn(model.shared_service()).expect("worker starts");
+
+        handle_key(
+            &mut model,
+            &mut input,
+            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE),
+            &mut worker,
+        )
+        .expect("selected state is validated by the service");
+        worker
+            .drain_until_idle(&mut model)
+            .expect("state selection finishes");
+        assert_eq!(model.selected_state_id, "persistent");
+
+        model.operations_panel_open = false;
+        start_guest(&mut model, &mut worker).expect("boot is scheduled with selected state");
+        worker
+            .drain_until_idle(&mut model)
+            .expect("boot operation finishes");
+        model.apply_poll_result(Ok(vec![RuntimeEvent::GuestReady {
+            run: RunId(7),
+            evidence: "fixture login prompt".to_string(),
+        }]));
+        restart_guest(&mut model, &mut worker).expect("restart reuses selected state");
+        worker
+            .drain_until_idle(&mut model)
+            .expect("restart operation finishes");
+
+        assert_eq!(*used.lock().unwrap(), ["persistent", "persistent"]);
+    }
+
+    #[test]
+    fn state_panel_creates_clones_selects_and_confirms_deletion() {
+        let path = PathBuf::from("example.glass");
+        let service = FakeService {
+            states: vec![fake_state("default"), fake_state("source")],
+            ..FakeService::default()
+        };
+        let calls = Arc::clone(&service.calls);
+        let mut model = UiModel::with_service(service, UiState::Ready(preview(path.clone())));
+        model.selected_path = Some(path);
+        model.state_records = vec![fake_state("default"), fake_state("source")];
+        model.operations_panel_open = true;
+        let mut input = InputBuffer::default();
+        let mut worker = ServiceWorker::spawn(model.shared_service()).expect("worker starts");
+
+        handle_key(
+            &mut model,
+            &mut input,
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE),
+            &mut worker,
+        )
+        .expect("create opens a name prompt");
+        assert_eq!(input.mode, InputMode::StateCreateName);
+        for character in "new-state".chars() {
+            handle_key(
+                &mut model,
+                &mut input,
+                KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE),
+                &mut worker,
+            )
+            .expect("state name is accepted");
+        }
+        handle_key(
+            &mut model,
+            &mut input,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut worker,
+        )
+        .expect("new state is created");
+        worker
+            .drain_until_idle(&mut model)
+            .expect("create operation finishes");
+        assert!(model
+            .state_records
+            .iter()
+            .any(|state| state.id == "new-state"));
+
+        model.state_cursor = model
+            .state_records
+            .iter()
+            .position(|state| state.id == "source")
+            .unwrap();
+        handle_key(
+            &mut model,
+            &mut input,
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE),
+            &mut worker,
+        )
+        .expect("clone opens a name prompt");
+        assert_eq!(input.mode, InputMode::StateCloneName);
+        for character in "copy".chars() {
+            handle_key(
+                &mut model,
+                &mut input,
+                KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE),
+                &mut worker,
+            )
+            .expect("clone name is accepted");
+        }
+        handle_key(
+            &mut model,
+            &mut input,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut worker,
+        )
+        .expect("state is cloned");
+        worker
+            .drain_until_idle(&mut model)
+            .expect("clone operation finishes");
+        let copy_index = model
+            .state_records
+            .iter()
+            .position(|state| state.id == "copy")
+            .unwrap();
+        model.state_cursor = copy_index;
+        handle_key(
+            &mut model,
+            &mut input,
+            KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE),
+            &mut worker,
+        )
+        .expect("cloned state is selected");
+        worker
+            .drain_until_idle(&mut model)
+            .expect("selection operation finishes");
+        assert_eq!(model.selected_state_id, "copy");
+
+        handle_key(
+            &mut model,
+            &mut input,
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
+            &mut worker,
+        )
+        .expect("delete opens a confirmation");
+        assert_eq!(input.mode, InputMode::ConfirmStateDelete);
+        handle_key(
+            &mut model,
+            &mut input,
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+            &mut worker,
+        )
+        .expect("delete can be canceled");
+        assert!(!calls
+            .lock()
+            .unwrap()
+            .contains(&"delete-state:copy".to_string()));
+
+        handle_key(
+            &mut model,
+            &mut input,
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
+            &mut worker,
+        )
+        .expect("delete opens confirmation again");
+        handle_key(
+            &mut model,
+            &mut input,
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+            &mut worker,
+        )
+        .expect("confirmed delete is sent");
+        worker
+            .drain_until_idle(&mut model)
+            .expect("delete operation finishes");
+        assert!(!model.state_records.iter().any(|state| state.id == "copy"));
+        assert_eq!(model.selected_state_id, "default");
+    }
+
+    #[test]
+    fn trust_policy_errors_and_revoked_keys_reach_the_operations_panel_model() {
+        let status = TrustPolicyStatus {
+            config_path: Some(PathBuf::from("/config/rootglass/trust.json")),
+            trusted_publishers: vec![TrustedPublisherStatus {
+                name: "Trusted Publisher".to_string(),
+                identity: "publisher.example/rootglass".to_string(),
+                key_id: "ed25519:trusted".to_string(),
+            }],
+            revoked_key_ids: vec!["ed25519:revoked".to_string()],
+            error: Some("unsupported trust configuration schema".to_string()),
+        };
+        let service = FakeService {
+            trust_status: status.clone(),
+            ..FakeService::default()
+        };
+        let mut model = UiModel::with_service(service, UiState::Empty);
+        let mut worker = ServiceWorker::spawn(model.shared_service()).expect("worker starts");
+        worker.refresh_trust().expect("trust status is queued");
+        worker
+            .drain_until_idle(&mut model)
+            .expect("trust status finishes");
+        assert_eq!(model.trust_policy, status);
     }
 
     #[test]

@@ -1,8 +1,9 @@
 use crate::{DeveloperAction, DeveloperPanel, DeveloperResult};
 use rootglass_app::registry::InstalledGlass;
+use rootglass_app::state::StateRecord;
 use rootglass_app::{
     AppError, AppService, ManifestValidationReport, PreflightReport, RunId, RunOptions,
-    RuntimeEvent,
+    RuntimeEvent, TrustPolicyStatus,
 };
 use rootglass_core::LifecycleState;
 use std::path::{Path, PathBuf};
@@ -120,8 +121,14 @@ pub struct UiActions {
     pub restart: bool,
     pub remove: bool,
     pub refresh: bool,
-    /// State management is intentionally disabled until the named-state UI is implemented.
+    /// Compatibility alias for resetting the focused named state.
     pub reset_state: bool,
+    pub state_manage: bool,
+    pub state_create: bool,
+    pub state_clone: bool,
+    pub state_select: bool,
+    pub state_delete: bool,
+    pub trust_details: bool,
     pub console_input: bool,
     pub console_pause: bool,
     pub console_clear: bool,
@@ -152,6 +159,23 @@ pub enum InspectionOutcome {
 pub struct ImportCompletion {
     pub installed: InstalledGlass,
     pub inspection: InspectionOutcome,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StateSnapshot {
+    pub records: Vec<StateRecord>,
+    pub locked: bool,
+    pub selected_state_id: String,
+}
+
+impl Default for StateSnapshot {
+    fn default() -> Self {
+        Self {
+            records: Vec::new(),
+            locked: false,
+            selected_state_id: "default".to_string(),
+        }
+    }
 }
 
 pub enum StartEffect {
@@ -198,6 +222,57 @@ pub trait TuiService: Send {
     fn stop(&mut self, run: &RunId) -> Result<(), AppError>;
     fn poll_events(&mut self) -> Result<Vec<RuntimeEvent>, AppError>;
     fn write_serial(&mut self, run: &RunId, bytes: &[u8]) -> Result<(), AppError>;
+
+    fn trust_policy_status(&mut self) -> TrustPolicyStatus {
+        TrustPolicyStatus::default()
+    }
+
+    fn list_states(&mut self, _source: &Path) -> Result<StateSnapshot, AppError> {
+        Err(state_api_unavailable("list"))
+    }
+
+    fn select_state(&mut self, _source: &Path, _id: &str) -> Result<StateSnapshot, AppError> {
+        Err(state_api_unavailable("select"))
+    }
+
+    fn create_state(&mut self, _source: &Path, _name: &str) -> Result<StateSnapshot, AppError> {
+        Err(state_api_unavailable("create"))
+    }
+
+    fn clone_state(
+        &mut self,
+        _source: &Path,
+        _source_id: &str,
+        _new_name: &str,
+    ) -> Result<StateSnapshot, AppError> {
+        Err(state_api_unavailable("clone"))
+    }
+
+    fn reset_state(&mut self, _source: &Path, _id: &str) -> Result<StateSnapshot, AppError> {
+        Err(state_api_unavailable("reset"))
+    }
+
+    fn delete_state(&mut self, _source: &Path, _id: &str) -> Result<StateSnapshot, AppError> {
+        Err(state_api_unavailable("delete"))
+    }
+
+    fn start_with_state(
+        &mut self,
+        source: &Path,
+        _state_id: Option<&str>,
+    ) -> Result<RunId, AppError> {
+        self.start(source)
+    }
+
+    fn restart_with_state(
+        &mut self,
+        run: &RunId,
+        source: &Path,
+        state_id: Option<&str>,
+    ) -> Result<RunId, AppError> {
+        self.stop(run)?;
+        self.start_with_state(source, state_id)
+    }
 
     fn import_and_inspect(&mut self, source: &Path) -> Result<ImportCompletion, AppError> {
         let installed = self.import_archive(source)?;
@@ -304,6 +379,106 @@ impl TuiService for AppService {
     fn write_serial(&mut self, run: &RunId, bytes: &[u8]) -> Result<(), AppError> {
         AppService::write_serial(self, run, bytes)
     }
+
+    fn trust_policy_status(&mut self) -> TrustPolicyStatus {
+        AppService::trust_policy_status(self)
+    }
+
+    fn list_states(&mut self, source: &Path) -> Result<StateSnapshot, AppError> {
+        app_state_snapshot(self, source)
+    }
+
+    fn select_state(&mut self, source: &Path, id: &str) -> Result<StateSnapshot, AppError> {
+        AppService::select_state(self, source, id)?;
+        app_state_snapshot(self, source)
+    }
+
+    fn create_state(&mut self, source: &Path, name: &str) -> Result<StateSnapshot, AppError> {
+        AppService::create_state(self, source, name)?;
+        app_state_snapshot(self, source)
+    }
+
+    fn clone_state(
+        &mut self,
+        source: &Path,
+        source_id: &str,
+        new_name: &str,
+    ) -> Result<StateSnapshot, AppError> {
+        AppService::clone_state(self, source, source_id, new_name)?;
+        app_state_snapshot(self, source)
+    }
+
+    fn reset_state(&mut self, source: &Path, id: &str) -> Result<StateSnapshot, AppError> {
+        AppService::reset_state(self, source, id)?;
+        app_state_snapshot(self, source)
+    }
+
+    fn delete_state(&mut self, source: &Path, id: &str) -> Result<StateSnapshot, AppError> {
+        AppService::delete_state(self, source, id)?;
+        app_state_snapshot(self, source)
+    }
+
+    fn start_with_state(
+        &mut self,
+        source: &Path,
+        state_id: Option<&str>,
+    ) -> Result<RunId, AppError> {
+        AppService::start(
+            self,
+            source,
+            RunOptions {
+                state_id: state_id.map(str::to_string),
+            },
+        )
+    }
+
+    fn restart_with_state(
+        &mut self,
+        run: &RunId,
+        source: &Path,
+        state_id: Option<&str>,
+    ) -> Result<RunId, AppError> {
+        AppService::stop(self, run)?;
+        self.start_with_state(source, state_id)
+    }
+}
+
+fn state_api_unavailable(action: &str) -> AppError {
+    AppError {
+        phase: LifecycleState::Ready,
+        summary: "Named state management is unavailable.".to_string(),
+        detail: format!("The active TUI service does not provide the state {action} workflow."),
+    }
+}
+
+fn app_state_snapshot(service: &mut AppService, source: &Path) -> Result<StateSnapshot, AppError> {
+    let records = AppService::list_states(service, source)?;
+    let locked = AppService::states_in_use(service, source)?;
+    let selected_state_id = AppService::selected_state_id(service, source)?;
+    Ok(snapshot_with_default(records, locked, selected_state_id))
+}
+
+fn snapshot_with_default(
+    mut records: Vec<StateRecord>,
+    locked: bool,
+    selected_state_id: String,
+) -> StateSnapshot {
+    if !records.iter().any(|record| record.id == "default") {
+        records.insert(
+            0,
+            StateRecord {
+                id: "default".to_string(),
+                name: "default".to_string(),
+                image_path: PathBuf::new(),
+                image_bytes: 0,
+            },
+        );
+    }
+    StateSnapshot {
+        records,
+        locked,
+        selected_state_id,
+    }
 }
 
 pub struct UiModel {
@@ -319,6 +494,15 @@ pub struct UiModel {
     pub console_truncated: bool,
     pub console_notice: Option<String>,
     pub developer_panel: DeveloperPanel,
+    pub operations_panel_open: bool,
+    pub state_records: Vec<StateRecord>,
+    pub state_cursor: usize,
+    pub selected_state_id: String,
+    pub state_error: Option<String>,
+    pub state_busy: bool,
+    pub state_locked: bool,
+    pub state_loaded: bool,
+    pub trust_policy: TrustPolicyStatus,
     service: SharedService,
     next_generation: u64,
     active_operation: Option<OperationTicket>,
@@ -343,6 +527,15 @@ impl UiModel {
             console_truncated: false,
             console_notice: None,
             developer_panel: DeveloperPanel::Closed,
+            operations_panel_open: false,
+            state_records: Vec::new(),
+            state_cursor: 0,
+            selected_state_id: "default".to_string(),
+            state_error: None,
+            state_busy: false,
+            state_locked: false,
+            state_loaded: true,
+            trust_policy: TrustPolicyStatus::default(),
             service: Arc::new(Mutex::new(Box::new(service))),
             next_generation: 0,
             active_operation: None,
@@ -355,6 +548,59 @@ impl UiModel {
 
     pub fn shared_service(&self) -> SharedService {
         Arc::clone(&self.service)
+    }
+
+    pub fn focused_state(&self) -> Option<&StateRecord> {
+        self.state_records.get(self.state_cursor)
+    }
+
+    pub fn move_state_cursor(&mut self, down: bool) {
+        if self.state_records.is_empty() {
+            self.state_cursor = 0;
+        } else if down {
+            self.state_cursor = (self.state_cursor + 1).min(self.state_records.len() - 1);
+        } else {
+            self.state_cursor = self.state_cursor.saturating_sub(1);
+        }
+    }
+
+    pub fn begin_state_operation(&mut self) -> bool {
+        if self.state_busy || !self.actions().state_manage {
+            return false;
+        }
+        self.state_busy = true;
+        self.state_error = None;
+        true
+    }
+
+    pub fn finish_state_operation(&mut self, result: Result<StateSnapshot, AppError>) {
+        self.state_busy = false;
+        match result {
+            Ok(snapshot) => {
+                self.state_records = snapshot.records;
+                self.state_locked = snapshot.locked;
+                self.selected_state_id = snapshot.selected_state_id;
+                self.state_loaded = true;
+                self.state_cursor = self
+                    .state_cursor
+                    .min(self.state_records.len().saturating_sub(1));
+                self.state_error = None;
+            }
+            Err(error) => {
+                self.state_loaded = true;
+                if error.detail.contains("glass state is currently in use") {
+                    self.state_locked = true;
+                }
+                self.state_error = Some(error.to_string());
+            }
+        }
+    }
+
+    pub fn finish_trust_policy(&mut self, result: Result<TrustPolicyStatus, AppError>) {
+        match result {
+            Ok(status) => self.trust_policy = status,
+            Err(error) => self.trust_policy.error = Some(error.to_string()),
+        }
     }
 
     pub fn actions(&self) -> UiActions {
@@ -387,18 +633,37 @@ impl UiModel {
         );
         let has_path = self.selected_path.is_some();
         let has_installed_selection = self.selected_installed().is_some();
+        let state_mutation_allowed = has_path
+            && !has_run
+            && !booting
+            && !stopping
+            && !busy
+            && !self.state_busy
+            && !self.state_locked
+            && self.state_loaded
+            && self.state_error.is_none();
+        let has_focused_state = self.focused_state().is_some();
+        let focused_state_exists = self
+            .focused_state()
+            .is_some_and(|state| state.image_bytes > 0);
         UiActions {
             // A new open/inspect request supersedes in-flight file operations. The
             // generation ticket prevents their stale completions from replacing it.
-            open: !has_run && !booting && !stopping && !removing,
+            open: !has_run && !booting && !stopping && !removing && !self.state_busy,
             validate: !busy && !has_run && has_path,
             plan: !busy && !has_run && has_path,
-            boot: (ready || bootable_plan) && !has_run,
+            boot: (ready || bootable_plan) && !has_run && self.state_loaded && !self.state_locked,
             stop: !stopping && (has_run || booting),
             restart: running && has_run,
             remove: !busy && !has_run && has_installed_selection,
             refresh: !stopping,
-            reset_state: false,
+            reset_state: state_mutation_allowed && focused_state_exists,
+            state_manage: !self.state_busy,
+            state_create: state_mutation_allowed,
+            state_clone: state_mutation_allowed && focused_state_exists,
+            state_select: state_mutation_allowed && has_focused_state,
+            state_delete: state_mutation_allowed && focused_state_exists,
+            trust_details: true,
             console_input: running && has_run,
             console_pause: has_console,
             console_clear: !self.console.is_empty(),
@@ -525,6 +790,8 @@ impl UiModel {
             return None;
         }
         self.selected_path = Some(path.clone());
+        self.reset_state_selection();
+        self.state_records.clear();
         self.last_preview = None;
         Some(self.begin_operation(UiState::Loading))
     }
@@ -534,6 +801,7 @@ impl UiModel {
             return None;
         }
         self.selected_path = Some(path.clone());
+        self.reset_state_selection();
         self.last_preview = None;
         Some(self.begin_operation(UiState::Opening(path)))
     }
@@ -673,6 +941,7 @@ impl UiModel {
             return None;
         }
         self.selected_path = Some(path.clone());
+        self.reset_state_selection();
         self.last_preview = None;
         Some(self.begin_operation(UiState::Importing(path)))
     }
@@ -1018,6 +1287,15 @@ impl UiModel {
         ticket
     }
 
+    fn reset_state_selection(&mut self) {
+        self.state_records.clear();
+        self.state_cursor = 0;
+        self.selected_state_id = "default".to_string();
+        self.state_error = None;
+        self.state_locked = false;
+        self.state_loaded = false;
+    }
+
     fn cancel_active_operation(&mut self) {
         if let Some(operation) = self.active_operation.take() {
             operation.cancelled.store(true, Ordering::Release);
@@ -1180,12 +1458,18 @@ impl Default for UiModel {
         let (service, state) = match local_trust_config_path() {
             Ok(path) => match AppService::from_trust_config(&path) {
                 Ok(service) => (service, UiState::Empty),
-                Err(error) => (
-                    AppService::deny_all(),
-                    trust_config_failure(format!("{} ({})", error, path.display())),
-                ),
+                Err(error) => {
+                    let detail = format!("{} ({})", error, path.display());
+                    (
+                        AppService::deny_all().with_trust_load_error(Some(path), detail.clone()),
+                        trust_config_failure(detail),
+                    )
+                }
             },
-            Err(error) => (AppService::deny_all(), trust_config_failure(error)),
+            Err(error) => (
+                AppService::deny_all().with_trust_load_error(None, error.clone()),
+                trust_config_failure(error),
+            ),
         };
         Self::with_service(service, state)
     }
@@ -1464,6 +1748,7 @@ mod tests {
         let path = PathBuf::from("hello-world.glass");
         let ticket = model.begin_inspection(path.clone()).unwrap();
         assert!(model.finish_inspection(&ticket, InspectionOutcome::Ready(preview(&path))));
+        model.finish_state_operation(Ok(StateSnapshot::default()));
         model
     }
 
@@ -1546,6 +1831,11 @@ mod tests {
             &loading,
             InspectionOutcome::Ready(preview(Path::new("one.glass"))),
         );
+        assert!(
+            !model.actions().boot,
+            "boot waits for the saved state selection"
+        );
+        model.finish_state_operation(Ok(StateSnapshot::default()));
         let ready = model.actions();
         assert!(ready.open && ready.boot);
         assert!(!ready.stop && !ready.restart && !ready.reset_state);

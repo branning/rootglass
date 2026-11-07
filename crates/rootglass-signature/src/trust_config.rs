@@ -116,6 +116,11 @@ impl LoadedTrustStore {
     pub fn revoked_key_ids(&self) -> impl Iterator<Item = &str> {
         self.revoked_key_ids.iter().map(String::as_str)
     }
+
+    /// The trusted publishers from the loaded configuration, in deterministic key-ID order.
+    pub fn trusted_publishers(&self) -> impl Iterator<Item = &TrustedPublisher> {
+        self.publishers.values()
+    }
 }
 
 #[derive(Debug, Deserialize)]

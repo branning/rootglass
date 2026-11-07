@@ -65,6 +65,39 @@ impl InstanceStateStore {
         Ok(entries)
     }
 
+    /// Report whether a guest process currently owns this store's run lock.
+    /// Mutating operations still acquire the lock themselves to close the race
+    /// between this advisory status and the requested action.
+    pub fn is_in_use(&self) -> bool {
+        self.root.join(".state.lock").exists()
+    }
+
+    /// Return the persisted state chosen for the next guest run, defaulting to `default`.
+    pub fn selected_state_id(&self) -> Result<String, StateError> {
+        let path = self.selected_state_path();
+        if !path.exists() {
+            return Ok("default".to_string());
+        }
+        let bytes = fs::read(&path).map_err(|source| StateError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        let id: String = serde_json::from_slice(&bytes)?;
+        validate_name(&id)
+    }
+
+    /// Persist the state used by later boots and restarts, rejecting changes while a guest
+    /// owns the store. The implicit default is valid before its image is first created.
+    pub fn select(&self, id: &str) -> Result<String, StateError> {
+        let id = validate_name(id)?;
+        let _guard = self.acquire_run_lock()?;
+        if id != "default" && !self.read_records()?.iter().any(|record| record.id == id) {
+            return Err(StateError::NotFound(id));
+        }
+        self.write_selected_state_id_locked(&id)?;
+        Ok(id)
+    }
+
     /// Create a pristine state by copying the immutable bundle template.
     pub fn create(&self, name: &str) -> Result<StateRecord, StateError> {
         let name = validate_name(name)?;
@@ -101,11 +134,26 @@ impl InstanceStateStore {
     pub fn select_for_run(&self, id: &str) -> Result<(StateRecord, StateRunLock), StateError> {
         let id = validate_name(id)?;
         let lock = self.acquire_run_lock()?;
+        self.select_for_run_locked(&id, lock)
+    }
+
+    /// Acquire the run lock and select the persisted state atomically with guest startup.
+    pub fn select_current_for_run(&self) -> Result<(StateRecord, StateRunLock), StateError> {
+        let lock = self.acquire_run_lock()?;
+        let id = self.selected_state_id()?;
+        self.select_for_run_locked(&id, lock)
+    }
+
+    fn select_for_run_locked(
+        &self,
+        id: &str,
+        lock: StateRunLock,
+    ) -> Result<(StateRecord, StateRunLock), StateError> {
         let record = self.read_records()?.into_iter().find(|item| item.id == id);
         match record {
             Some(record) => Ok((record, lock)),
-            None if id == "default" => Ok((self.create_locked(&id)?, lock)),
-            None => Err(StateError::NotFound(id)),
+            None if id == "default" => Ok((self.create_locked(id)?, lock)),
+            None => Err(StateError::NotFound(id.to_string())),
         }
     }
 
@@ -190,7 +238,24 @@ impl InstanceStateStore {
             .ok_or_else(|| StateError::NotFound(id.clone()))?;
         let target = self.state_path(&id);
         records.remove(index);
-        staged_remove(&target, || self.write_records(&records))
+        let selected = self.selected_state_id()?;
+        if selected == id {
+            self.write_selected_state_id_locked("default")?;
+        }
+        if let Err(error) = staged_remove(&target, || self.write_records(&records)) {
+            if selected == id {
+                if let Err(restore) = self.write_selected_state_id_locked(&selected) {
+                    return Err(StateError::Io {
+                        path: self.selected_state_path(),
+                        source: io::Error::other(format!(
+                            "deletion failed ({error}) and restoring selected state also failed: {restore}"
+                        )),
+                    });
+                }
+            }
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Hold this guard for the full guest run. A create_new lock prevents a second
@@ -228,6 +293,18 @@ impl InstanceStateStore {
     }
     fn records_path(&self) -> PathBuf {
         self.root.join("states.json")
+    }
+    fn selected_state_path(&self) -> PathBuf {
+        self.root.join("selected-state.json")
+    }
+    fn write_selected_state_id_locked(&self, id: &str) -> Result<(), StateError> {
+        fs::create_dir_all(&self.root).map_err(|source| StateError::Io {
+            path: self.root.clone(),
+            source,
+        })?;
+        let path = self.selected_state_path();
+        let bytes = serde_json::to_vec(id)?;
+        write_atomic(&path, &bytes)
     }
     fn read_records(&self) -> Result<Vec<StateRecord>, StateError> {
         let path = self.records_path();
@@ -517,7 +594,9 @@ mod tests {
         let template = dir.join("template.img");
         fs::write(&template, b"state").unwrap();
         let store = InstanceStateStore::new(dir.join("state"), template);
+        assert!(!store.is_in_use());
         let lock = store.acquire_run_lock().unwrap();
+        assert!(store.is_in_use());
         assert!(matches!(store.create("default"), Err(StateError::InUse)));
         assert!(matches!(
             store.clone_state("default", "copy"),
@@ -527,6 +606,7 @@ mod tests {
         assert!(matches!(store.delete("default"), Err(StateError::InUse)));
         assert!(matches!(store.acquire_run_lock(), Err(StateError::InUse)));
         drop(lock);
+        assert!(!store.is_in_use());
         assert!(store.create("default").is_ok());
         fs::remove_dir_all(dir).unwrap();
     }
@@ -547,6 +627,33 @@ mod tests {
         ));
         drop(lock);
         assert_eq!(store.list().unwrap(), vec![record]);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn selected_state_persists_and_is_used_by_a_later_run() {
+        let dir = temp_dir();
+        let template = dir.join("template.img");
+        fs::write(&template, b"pristine").unwrap();
+        let store_root = dir.join("state");
+        let store = InstanceStateStore::new(&store_root, &template);
+        store.create("default").unwrap();
+        store.create("work").unwrap();
+        assert_eq!(store.select("work").unwrap(), "work");
+        assert_eq!(
+            InstanceStateStore::new(&store_root, &template)
+                .selected_state_id()
+                .unwrap(),
+            "work"
+        );
+
+        let (record, lock) = InstanceStateStore::new(&store_root, &template)
+            .select_current_for_run()
+            .unwrap();
+        assert_eq!(record.id, "work");
+        drop(lock);
+        store.delete("work").unwrap();
+        assert_eq!(store.selected_state_id().unwrap(), "default");
         fs::remove_dir_all(dir).unwrap();
     }
 

@@ -70,6 +70,21 @@ pub struct RunOptions {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrustedPublisherStatus {
+    pub name: String,
+    pub identity: String,
+    pub key_id: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TrustPolicyStatus {
+    pub config_path: Option<PathBuf>,
+    pub trusted_publishers: Vec<TrustedPublisherStatus>,
+    pub revoked_key_ids: Vec<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeEvent {
     StateChanged {
         run: RunId,
@@ -188,6 +203,8 @@ pub struct AppService {
     library_root: PathBuf,
     trust_store: TrustStore,
     revoked_key_ids: BTreeSet<String>,
+    trust_config_path: Option<PathBuf>,
+    trust_load_error: Option<String>,
     next_run_id: u64,
     active: Option<ActiveRun>,
     pending: VecDeque<RuntimeEvent>,
@@ -210,6 +227,8 @@ impl AppService {
             library_root: default_library_root(),
             trust_store,
             revoked_key_ids: BTreeSet::new(),
+            trust_config_path: None,
+            trust_load_error: None,
             next_run_id: 1,
             active: None,
             pending: VecDeque::new(),
@@ -238,12 +257,130 @@ impl AppService {
 
     /// Load and use a local production trust configuration.
     pub fn from_trust_config(path: impl AsRef<Path>) -> Result<Self, TrustConfigError> {
-        load_trust_store(path).map(Self::with_loaded_trust_store)
+        let path = path.as_ref().to_path_buf();
+        load_trust_store(&path)
+            .map(Self::with_loaded_trust_store)
+            .map(|service| service.with_trust_config_path(path))
     }
 
     /// Construct a default-deny service for callers that could not load trust policy.
     pub fn deny_all() -> Self {
         Self::with_trust_store(TrustStore::default())
+    }
+
+    /// Attach the source and error shown when a local trust policy could not be loaded.
+    pub fn with_trust_load_error(
+        mut self,
+        path: Option<PathBuf>,
+        error: impl Into<String>,
+    ) -> Self {
+        self.trust_config_path = path;
+        self.trust_load_error = Some(error.into());
+        self
+    }
+
+    fn with_trust_config_path(mut self, path: PathBuf) -> Self {
+        self.trust_config_path = Some(path);
+        self.trust_load_error = None;
+        self
+    }
+
+    /// Return the active local trust policy without exposing public-key material.
+    pub fn trust_policy_status(&self) -> TrustPolicyStatus {
+        TrustPolicyStatus {
+            config_path: self.trust_config_path.clone(),
+            trusted_publishers: self
+                .trust_store
+                .publishers()
+                .map(|publisher| TrustedPublisherStatus {
+                    name: publisher.name.clone(),
+                    identity: publisher.identity.clone(),
+                    key_id: publisher.key_id.clone(),
+                })
+                .collect(),
+            revoked_key_ids: self.revoked_key_ids.iter().cloned().collect(),
+            error: self.trust_load_error.clone(),
+        }
+    }
+
+    /// List named writable states for a verified glass bundle.
+    pub fn list_states(&mut self, source: &Path) -> Result<Vec<state::StateRecord>, AppError> {
+        self.state_store_for(source)?
+            .list()
+            .map_err(state_app_error)
+    }
+
+    /// Advisory lock status for disabling TUI state actions while a guest owns the store.
+    /// Each mutating store call still reacquires the lock to handle races safely.
+    pub fn states_in_use(&mut self, source: &Path) -> Result<bool, AppError> {
+        Ok(self.state_store_for(source)?.is_in_use())
+    }
+
+    /// Return the state selected for this glass, defaulting to `default`.
+    pub fn selected_state_id(&mut self, source: &Path) -> Result<String, AppError> {
+        self.state_store_for(source)?
+            .selected_state_id()
+            .map_err(state_app_error)
+    }
+
+    /// Persist the state selected for future boots and restarts.
+    pub fn select_state(&mut self, source: &Path, id: &str) -> Result<String, AppError> {
+        self.state_store_for(source)?
+            .select(id)
+            .map_err(state_app_error)
+    }
+
+    /// Create a named copy of the immutable state template.
+    pub fn create_state(
+        &mut self,
+        source: &Path,
+        name: &str,
+    ) -> Result<state::StateRecord, AppError> {
+        self.state_store_for(source)?
+            .create(name)
+            .map_err(state_app_error)
+    }
+
+    /// Clone an existing named state into an independent image.
+    pub fn clone_state(
+        &mut self,
+        source: &Path,
+        source_id: &str,
+        new_name: &str,
+    ) -> Result<state::StateRecord, AppError> {
+        self.state_store_for(source)?
+            .clone_state(source_id, new_name)
+            .map_err(state_app_error)
+    }
+
+    /// Replace a named state with the immutable template.
+    pub fn reset_state(&mut self, source: &Path, id: &str) -> Result<state::StateRecord, AppError> {
+        self.state_store_for(source)?
+            .reset(id)
+            .map_err(state_app_error)
+    }
+
+    /// Delete a named state image.
+    pub fn delete_state(&mut self, source: &Path, id: &str) -> Result<(), AppError> {
+        self.state_store_for(source)?
+            .delete(id)
+            .map_err(state_app_error)
+    }
+
+    fn state_store_for(&mut self, source: &Path) -> Result<state::InstanceStateStore, AppError> {
+        let launch = self.prepare(source)?;
+        let template = launch
+            .storage
+            .writable_overlay
+            .as_ref()
+            .map(|overlay| overlay.path().to_path_buf())
+            .ok_or_else(|| {
+                state_app_error(state::StateError::InvalidImage(
+                    "this glass has no writable-state template".into(),
+                ))
+            })?;
+        let store_root = self.state_root.join(safe_state_namespace(&launch));
+        Ok(state::InstanceStateStore::new(store_root, template))
     }
 
     /// Override the per-user location used for local writable state images.
@@ -421,10 +558,13 @@ impl AppService {
             .as_ref()
             .map(|overlay| overlay.path().to_path_buf())
         {
-            let selected = options.state_id.as_deref().unwrap_or("default");
             let store_root = self.state_root.join(safe_state_namespace(&launch));
             let store = state::InstanceStateStore::new(store_root, template);
-            let (record, lock) = store.select_for_run(selected).map_err(state_app_error)?;
+            let (record, lock) = match options.state_id.as_deref() {
+                Some(selected) => store.select_for_run(selected),
+                None => store.select_current_for_run(),
+            }
+            .map_err(state_app_error)?;
             launch.writable_overlay = Some(record.image_path.clone());
             launch.storage.writable_overlay =
                 Some(WritableOverlaySelection::Local(LocalWritableOverlay {
@@ -1178,6 +1318,87 @@ mod publisher_trust_tests {
             .unwrap(),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn trust_policy_status_lists_trusted_revoked_and_load_error_without_key_material() {
+        let root = temp_root();
+        fs::create_dir_all(&root).unwrap();
+        let trusted = SigningKey::from_bytes(&[31; 32]);
+        let revoked = SigningKey::from_bytes(&[32; 32]);
+        let config = root.join("trust.json");
+        write_trust_config(&config, &[&trusted], &[key_id(&revoked)]);
+
+        let status = AppService::from_trust_config(&config)
+            .expect("trust configuration loads")
+            .trust_policy_status();
+        assert_eq!(status.config_path.as_deref(), Some(config.as_path()));
+        assert_eq!(status.trusted_publishers.len(), 1);
+        assert_eq!(status.trusted_publishers[0].key_id, key_id(&trusted));
+        assert_eq!(status.revoked_key_ids, [key_id(&revoked)]);
+        assert!(status.error.is_none());
+
+        let failed = AppService::deny_all()
+            .with_trust_load_error(Some(config.clone()), "unsupported schema")
+            .trust_policy_status();
+        assert_eq!(failed.config_path, Some(config));
+        assert_eq!(failed.error.as_deref(), Some("unsupported schema"));
+        assert!(failed.trusted_publishers.is_empty());
+        assert!(failed.revoked_key_ids.is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn app_state_api_supports_named_operations_and_reports_guest_lock_conflicts() {
+        let root = temp_root();
+        fs::create_dir_all(&root).unwrap();
+        let key = SigningKey::from_bytes(&[41; 32]);
+        let glass = root.join("hello-world.glass");
+        fs::create_dir_all(&glass).unwrap();
+        signed_glass(&glass, &key);
+        let config = root.join("trust.json");
+        write_trust_config(&config, &[&key], &[]);
+        let mut service = AppService::from_trust_config(&config)
+            .expect("valid trust configuration")
+            .with_state_root(root.join("states"));
+
+        assert!(service.list_states(&glass).unwrap().is_empty());
+        let created = service.create_state(&glass, "work").unwrap();
+        let cloned = service.clone_state(&glass, "work", "copy").unwrap();
+        assert_eq!(
+            fs::read(&created.image_path).unwrap(),
+            fs::read(&cloned.image_path).unwrap()
+        );
+        assert_eq!(service.select_state(&glass, "copy").unwrap(), "copy");
+        assert_eq!(service.selected_state_id(&glass).unwrap(), "copy");
+        service.reset_state(&glass, "work").unwrap();
+        service.delete_state(&glass, "copy").unwrap();
+        assert_eq!(service.selected_state_id(&glass).unwrap(), "default");
+        assert_eq!(
+            service
+                .list_states(&glass)
+                .unwrap()
+                .iter()
+                .map(|record| record.id.as_str())
+                .collect::<Vec<_>>(),
+            ["work"]
+        );
+
+        let state_root = created.image_path.parent().unwrap();
+        let store = state::InstanceStateStore::new(state_root, glass.join("state.img"));
+        let lock = store.acquire_run_lock().unwrap();
+        assert!(service.states_in_use(&glass).unwrap());
+        let select_error = service
+            .select_state(&glass, "work")
+            .expect_err("state selection is denied while a guest owns the lock");
+        assert!(select_error.detail.contains("currently in use"));
+        let error = service
+            .reset_state(&glass, "work")
+            .expect_err("a running guest owns the state lock");
+        assert!(error.detail.contains("currently in use"));
+        drop(lock);
+        assert!(!service.states_in_use(&glass).unwrap());
+        fs::remove_dir_all(root).unwrap();
     }
 
     fn install_test_runtime(root: &Path) -> PathBuf {
