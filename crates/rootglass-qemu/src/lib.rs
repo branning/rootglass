@@ -766,7 +766,9 @@ mod tests {
         let plan = QemuLaunchPlan::for_launch_request_with_binary(&request, binary.clone());
 
         assert_eq!(plan.binary.path, binary);
-        assert!(plan.command_line().starts_with("'/opt/rootglass runtime/bin/qemu-system-aarch64' "));
+        assert!(plan
+            .command_line()
+            .starts_with("'/opt/rootglass runtime/bin/qemu-system-aarch64' "));
         assert!(!plan.command_line().contains(DEFAULT_QEMU_SYSTEM_AARCH64));
     }
 }
