@@ -99,10 +99,7 @@ impl RuntimeAssetsResolver {
         }
     }
 
-    pub fn resolve(
-        &self,
-        runtime_version: &str,
-    ) -> Result<ResolvedRuntimeSet, RuntimeAssetsError> {
+    pub fn resolve(&self, runtime_version: &str) -> Result<ResolvedRuntimeSet, RuntimeAssetsError> {
         if runtime_version.is_empty()
             || !runtime_version
                 .chars()
@@ -123,14 +120,16 @@ impl RuntimeAssetsResolver {
             .ok_or_else(|| {
                 RuntimeAssetsError::MissingManifest(self.resource_root.join(relative))
             })?;
-        let canonical_manifest = manifest_path
-            .canonicalize()
+        let canonical_manifest =
+            manifest_path
+                .canonicalize()
             .map_err(|source| RuntimeAssetsError::ReadManifest {
                 path: manifest_path.clone(),
                 source,
             })?;
-        let canonical_root = allowed_root
-            .canonicalize()
+        let canonical_root =
+            allowed_root
+                .canonicalize()
             .map_err(|source| RuntimeAssetsError::ReadManifest {
                 path: allowed_root.clone(),
                 source,
@@ -138,8 +137,9 @@ impl RuntimeAssetsResolver {
         if !canonical_manifest.starts_with(&canonical_root) {
             return Err(RuntimeAssetsError::UnsafePath(manifest_path));
         }
-        let metadata = manifest_path
-            .metadata()
+        let metadata =
+            manifest_path
+                .metadata()
             .map_err(|source| RuntimeAssetsError::ReadManifest {
                 path: manifest_path.clone(),
                 source,
@@ -147,12 +147,11 @@ impl RuntimeAssetsResolver {
         if metadata.len() > MAX_MANIFEST_BYTES {
             return Err(RuntimeAssetsError::ManifestTooLarge(manifest_path));
         }
-        let bytes = std::fs::read(&manifest_path).map_err(|source| {
-            RuntimeAssetsError::ReadManifest {
+        let bytes =
+            std::fs::read(&manifest_path).map_err(|source| RuntimeAssetsError::ReadManifest {
                 path: manifest_path.clone(),
                 source,
-            }
-        })?;
+            })?;
         let manifest: RuntimeAssetManifest = serde_json::from_slice(&bytes)?;
         if manifest.schema_version != 1 {
             return Err(RuntimeAssetsError::UnsupportedSchema(
@@ -164,12 +163,8 @@ impl RuntimeAssetsResolver {
         }
         let base = canonical_manifest.parent().expect("manifest has parent");
         let kernel = self.resolve_kind(base, &manifest, RuntimeAssetKind::Kernel, "kernel")?;
-        let initramfs = self.resolve_kind(
-            base,
-            &manifest,
-            RuntimeAssetKind::Initramfs,
-            "initramfs",
-        )?;
+        let initramfs =
+            self.resolve_kind(base, &manifest, RuntimeAssetKind::Initramfs, "initramfs")?;
         let qemu = self.resolve_kind(base, &manifest, RuntimeAssetKind::Qemu, "qemu")?;
         Ok(ResolvedRuntimeSet {
             runtime_version: manifest.runtime_version,
@@ -187,7 +182,9 @@ impl RuntimeAssetsResolver {
         name: &'static str,
     ) -> Result<PathBuf, RuntimeAssetsError> {
         let mut found = manifest.assets.iter().filter(|asset| asset.kind == kind);
-        let asset = found.next().ok_or(RuntimeAssetsError::MissingOrDuplicate(name))?;
+        let asset = found
+            .next()
+            .ok_or(RuntimeAssetsError::MissingOrDuplicate(name))?;
         if found.next().is_some() {
             return Err(RuntimeAssetsError::MissingOrDuplicate(name));
         }
