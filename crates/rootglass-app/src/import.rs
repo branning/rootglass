@@ -556,7 +556,7 @@ mod tests {
         archive(
             &duplicate,
             &[
-                ("a//b", b"x"),
+                ("a/b", b"x"),
                 ("a/b", b"y"),
                 ("rootglass.toml", b"m"),
                 (SIGNATURE_PATH, b"s"),
