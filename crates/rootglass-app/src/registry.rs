@@ -32,9 +32,17 @@ struct RegistryFile {
 #[derive(Debug, Error)]
 pub enum RegistryError {
     #[error("failed to read registry at {path}: {source}")]
-    Read { path: PathBuf, #[source] source: io::Error },
+    Read {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
     #[error("failed to write registry at {path}: {source}")]
-    Write { path: PathBuf, #[source] source: io::Error },
+    Write {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
     #[error("failed to parse registry: {0}")]
     Parse(#[from] serde_json::Error),
     #[error("unsupported registry schema {0}")]
@@ -53,37 +61,67 @@ impl PackageRegistry {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, RegistryError> {
         let path = path.into();
         if !path.exists() {
-            return Ok(Self { path, packages: Vec::new() });
+            return Ok(Self {
+                path,
+                packages: Vec::new(),
+            });
         }
-        let bytes = fs::read(&path).map_err(|source| RegistryError::Read { path: path.clone(), source })?;
+        let bytes = fs::read(&path).map_err(|source| RegistryError::Read {
+            path: path.clone(),
+            source,
+        })?;
         let file: RegistryFile = serde_json::from_slice(&bytes)?;
         if file.schema_version != REGISTRY_SCHEMA {
             return Err(RegistryError::UnsupportedSchema(file.schema_version));
         }
-        Ok(Self { path, packages: file.packages })
+        Ok(Self {
+            path,
+            packages: file.packages,
+        })
     }
 
-    pub fn packages(&self) -> &[InstalledGlass] { &self.packages }
+    pub fn packages(&self) -> &[InstalledGlass] {
+        &self.packages
+    }
 
     pub fn get(&self, content_sha256: &str) -> Option<&InstalledGlass> {
-        self.packages.iter().find(|item| item.content_sha256 == content_sha256)
+        self.packages
+            .iter()
+            .find(|item| item.content_sha256 == content_sha256)
     }
 
     pub fn upsert(&mut self, package: InstalledGlass) -> Result<(), RegistryError> {
         let mut candidate = self.packages.clone();
-        if let Some(existing) = candidate.iter_mut().find(|item| item.content_sha256 == package.content_sha256) {
+        if let Some(existing) = candidate
+            .iter_mut()
+            .find(|item| item.content_sha256 == package.content_sha256)
+        {
             *existing = package;
         } else {
             candidate.push(package);
-            candidate.sort_by(|a, b| a.identifier.cmp(&b.identifier).then(a.version.cmp(&b.version)).then(a.content_sha256.cmp(&b.content_sha256)));
+            candidate.sort_by(|a, b| {
+                a.identifier
+                    .cmp(&b.identifier)
+                    .then(a.version.cmp(&b.version))
+                    .then(a.content_sha256.cmp(&b.content_sha256))
+            });
         }
         self.persist(&candidate)?;
         self.packages = candidate;
         Ok(())
     }
 
-    pub fn remove(&mut self, content_sha256: &str) -> Result<Option<InstalledGlass>, RegistryError> {
-        let Some(index) = self.packages.iter().position(|item| item.content_sha256 == content_sha256) else { return Ok(None) };
+    pub fn remove(
+        &mut self,
+        content_sha256: &str,
+    ) -> Result<Option<InstalledGlass>, RegistryError> {
+        let Some(index) = self
+            .packages
+            .iter()
+            .position(|item| item.content_sha256 == content_sha256)
+        else {
+            return Ok(None);
+        };
         let removed = self.packages[index].clone();
         let mut candidate = self.packages.clone();
         candidate.remove(index);
@@ -93,22 +131,50 @@ impl PackageRegistry {
     }
 
     fn persist(&self, packages: &[InstalledGlass]) -> Result<(), RegistryError> {
-        let parent = self.path.parent().filter(|path| !path.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
-        fs::create_dir_all(parent).map_err(|source| RegistryError::Write { path: parent.to_path_buf(), source })?;
+        let parent = self
+            .path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(parent).map_err(|source| RegistryError::Write {
+            path: parent.to_path_buf(),
+            source,
+        })?;
         let temp = temporary_sibling(&self.path);
-        let bytes = serde_json::to_vec_pretty(&RegistryFile { schema_version: REGISTRY_SCHEMA, packages: packages.to_vec() })?;
-        let mut file = OpenOptions::new().write(true).create_new(true).open(&temp)
-            .map_err(|source| RegistryError::Write { path: temp.clone(), source })?;
-        if let Err(source) = file.write_all(&bytes).and_then(|_| file.write_all(b"\n")).and_then(|_| file.sync_all()) {
+        let bytes = serde_json::to_vec_pretty(&RegistryFile {
+            schema_version: REGISTRY_SCHEMA,
+            packages: packages.to_vec(),
+        })?;
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+            .map_err(|source| RegistryError::Write {
+                path: temp.clone(),
+                source,
+            })?;
+        if let Err(source) = file
+            .write_all(&bytes)
+            .and_then(|_| file.write_all(b"\n"))
+            .and_then(|_| file.sync_all())
+        {
             let _ = fs::remove_file(&temp);
-            return Err(RegistryError::Write { path: temp, source });
+            return Err(RegistryError::Write {
+                path: temp,
+                source,
+            });
         }
         drop(file);
         replace_registry_file(&temp, &self.path).map_err(|source| {
             let _ = fs::remove_file(&temp);
-            RegistryError::Write { path: self.path.clone(), source }
+            RegistryError::Write {
+                path: self.path.clone(),
+                source,
+            }
         })?;
-        if let Ok(dir) = File::open(parent) { let _ = dir.sync_all(); }
+        if let Ok(dir) = File::open(parent) {
+            let _ = dir.sync_all();
+        }
         Ok(())
     }
 }
@@ -131,9 +197,17 @@ fn replace_registry_file(temp: &Path, destination: &Path) -> io::Result<()> {
     let new: Vec<u16> = destination.as_os_str().encode_wide().chain(Some(0)).collect();
     // Both paths are siblings, so the replacement stays on one volume.
     let succeeded = unsafe {
-        MoveFileExW(existing.as_ptr(), new.as_ptr(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
+        MoveFileExW(
+            existing.as_ptr(),
+            new.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
     };
-    if succeeded != 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+    if succeeded != 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
 }
 
 fn temporary_sibling(path: &Path) -> PathBuf {
@@ -149,15 +223,23 @@ mod tests {
 
     fn temp_root() -> PathBuf {
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        std::env::temp_dir().join(format!("rootglass-registry-{}-{nonce}", std::process::id()))
+        std::env::temp_dir().join(format!(
+            "rootglass-registry-{}-{nonce}",
+            std::process::id()
+        ))
     }
 
     fn package() -> InstalledGlass {
         InstalledGlass {
-            content_sha256: "abc".into(), package_path: PathBuf::from("packages/abc"),
-            identifier: "test.glass".into(), name: "Test".into(), version: "1".into(),
-            publisher_name: "Test Publisher".into(), publisher_identity: "test".into(),
-            key_id: "key".into(), original_source: PathBuf::from("test.glass"),
+            content_sha256: "abc".into(),
+            package_path: PathBuf::from("packages/abc"),
+            identifier: "test.glass".into(),
+            name: "Test".into(),
+            version: "1".into(),
+            publisher_name: "Test Publisher".into(),
+            publisher_identity: "test".into(),
+            key_id: "key".into(),
+            original_source: PathBuf::from("test.glass"),
             imported_at_unix_seconds: 1,
         }
     }
