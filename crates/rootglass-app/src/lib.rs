@@ -197,12 +197,11 @@ impl AppService {
             };
             let lock = store.acquire_run_lock().map_err(state_app_error)?;
             launch.writable_overlay = Some(record.image_path.clone());
-            launch.storage.writable_overlay = Some(WritableOverlaySelection::Local(
-                LocalWritableOverlay {
+            launch.storage.writable_overlay =
+                Some(WritableOverlaySelection::Local(LocalWritableOverlay {
                     name: record.name,
                     path: record.image_path,
-                },
-            ));
+                }));
             Some(lock)
         } else {
             if options.state_id.is_some() {
