@@ -155,3 +155,12 @@ jobs:
         env:
           EXPECT_QEMU_ACCEL: ${{ matrix.expected_accel }}
         run: bash scripts/smoke-boot-example.sh
+
+      - name: Upload boot smoke transcript on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-smoke-log-${{ matrix.name }}
+          path: .rootglass/build/hello-world-boot.log
+          if-no-files-found: warn
+          retention-days: 7
