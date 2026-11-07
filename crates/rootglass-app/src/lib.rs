@@ -9,6 +9,7 @@ use rootglass_qemu::{QemuLaunchPlan, QemuProcess, SerialChunk};
 use rootglass_signature::trust_config::{
     load_trust_store, LoadedTrustStore, TrustConfigError,
 };
+use rootglass_signature::TrustStore;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -113,8 +114,16 @@ pub struct AppService {
 
 impl Default for AppService {
     fn default() -> Self {
+        Self::with_trust_store(TrustStore::example_fixture())
+    }
+}
+
+impl AppService {
+    /// Construct a service with an explicit trust policy. Production callers should load a
+    /// local publisher trust configuration and pass its verifier-compatible store here.
+    pub fn with_trust_store(trust_store: TrustStore) -> Self {
         Self {
-            runtime: RootglassRuntime::new(),
+            runtime: RootglassRuntime::with_trust_store(trust_store),
             state_root: default_state_root(),
             next_run_id: 1,
             active: None,
@@ -122,9 +131,22 @@ impl Default for AppService {
             last_stopped: None,
         }
     }
-}
 
-impl AppService {
+    /// Construct a service from a validated local production trust configuration.
+    pub fn with_loaded_trust_store(loaded: LoadedTrustStore) -> Self {
+        Self::with_trust_store(loaded.trust_store().clone())
+    }
+
+    /// Load and use a local production trust configuration.
+    pub fn from_trust_config(path: impl AsRef<Path>) -> Result<Self, TrustConfigError> {
+        load_trust_store(path).map(Self::with_loaded_trust_store)
+    }
+
+    /// Construct a default-deny service for callers that could not load trust policy.
+    pub fn deny_all() -> Self {
+        Self::with_trust_store(TrustStore::default())
+    }
+
     /// Override the per-user location used for local writable state images.
     pub fn with_state_root(mut self, root: impl Into<PathBuf>) -> Self {
         self.state_root = root.into();
