@@ -1,6 +1,9 @@
 //! UI-independent application orchestration shared by the CLI and desktop.
 pub mod import;
 pub mod registry;
+pub mod state;
+
+use rootglass_core::storage::{LocalWritableOverlay, WritableOverlaySelection};
 use rootglass_core::{HostCapabilities, LaunchRequest, LifecycleState, RootglassRuntime};
 use rootglass_qemu::{QemuLaunchPlan, QemuProcess, SerialChunk};
 use std::collections::VecDeque;
@@ -92,11 +95,13 @@ struct ActiveRun {
     login_marker_tail: Vec<u8>,
     diagnostic_tail: Vec<u8>,
     ready_deadline: Instant,
+    _state_lock: Option<state::StateRunLock>,
 }
 
 /// Owns validation and no more than one active QEMU process.
 pub struct AppService {
     runtime: RootglassRuntime,
+    state_root: PathBuf,
     next_run_id: u64,
     active: Option<ActiveRun>,
     pending: VecDeque<RuntimeEvent>,
@@ -107,6 +112,7 @@ impl Default for AppService {
     fn default() -> Self {
         Self {
             runtime: RootglassRuntime::new(),
+            state_root: default_state_root(),
             next_run_id: 1,
             active: None,
             pending: VecDeque::new(),
@@ -116,6 +122,12 @@ impl Default for AppService {
 }
 
 impl AppService {
+    /// Override the per-user location used for local writable state images.
+    pub fn with_state_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.state_root = root.into();
+        self
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -146,7 +158,7 @@ impl AppService {
         })
     }
 
-    pub fn start(&mut self, source: &Path, _options: RunOptions) -> Result<RunId, AppError> {
+    pub fn start(&mut self, source: &Path, options: RunOptions) -> Result<RunId, AppError> {
         if self.active.is_some() {
             return Err(AppError {
                 phase: LifecycleState::Starting,
@@ -154,12 +166,51 @@ impl AppService {
                 detail: "Stop the active run before starting another.".to_string(),
             });
         }
-        let launch = self.prepare(source)?;
+        let mut launch = self.prepare(source)?;
         validate_assets(&launch).map_err(|detail| AppError {
             phase: LifecycleState::Ready,
             summary: "The glass runtime assets are incomplete.".to_string(),
             detail,
         })?;
+        let state_lock = if let Some(template) = launch
+            .storage
+            .writable_overlay
+            .as_ref()
+            .map(|overlay| overlay.path().to_path_buf())
+        {
+            let selected = options.state_id.as_deref().unwrap_or("default");
+            let store_root = self.state_root.join(safe_state_namespace(&launch));
+            let store = state::InstanceStateStore::new(store_root, template);
+            let record = match store
+                .list()
+                .map_err(state_app_error)?
+                .into_iter()
+                .find(|item| item.id == selected)
+            {
+                Some(record) => record,
+                None if selected == "default" => store.create(selected).map_err(state_app_error)?,
+                None => {
+                    return Err(state_app_error(state::StateError::NotFound(
+                        selected.to_string(),
+                    )))
+                }
+            };
+            let lock = store.acquire_run_lock().map_err(state_app_error)?;
+            launch.writable_overlay = Some(record.image_path.clone());
+            launch.storage.writable_overlay =
+                Some(WritableOverlaySelection::Local(LocalWritableOverlay {
+                    name: record.name,
+                    path: record.image_path,
+                }));
+            Some(lock)
+        } else {
+            if options.state_id.is_some() {
+                return Err(state_app_error(state::StateError::InvalidImage(
+                    "this glass has no state template".into(),
+                )));
+            }
+            None
+        };
         let plan = QemuLaunchPlan::for_launch_request(&launch);
         let process = plan.spawn_supervised().map_err(|error| AppError {
             phase: LifecycleState::Starting,
@@ -180,6 +231,7 @@ impl AppService {
             login_marker_tail: Vec::new(),
             diagnostic_tail: Vec::new(),
             ready_deadline: Instant::now() + GUEST_READY_TIMEOUT,
+            _state_lock: state_lock,
         });
         Ok(id)
     }
@@ -468,6 +520,74 @@ fn validate_assets(request: &LaunchRequest) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn safe_state_namespace(request: &LaunchRequest) -> String {
+    request
+        .glass_root
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn default_state_root() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(path) = std::env::var_os("LOCALAPPDATA") {
+            return PathBuf::from(path).join("Rootglass").join("states");
+        }
+        if let Some(home) = std::env::var_os("USERPROFILE") {
+            return PathBuf::from(home)
+                .join("AppData")
+                .join("Local")
+                .join("Rootglass")
+                .join("states");
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join("Rootglass")
+                .join("states");
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(path) = std::env::var_os("XDG_DATA_HOME") {
+            let path = PathBuf::from(path);
+            if path.is_absolute() {
+                return path.join("rootglass").join("states");
+            }
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home)
+                .join(".local")
+                .join("share")
+                .join("rootglass")
+                .join("states");
+        }
+    }
+    std::env::temp_dir().join("rootglass").join("states")
+}
+
+fn state_app_error(error: state::StateError) -> AppError {
+    AppError {
+        phase: LifecycleState::Ready,
+        summary: "The selected writable state could not be prepared.".to_string(),
+        detail: error.to_string(),
+    }
 }
 
 fn summarize(source: &Path, launch: &LaunchRequest) -> Result<GlassSummary, AppError> {
