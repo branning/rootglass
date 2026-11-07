@@ -81,13 +81,80 @@ struct UiModel {
 
 impl Default for UiModel {
     fn default() -> Self {
+        let (service, state) = match local_trust_config_path() {
+            Ok(path) => match AppService::from_trust_config(&path) {
+                Ok(service) => (service, UiState::Empty),
+                Err(error) => (
+                    AppService::deny_all(),
+                    trust_config_failure(format!("{} ({})", error, path.display())),
+                ),
+            },
+            Err(error) => (AppService::deny_all(), trust_config_failure(error)),
+        };
         Self {
-            state: UiState::Empty,
-            service: AppService::new(),
+            state,
+            service,
             selected_path: None,
             run_id: None,
             console: String::new(),
         }
+    }
+}
+
+fn trust_config_failure(detail: String) -> UiState {
+    UiState::Failed(FailureDetails {
+        path: None,
+        phase: "Trust configuration".to_string(),
+        summary: "Local publisher trust could not be loaded. Bundle verification is disabled."
+            .to_string(),
+        detail,
+    })
+}
+
+fn local_trust_config_path() -> Result<PathBuf, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let root = std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .ok_or_else(|| {
+                "APPDATA is not set; cannot locate Rootglass trust configuration.".to_string()
+            })?;
+        return Ok(root.join("Rootglass").join("trust.json"));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or_else(|| {
+                "HOME is not set; cannot locate Rootglass trust configuration.".to_string()
+            })?;
+        return Ok(home
+            .join("Library")
+            .join("Application Support")
+            .join("Rootglass")
+            .join("trust.json"));
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Some(config_home) = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from) {
+            if config_home.is_absolute() {
+                return Ok(config_home.join("rootglass").join("trust.json"));
+            }
+        }
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or_else(|| {
+                "Neither an absolute XDG_CONFIG_HOME nor HOME is set; cannot locate Rootglass trust configuration."
+                    .to_string()
+            })?;
+        return Ok(home.join(".config").join("rootglass").join("trust.json"));
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", unix)))]
+    {
+        Err("This platform has no configured Rootglass trust configuration directory.".to_string())
     }
 }
 
