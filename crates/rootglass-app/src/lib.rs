@@ -100,6 +100,56 @@ struct ActiveRun {
     _state_lock: Option<state::StateRunLock>,
 }
 
+/// Cloneable library handle for background archive verification and registry work.
+#[derive(Clone)]
+pub struct PackageLibrary {
+    root: PathBuf,
+    trust_store: TrustStore,
+}
+
+impl PackageLibrary {
+    pub fn import_archive(
+        &self,
+        source: impl AsRef<Path>,
+    ) -> Result<registry::InstalledGlass, AppError> {
+        let registry_path = self.root.join("registry.json");
+        let mut registry = registry::PackageRegistry::open(&registry_path).map_err(|error| {
+            import_app_error("The installed-glass registry could not be opened.", error)
+        })?;
+        import::import_glass_archive(
+            source,
+            &self.root,
+            &mut registry,
+            &self.trust_store,
+            &import::ImportLimits::default(),
+        )
+        .map_err(|error| {
+            import_app_error("The .glass archive could not be verified or installed.", error)
+        })
+    }
+
+    pub fn installed_glasses(&self) -> Result<Vec<registry::InstalledGlass>, AppError> {
+        let registry = registry::PackageRegistry::open(self.root.join("registry.json"))
+            .map_err(|error| {
+                import_app_error("The installed-glass registry could not be opened.", error)
+            })?;
+        Ok(registry.packages().to_vec())
+    }
+
+    pub fn remove_installed_glass(
+        &self,
+        content_sha256: &str,
+    ) -> Result<Option<registry::InstalledGlass>, AppError> {
+        let registry_path = self.root.join("registry.json");
+        let mut registry = registry::PackageRegistry::open(&registry_path).map_err(|error| {
+            import_app_error("The installed-glass registry could not be opened.", error)
+        })?;
+        registry.remove(content_sha256).map_err(|error| {
+            import_app_error("The installed-glass registry could not be updated.", error)
+        })
+    }
+}
+
 /// Owns validation and no more than one active QEMU process.
 pub struct AppService {
     runtime: RootglassRuntime,
@@ -161,34 +211,25 @@ impl AppService {
         self
     }
 
+    /// Return a cloneable handle suitable for off-thread library work.
+    pub fn package_library(&self) -> PackageLibrary {
+        PackageLibrary {
+            root: self.library_root.clone(),
+            trust_store: self.trust_store.clone(),
+        }
+    }
+
     /// Verify and install a bounded ZIP `.glass` archive into the local library.
-    pub fn import_archive(&mut self, source: &Path) -> Result<registry::InstalledGlass, AppError> {
-        let registry_path = self.library_root.join("registry.json");
-        let mut registry = registry::PackageRegistry::open(&registry_path).map_err(|error| {
-            import_app_error("The installed-glass registry could not be opened.", error)
-        })?;
-        import::import_glass_archive(
-            source,
-            &self.library_root,
-            &mut registry,
-            &self.trust_store,
-            &import::ImportLimits::default(),
-        )
-        .map_err(|error| {
-            import_app_error(
-                "The .glass archive could not be verified or installed.",
-                error,
-            )
-        })
+    pub fn import_archive(
+        &self,
+        source: impl AsRef<Path>,
+    ) -> Result<registry::InstalledGlass, AppError> {
+        self.package_library().import_archive(source)
     }
 
     /// Return the persisted verified releases in the local library.
     pub fn installed_glasses(&self) -> Result<Vec<registry::InstalledGlass>, AppError> {
-        let registry = registry::PackageRegistry::open(self.library_root.join("registry.json"))
-            .map_err(|error| {
-                import_app_error("The installed-glass registry could not be opened.", error)
-            })?;
-        Ok(registry.packages().to_vec())
+        self.package_library().installed_glasses()
     }
 
     /// Remove a release from the visible library. Its immutable content may remain on disk
@@ -197,13 +238,8 @@ impl AppService {
         &mut self,
         content_sha256: &str,
     ) -> Result<Option<registry::InstalledGlass>, AppError> {
-        let registry_path = self.library_root.join("registry.json");
-        let mut registry = registry::PackageRegistry::open(&registry_path).map_err(|error| {
-            import_app_error("The installed-glass registry could not be opened.", error)
-        })?;
-        registry.remove(content_sha256).map_err(|error| {
-            import_app_error("The installed-glass registry could not be updated.", error)
-        })
+        self.package_library()
+            .remove_installed_glass(content_sha256)
     }
 
     pub fn new() -> Self {
@@ -741,4 +777,150 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack
         .windows(needle.len())
         .any(|window| window == needle)
+}
+
+#[cfg(test)]
+mod library_tests {
+    use super::*;
+    use std::fs::{self, File};
+    use std::io;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+    use ed25519_dalek::{Signer, SigningKey};
+    use serde_json::json;
+    use sha2::{Digest, Sha256};
+    use zip::write::SimpleFileOptions;
+
+    fn temp_root() -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("rootglass-library-{}-{nonce}", std::process::id()))
+    }
+
+    fn add_directory(
+        source_root: &Path,
+        directory: &Path,
+        writer: &mut zip::ZipWriter<File>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            let path = entry.path();
+            let relative = path.strip_prefix(source_root).expect("child path");
+            let name = relative.to_string_lossy().replace('\\', "/");
+            if path.is_dir() {
+                writer.add_directory(format!("{name}/"), SimpleFileOptions::default())?;
+                add_directory(source_root, &path, writer)?;
+            } else {
+                writer.start_file(name, SimpleFileOptions::default())?;
+                let mut file = File::open(path)?;
+                io::copy(&mut file, writer)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn signed_launch_ready_fixture(root: &Path) {
+        let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/hello-world.glass");
+        fs::create_dir_all(root.join("metadata")).unwrap();
+        fs::create_dir_all(root.join("signatures")).unwrap();
+        for name in ["README.md", "metadata/README.md", "rootglass.toml"] {
+            fs::copy(example.join(name), root.join(name)).unwrap();
+        }
+        fs::write(root.join("rootfs.img"), b"synthetic test root filesystem").unwrap();
+        fs::write(root.join("state.img"), b"synthetic test state image").unwrap();
+
+        let subjects = [
+            "README.md",
+            "metadata/README.md",
+            "rootfs.img",
+            "rootglass.toml",
+            "state.img",
+        ]
+        .map(|name| {
+            let digest = Sha256::digest(fs::read(root.join(name)).unwrap());
+            let hex_digest = digest
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            json!({"name": name, "digest": {"sha256": hex_digest}})
+        });
+        let statement = json!({
+            "_type": "https://in-toto.io/Statement/v1",
+            "predicate": {
+                "createdAt": "2026-11-07T00:00:00Z",
+                "glassIdentifier": "io.rootglass.examples.hello-world",
+                "glassVersion": "0.1.0",
+                "publisher": {
+                    "identity": "rootglass.dev/examples",
+                    "keyId": "ed25519:rootglass-example-fixture",
+                    "name": "Rootglass Examples"
+                },
+                "schemaVersion": 1
+            },
+            "predicateType": "https://rootglass.dev/predicate/glass/v1",
+            "subject": subjects
+        });
+        let payload = serde_json::to_vec(&statement).unwrap();
+        let pae = dsse_pae(b"application/vnd.in-toto+json", &payload);
+        // This is the public deterministic sample key documented by the fixture signer.
+        let seed: [u8; 32] = Sha256::digest(b"Rootglass public development fixture signing key v1").into();
+        let signature = SigningKey::from_bytes(&seed).sign(&pae);
+        let envelope = json!({
+            "payloadType": "application/vnd.in-toto+json",
+            "payload": URL_SAFE_NO_PAD.encode(payload),
+            "signatures": [{
+                "keyid": "ed25519:rootglass-example-fixture",
+                "sig": URL_SAFE_NO_PAD.encode(signature.to_bytes())
+            }]
+        });
+        fs::write(
+            root.join("signatures/glass.dsse.json"),
+            serde_json::to_vec_pretty(&envelope).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn dsse_pae(payload_type: &[u8], payload: &[u8]) -> Vec<u8> {
+        let mut out = b"DSSEv1 ".to_vec();
+        out.extend_from_slice(payload_type.len().to_string().as_bytes());
+        out.push(b' ');
+        out.extend_from_slice(payload_type);
+        out.push(b' ');
+        out.extend_from_slice(payload.len().to_string().as_bytes());
+        out.push(b' ');
+        out.extend_from_slice(payload);
+        out
+    }
+
+    #[test]
+    fn imports_signed_zip_and_persists_library_rows() {
+        let root = temp_root();
+        fs::create_dir_all(&root).unwrap();
+        let archive = root.join("hello-world.glass");
+        let file = File::create(&archive).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        let source = root.join("source.glass");
+        signed_launch_ready_fixture(&source);
+        add_directory(&source, &source, &mut writer).unwrap();
+        writer.finish().unwrap();
+
+        let library = root.join("library");
+        let service = AppService::with_trust_store(TrustStore::example_fixture())
+            .with_library_root(&library);
+        let installed = service.import_archive(&archive).unwrap();
+        assert_eq!(installed.identifier, "io.rootglass.examples.hello-world");
+        assert_eq!(service.installed_glasses().unwrap(), vec![installed.clone()]);
+
+        let reopened = AppService::with_trust_store(TrustStore::example_fixture())
+            .with_library_root(&library);
+        assert_eq!(reopened.installed_glasses().unwrap(), vec![installed.clone()]);
+        reopened
+            .remove_installed_glass(&installed.content_sha256)
+            .unwrap();
+        assert!(reopened.installed_glasses().unwrap().is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
 }
