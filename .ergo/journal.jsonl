@@ -81,3 +81,7 @@
 {"version":1,"task_id":"E6SUUH","kind":"open","at":"2026-11-07T08:45:39.372562236Z"}
 {"version":1,"task_id":"HC6FQ6","kind":"open","at":"2026-11-07T08:47:15.750662777Z","text":"Reopen pending the newly prioritized TUI headless foundation."}
 {"version":1,"task_id":"HC6FQ6","kind":"block","at":"2026-11-07T08:47:15.758562819Z","text":"User reprioritized current work to S16.1–S16.2; no S12.1 implementation started. Resume after the Ratatui TestBackend/controller foundation is merged, or if the user reprioritizes."}
+{"version":1,"task_id":"MJPX6T","kind":"claim","at":"2026-11-07T08:50:21.939713808Z","agent":"codex@worker-1"}
+{"version":1,"task_id":"Y4UJKY","kind":"created","at":"2026-11-07T08:56:23.73808806Z"}
+{"version":1,"task_id":"Y4UJKY","kind":"open","at":"2026-11-07T08:56:29.10149311Z"}
+{"version":1,"task_id":"MJPX6T","kind":"result","at":"2026-11-07T09:07:43.274453859Z","agent":"codex@worker-1","text":"Parity/API docs and libghostty gates added; links, Ergo JSON, and diff checks pass. Awaiting PR review/merge."}
