@@ -1,423 +1,35 @@
+use gpui_kit::actions;
 use gpui_kit::component::button::*;
-use gpui_kit::component::*;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::*;
 use gpui_kit::*;
 use rootglass_app::registry::InstalledGlass;
-use rootglass_app::{AppService, RunId, RunOptions, RuntimeEvent};
+use rootglass_desktop::ui_model::{
+    lock_service, SignatureStatus, StartEffect, StopRequest, UiModel, UiState,
+};
 use std::path::PathBuf;
 use std::time::Duration;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum UiState {
-    Empty,
-    Loading,
-    Importing(PathBuf),
-    Imported(ImportedDetails),
-    Ready(GlassPreview),
-    Blocked(BlockedDetails),
-    Failed(FailureDetails),
-    Booting(RunDetails),
-    Running(RunDetails),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct ImportedDetails {
-    path: PathBuf,
-    name: String,
-    version: String,
-    publisher: String,
-    digest: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct GlassPreview {
-    path: PathBuf,
-    name: String,
-    identifier: String,
-    version: String,
-    description: String,
-    publisher: String,
-    signature: SignatureStatus,
-    preflight: PreflightDetails,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum SignatureStatus {
-    Verified(String),
-    Untrusted(String),
-    Invalid(String),
-    Tampered(String),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct PreflightDetails {
-    architecture: String,
-    profile: String,
-    memory_mb: u32,
-    cpus: u32,
-    qemu: String,
-    acceleration: String,
-    runtime_assets: Vec<String>,
-    blockers: Vec<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct BlockedDetails {
-    path: Option<PathBuf>,
-    reason: String,
-    preflight: PreflightDetails,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct FailureDetails {
-    path: Option<PathBuf>,
-    phase: String,
-    summary: String,
-    detail: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct RunDetails {
-    name: String,
-    status: String,
-    elapsed: String,
-}
-
-struct UiModel {
-    state: UiState,
-    service: AppService,
-    installed_glasses: Vec<InstalledGlass>,
-    library_error: Option<String>,
-    selected_path: Option<PathBuf>,
-    run_id: Option<RunId>,
-    console: String,
-}
-
-impl Default for UiModel {
-    fn default() -> Self {
-        let (service, state) = match local_trust_config_path() {
-            Ok(path) => match AppService::from_trust_config(&path) {
-                Ok(service) => (service, UiState::Empty),
-                Err(error) => (
-                    AppService::deny_all(),
-                    trust_config_failure(format!("{} ({})", error, path.display())),
-                ),
-            },
-            Err(error) => (AppService::deny_all(), trust_config_failure(error)),
-        };
-        let (installed_glasses, library_error) = match service.installed_glasses() {
-            Ok(glasses) => (glasses, None),
-            Err(error) => (Vec::new(), Some(error.to_string())),
-        };
-        Self {
-            state,
-            service,
-            installed_glasses,
-            library_error,
-            selected_path: None,
-            run_id: None,
-            console: String::new(),
-        }
-    }
-}
-
-fn trust_config_failure(detail: String) -> UiState {
-    UiState::Failed(FailureDetails {
-        path: None,
-        phase: "Trust configuration".to_string(),
-        summary: "Local publisher trust could not be loaded. Bundle verification is disabled."
-            .to_string(),
-        detail,
-    })
-}
-
-fn local_trust_config_path() -> Result<PathBuf, String> {
-    #[cfg(target_os = "windows")]
-    {
-        let root = std::env::var_os("APPDATA")
-            .map(PathBuf::from)
-            .ok_or_else(|| {
-                "APPDATA is not set; cannot locate Rootglass trust configuration.".to_string()
-            })?;
-        return Ok(root.join("Rootglass").join("trust.json"));
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .ok_or_else(|| {
-                "HOME is not set; cannot locate Rootglass trust configuration.".to_string()
-            })?;
-        return Ok(home
-            .join("Library")
-            .join("Application Support")
-            .join("Rootglass")
-            .join("trust.json"));
-    }
-
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        if let Some(config_home) = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from) {
-            if config_home.is_absolute() {
-                return Ok(config_home.join("rootglass").join("trust.json"));
-            }
-        }
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .ok_or_else(|| {
-                "Neither an absolute XDG_CONFIG_HOME nor HOME is set; cannot locate Rootglass trust configuration."
-                    .to_string()
-            })?;
-        return Ok(home.join(".config").join("rootglass").join("trust.json"));
-    }
-
-    #[cfg(not(any(target_os = "windows", target_os = "macos", unix)))]
-    {
-        Err("This platform has no configured Rootglass trust configuration directory.".to_string())
-    }
-}
-
-impl UiModel {
-    fn refresh_library(&mut self) {
-        match self.service.installed_glasses() {
-            Ok(glasses) => {
-                self.installed_glasses = glasses;
-                self.library_error = None;
-            }
-            Err(error) => self.library_error = Some(error.to_string()),
-        }
-    }
-
-    fn import_finished(&mut self, result: Result<InstalledGlass, rootglass_app::AppError>) {
-        match result {
-            Ok(installed) => {
-                self.selected_path = Some(installed.package_path.clone());
-                self.state = UiState::Imported(ImportedDetails {
-                    path: installed.package_path,
-                    name: installed.name,
-                    version: installed.version,
-                    publisher: installed.publisher_name,
-                    digest: installed.content_sha256,
-                });
-                self.refresh_library();
-            }
-            Err(error) => {
-                self.state = UiState::Failed(FailureDetails {
-                    path: self.selected_path.clone(),
-                    phase: format!("{:?}", error.phase),
-                    summary: error.summary,
-                    detail: error.detail,
-                });
-            }
-        }
-    }
-
-    fn select_bundle(&mut self, path: PathBuf) {
-        self.selected_path = Some(path.clone());
-        self.state = UiState::Loading;
-        match self.service.inspect(&path) {
-            Ok(summary) => match self.service.preflight(&path) {
-                Ok(report) => {
-                    self.state = UiState::Ready(GlassPreview {
-                        path,
-                        name: summary.name,
-                        identifier: summary.identifier,
-                        version: summary.version,
-                        description: summary.description,
-                        publisher: summary.publisher_name,
-                        signature: SignatureStatus::Verified(summary.publisher_identity),
-                        preflight: preflight_details(report),
-                    });
-                }
-                Err(error) => {
-                    self.state = UiState::Blocked(BlockedDetails {
-                        path: Some(path),
-                        reason: error.summary,
-                        preflight: PreflightDetails {
-                            blockers: vec![error.detail],
-                            ..empty_preflight()
-                        },
-                    });
-                }
-            },
-            Err(error) => {
-                self.state = UiState::Failed(FailureDetails {
-                    path: Some(path),
-                    phase: format!("{:?}", error.phase),
-                    summary: error.summary,
-                    detail: error.detail,
-                });
-            }
-        }
-    }
-
-    fn start(&mut self) {
-        let Some(path) = self.selected_path.clone() else { return };
-        match self.service.start(&path, RunOptions::default()) {
-            Ok(run_id) => {
-                self.run_id = Some(run_id);
-                self.state = UiState::Booting(RunDetails {
-                    name: "Selected glass".to_string(),
-                    status: "Booting; waiting for guest login prompt".to_string(),
-                    elapsed: String::new(),
-                });
-            }
-            Err(error) => {
-                self.state = UiState::Failed(FailureDetails {
-                    path: Some(path),
-                    phase: format!("{:?}", error.phase),
-                    summary: error.summary,
-                    detail: error.detail,
-                });
-            }
-        }
-    }
-
-    fn poll(&mut self) {
-        let Some(run) = self.run_id.clone() else { return };
-        for _ in 0..32 {
-            match self.service.poll_event(Duration::ZERO) {
-                Ok(Some(RuntimeEvent::SerialChunk { run: event_run, bytes, .. }))
-                    if event_run == run =>
-                {
-                    self.console.push_str(&String::from_utf8_lossy(&bytes));
-                    if self.console.len() > 80_000 {
-                        let mut drain = self.console.len() - 80_000;
-                        while !self.console.is_char_boundary(drain) {
-                            drain += 1;
-                        }
-                        self.console.drain(..drain);
-                    }
-                }
-                Ok(Some(RuntimeEvent::GuestReady { run: event_run, .. }))
-                    if event_run == run =>
-                {
-                    self.state = UiState::Running(RunDetails {
-                        name: "Selected glass".to_string(),
-                        status: "Running".to_string(),
-                        elapsed: String::new(),
-                    });
-                }
-                Ok(Some(RuntimeEvent::Exited { run: event_run, exit_code, .. }))
-                    if event_run == run =>
-                {
-                    self.run_id = None;
-                    self.state = UiState::Failed(FailureDetails {
-                        path: self.selected_path.clone(),
-                        phase: "Guest".to_string(),
-                        summary: "QEMU exited unexpectedly.".to_string(),
-                        detail: format!("Exit code: {exit_code:?}"),
-                    });
-                }
-                Ok(Some(RuntimeEvent::Failed {
-                    run: event_run,
-                    phase,
-                    summary,
-                    detail,
-                })) if event_run == run => {
-                    self.run_id = None;
-                    self.state = UiState::Failed(FailureDetails {
-                        path: self.selected_path.clone(),
-                        phase: format!("{phase:?}"),
-                        summary,
-                        detail,
-                    });
-                }
-                Ok(Some(_)) => {}
-                Ok(None) => break,
-                Err(error) => {
-                    self.run_id = None;
-                    self.state = UiState::Failed(FailureDetails {
-                        path: self.selected_path.clone(),
-                        phase: format!("{:?}", error.phase),
-                        summary: error.summary,
-                        detail: error.detail,
-                    });
-                    break;
-                }
-            }
-        }
-    }
-
-    fn stop(&mut self) {
-        if let Some(run) = self.run_id.clone() {
-            match self.service.stop(&run) {
-                Ok(()) => {
-                    self.run_id = None;
-                    if let Some(path) = self.selected_path.clone() {
-                        self.select_bundle(path);
-                    } else {
-                        self.state = UiState::Empty;
-                    }
-                }
-                Err(error) => {
-                    self.state = UiState::Failed(FailureDetails {
-                        path: self.selected_path.clone(),
-                        phase: format!("{:?}", error.phase),
-                        summary: error.summary,
-                        detail: error.detail,
-                    });
-                }
-            }
-        }
-    }
-
-    fn send_input(&mut self, text: &str) {
-        let Some(run) = self.run_id.as_ref() else {
-            return;
-        };
-        let mut bytes = text.as_bytes().to_vec();
-        bytes.push(b'\n');
-        if let Err(error) = self.service.write_serial(run, &bytes) {
-            self.state = UiState::Failed(FailureDetails {
-                path: self.selected_path.clone(),
-                phase: format!("{:?}", error.phase),
-                summary: error.summary,
-                detail: error.detail,
-            });
-        }
-    }
-}
-
-fn empty_preflight() -> PreflightDetails {
-    PreflightDetails {
-        architecture: "Unknown".to_string(),
-        profile: "Unknown".to_string(),
-        memory_mb: 0,
-        cpus: 0,
-        qemu: "Not checked".to_string(),
-        acceleration: "Not checked".to_string(),
-        runtime_assets: vec![],
-        blockers: vec![],
-    }
-}
-
-fn preflight_details(report: rootglass_app::PreflightReport) -> PreflightDetails {
-    PreflightDetails {
-        architecture: report.summary.architecture,
-        profile: report.summary.profile,
-        memory_mb: report.summary.memory_mb,
-        cpus: report.summary.cpus,
-        qemu: "Resolved by the launch plan; executable check pending".to_string(),
-        acceleration: "Selected by host preflight; capability detail pending".to_string(),
-        runtime_assets: report.readiness,
-        blockers: vec![],
-    }
-}
+actions!(rootglass, [OpenBundle, StopGlass]);
+const ROOTGLASS_CONTEXT: &str = "RootglassWindow";
 
 struct RootglassWindow {
     model: UiModel,
     input: Entity<InputState>,
+    _library_task: Task<()>,
     _poll_task: Task<()>,
     _input_subscription: Subscription,
 }
 
 impl Render for RootglassWindow {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let actions = self.model.actions();
         div()
             .v_flex()
             .size_full()
+            .key_context(ROOTGLASS_CONTEXT)
+            .on_action(cx.listener(Self::on_open_bundle))
+            .on_action(cx.listener(Self::on_stop_shortcut))
             .child(
                 div()
                     .h_flex()
@@ -428,33 +40,26 @@ impl Render for RootglassWindow {
                         Button::new("open-glass")
                             .primary()
                             .label("Open a .glass bundle…")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.open_bundle(window, cx)
-                            })),
+                            .disabled(!actions.open)
+                            .on_click(cx.listener(|this, _, _, cx| this.open_bundle(cx))),
                     )
                     .child(
-                        Button::new("boot-glass").label("Boot").on_click(
-                            cx.listener(|this, _, _, cx| {
-                                this.model.start();
-                                cx.notify();
-                            }),
-                        ),
+                        Button::new("boot-glass")
+                            .label("Boot")
+                            .disabled(!actions.boot)
+                            .on_click(cx.listener(|this, _, _, cx| this.start_guest(cx))),
                     )
                     .child(
-                        Button::new("refresh-console").label("Refresh console").on_click(
-                            cx.listener(|this, _, _, cx| {
-                                this.model.poll();
-                                cx.notify();
-                            }),
-                        ),
+                        Button::new("restart-glass")
+                            .label("Restart")
+                            .disabled(!actions.restart)
+                            .on_click(cx.listener(|this, _, _, cx| this.restart_guest(cx))),
                     )
                     .child(
-                        Button::new("stop-glass").label("Stop").on_click(
-                            cx.listener(|this, _, _, cx| {
-                                this.model.stop();
-                                cx.notify();
-                            }),
-                        ),
+                        Button::new("stop-glass")
+                            .label("Stop")
+                            .disabled(!actions.stop)
+                            .on_click(cx.listener(|this, _, _, cx| this.stop_guest(cx))),
                     ),
             )
             .child(
@@ -466,6 +71,7 @@ impl Render for RootglassWindow {
                         &self.model.state,
                         &self.model.installed_glasses,
                         self.model.library_error.as_deref(),
+                        actions.open,
                         cx,
                     ))
                     .child(details_view(&self.model.state)),
@@ -480,7 +86,7 @@ impl Render for RootglassWindow {
             .child(
                 div()
                     .h_flex()
-                    .child(Input::new(&self.input))
+                    .child(Input::new(&self.input).disabled(!actions.console_input))
                     .child("Press Enter to send"),
             )
     }
@@ -489,26 +95,36 @@ impl Render for RootglassWindow {
 impl RootglassWindow {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Type to guest console…"));
-        let _input_subscription = cx.subscribe_in(
-            &input,
-            window,
-            |view, state, event, window, cx| {
-                if let InputEvent::PressEnter { .. } = event {
-                    let text = state.read(cx).value().to_string();
-                    view.model.send_input(&text);
-                    state.update(cx, |state, cx| state.set_value("", window, cx));
-                    cx.notify();
-                }
-            },
-        );
+        let model = UiModel::default();
+        let service = model.shared_service();
+        let background_executor = cx.background_executor().clone();
+        let _library_task = cx.spawn(async move |view, cx| {
+            let service_for_load = service.clone();
+            let result = background_executor
+                .spawn(async move {
+                    lock_service(&service_for_load)
+                        .and_then(|mut service| service.installed_glasses())
+                })
+                .await;
+            let _ = view.update(cx, |view, cx| {
+                view.model.finish_library_refresh(result);
+                cx.notify();
+            });
+        });
+
+        let service = model.shared_service();
         let background_executor = cx.background_executor().clone();
         let _poll_task = cx.spawn(async move |view, cx| loop {
-            background_executor
-                .timer(Duration::from_millis(100))
+            background_executor.timer(Duration::from_millis(100)).await;
+            let service_for_poll = service.clone();
+            let result = background_executor
+                .spawn(async move {
+                    lock_service(&service_for_poll).and_then(|mut service| service.poll_events())
+                })
                 .await;
             if view
                 .update(cx, |view, cx| {
-                    view.model.poll();
+                    view.model.apply_poll_result(result);
                     cx.notify();
                 })
                 .is_err()
@@ -516,70 +132,274 @@ impl RootglassWindow {
                 break;
             }
         });
+
+        let _input_subscription =
+            cx.subscribe_in(&input, window, |view, state, event, window, cx| {
+                if let InputEvent::PressEnter { .. } = event {
+                    let text = state.read(cx).value().to_string();
+                    if let Some((run, bytes)) = view.model.input_request(&text) {
+                        let service = view.model.shared_service();
+                        let background_executor = cx.background_executor().clone();
+                        cx.spawn(async move |view, cx| {
+                            let service_for_write = service.clone();
+                            let run_for_write = run.clone();
+                            let result = background_executor
+                                .spawn(async move {
+                                    lock_service(&service_for_write).and_then(|mut service| {
+                                        service.write_serial(&run_for_write, &bytes)
+                                    })
+                                })
+                                .await;
+                            let _ = view.update(cx, |view, cx| {
+                                view.model.finish_input(&run, result);
+                                cx.notify();
+                            });
+                        })
+                        .detach();
+                    }
+                    state.update(cx, |state, cx| state.set_value("", window, cx));
+                    cx.notify();
+                }
+            });
         Self {
-            model: UiModel::default(),
+            model,
             input,
+            _library_task,
             _poll_task,
             _input_subscription,
         }
     }
 
-    fn open_bundle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_open_bundle(&mut self, _: &OpenBundle, _: &mut Window, cx: &mut Context<Self>) {
+        self.open_bundle(cx);
+    }
+
+    fn on_stop_shortcut(&mut self, _: &StopGlass, _: &mut Window, cx: &mut Context<Self>) {
+        self.stop_guest(cx);
+    }
+
+    fn open_bundle(&mut self, cx: &mut Context<Self>) {
+        if !self.model.actions().open {
+            return;
+        }
         let selection = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: true,
             multiple: false,
             prompt: Some("Select a Rootglass .glass archive or directory".into()),
         });
-        let view = cx.entity();
-        let library = self.model.service.package_library();
         let background_executor = cx.background_executor().clone();
-
-        cx.spawn_in(window, async move |cx, window| {
+        cx.spawn(async move |view, cx| {
             let selected = selection
                 .await
                 .ok()
                 .and_then(Result::ok)
                 .flatten()
                 .and_then(|paths| paths.into_iter().next());
-
             let Some(path) = selected else { return };
-            let is_archive = path.is_file()
-                && path
-                    .extension()
-                    .and_then(|extension| extension.to_str())
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("glass"));
-
+            let type_check_path = path.clone();
+            let is_archive = background_executor
+                .spawn(async move {
+                    type_check_path.is_file()
+                        && type_check_path
+                            .extension()
+                            .and_then(|extension| extension.to_str())
+                            .is_some_and(|extension| extension.eq_ignore_ascii_case("glass"))
+                })
+                .await;
+            let ticket = match view.update(cx, |view, cx| {
+                if !view.model.actions().open {
+                    return None;
+                }
+                let ticket = if is_archive {
+                    view.model.begin_import(path.clone())
+                } else {
+                    view.model.begin_inspection(path.clone())
+                };
+                cx.notify();
+                ticket
+            }) {
+                Ok(Some(ticket)) => ticket,
+                Err(_) => return,
+                Ok(None) => return,
+            };
+            let service = view.update(cx, |view, _| view.model.shared_service());
+            let Ok(service) = service else { return };
             if is_archive {
                 let source = path.clone();
-                let import = background_executor.spawn(async move {
-                    library.import_archive(source)
-                });
-                let _ = window.update(|_, cx| {
-                    view.update(cx, |this, cx| {
-                        this.model.selected_path = Some(path.clone());
-                        this.model.state = UiState::Importing(path.clone());
-                        cx.notify();
+                let service_for_import = service.clone();
+                let result = background_executor
+                    .spawn(async move {
+                        lock_service(&service_for_import)
+                            .and_then(|mut service| service.import_and_inspect(&source))
                     })
+                    .await;
+                let _ = view.update(cx, |view, cx| {
+                    view.model.finish_import(&ticket, result);
+                    cx.notify();
                 });
-                let result = import.await;
-                window
-                    .update(|_, cx| {
-                        view.update(cx, |this, cx| {
-                            this.model.import_finished(result);
-                            cx.notify();
-                        })
-                    })
-                    .ok();
             } else {
-                window
-                    .update(|_, cx| {
-                        view.update(cx, |this, cx| {
-                            this.model.select_bundle(path);
-                            cx.notify();
-                        })
+                let service_for_inspect = service.clone();
+                let source = path.clone();
+                let result = background_executor
+                    .spawn(async move {
+                        match lock_service(&service_for_inspect) {
+                            Ok(mut service) => service.inspect_bundle(&source),
+                            Err(error) => rootglass_desktop::ui_model::InspectionOutcome::Failed(
+                                rootglass_desktop::ui_model::FailureDetails {
+                                    path: Some(source),
+                                    phase: format!("{:?}", error.phase),
+                                    summary: error.summary,
+                                    detail: error.detail,
+                                },
+                            ),
+                        }
                     })
-                    .ok();
+                    .await;
+                let _ = view.update(cx, |view, cx| {
+                    view.model.finish_inspection(&ticket, result);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn select_bundle(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if !self.model.actions().open {
+            return;
+        }
+        let Some(ticket) = self.model.begin_inspection(path.clone()) else {
+            return;
+        };
+        let service = self.model.shared_service();
+        let background_executor = cx.background_executor().clone();
+        cx.notify();
+        cx.spawn(async move |view, cx| {
+            let service_for_inspect = service.clone();
+            let source = path.clone();
+            let result = background_executor
+                .spawn(async move {
+                    match lock_service(&service_for_inspect) {
+                        Ok(mut service) => service.inspect_bundle(&source),
+                        Err(error) => rootglass_desktop::ui_model::InspectionOutcome::Failed(
+                            rootglass_desktop::ui_model::FailureDetails {
+                                path: Some(source),
+                                phase: format!("{:?}", error.phase),
+                                summary: error.summary,
+                                detail: error.detail,
+                            },
+                        ),
+                    }
+                })
+                .await;
+            let _ = view.update(cx, |view, cx| {
+                view.model.finish_inspection(&ticket, result);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn start_guest(&mut self, cx: &mut Context<Self>) {
+        let Some((ticket, path)) = self.model.begin_start() else {
+            return;
+        };
+        let service = self.model.shared_service();
+        let background_executor = cx.background_executor().clone();
+        cx.notify();
+        cx.spawn(async move |view, cx| {
+            let service_for_start = service.clone();
+            let result = background_executor
+                .spawn(async move {
+                    lock_service(&service_for_start).and_then(|mut service| service.start(&path))
+                })
+                .await;
+            let orphan = result.as_ref().ok().cloned();
+            let effect = view.update(cx, |view, cx| {
+                let effect = view.model.finish_start(&ticket, result);
+                cx.notify();
+                effect
+            });
+            let stop = match effect {
+                Ok(StartEffect::StopOrphan(run)) => Some(run),
+                Err(_) => orphan,
+                _ => None,
+            };
+            if let Some(run) = stop {
+                let service_for_cleanup = service.clone();
+                let _ = background_executor
+                    .spawn(async move {
+                        lock_service(&service_for_cleanup)
+                            .and_then(|mut service| service.stop(&run))
+                    })
+                    .await;
+            }
+        })
+        .detach();
+    }
+
+    fn stop_guest(&mut self, cx: &mut Context<Self>) {
+        match self.model.begin_stop() {
+            Some(StopRequest::CancelStartingOperation) => cx.notify(),
+            Some(StopRequest::StopRun { ticket, run }) => {
+                let service = self.model.shared_service();
+                let background_executor = cx.background_executor().clone();
+                cx.notify();
+                cx.spawn(async move |view, cx| {
+                    let service_for_stop = service.clone();
+                    let run_for_stop = run.clone();
+                    let result = background_executor
+                        .spawn(async move {
+                            lock_service(&service_for_stop)
+                                .and_then(|mut service| service.stop(&run_for_stop))
+                        })
+                        .await;
+                    let _ = view.update(cx, |view, cx| {
+                        view.model.finish_stop(&ticket, result);
+                        cx.notify();
+                    });
+                })
+                .detach();
+            }
+            None => {}
+        }
+    }
+
+    fn restart_guest(&mut self, cx: &mut Context<Self>) {
+        let Some((ticket, run, path)) = self.model.begin_restart() else {
+            return;
+        };
+        let service = self.model.shared_service();
+        let background_executor = cx.background_executor().clone();
+        cx.notify();
+        cx.spawn(async move |view, cx| {
+            let service_for_restart = service.clone();
+            let result = background_executor
+                .spawn(async move {
+                    lock_service(&service_for_restart)
+                        .and_then(|mut service| service.restart(&run, &path))
+                })
+                .await;
+            let orphan = result.as_ref().ok().cloned();
+            let effect = view.update(cx, |view, cx| {
+                let effect = view.model.finish_restart(&ticket, result);
+                cx.notify();
+                effect
+            });
+            let stop = match effect {
+                Ok(StartEffect::StopOrphan(run)) => Some(run),
+                Err(_) => orphan,
+                _ => None,
+            };
+            if let Some(run) = stop {
+                let service_for_cleanup = service.clone();
+                let _ = background_executor
+                    .spawn(async move {
+                        lock_service(&service_for_cleanup)
+                            .and_then(|mut service| service.stop(&run))
+                    })
+                    .await;
             }
         })
         .detach();
@@ -590,6 +410,7 @@ fn library_view(
     state: &UiState,
     installed_glasses: &[InstalledGlass],
     library_error: Option<&str>,
+    can_select: bool,
     cx: &mut Context<RootglassWindow>,
 ) -> Div {
     let mut view = div().v_flex().child("Library");
@@ -604,9 +425,9 @@ fn library_view(
                 .child(
                     Button::new(format!("installed-{}", glass.content_sha256))
                         .label(format!("{} {}", glass.name, glass.version))
+                        .disabled(!can_select)
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.model.select_bundle(path.clone());
-                            cx.notify();
+                            this.select_bundle(path.clone(), cx);
                         })),
                 )
                 .child(format!("Publisher: {}", glass.publisher_name))
@@ -614,7 +435,9 @@ fn library_view(
         }
     }
     if let Some(error) = library_error {
-        view = view.child(format!("The installed library could not be loaded: {error}"));
+        view = view.child(format!(
+            "The installed library could not be loaded: {error}"
+        ));
     }
     if let UiState::Ready(glass) = state {
         view = view.child(format!("Selected: {} {}", glass.name, glass.version));
@@ -681,10 +504,7 @@ fn details_view(state: &UiState) -> Div {
                     glass.preflight.cpus
                 ))
                 .child(format!("QEMU: {}", glass.preflight.qemu))
-                .child(format!(
-                    "Acceleration: {}",
-                    glass.preflight.acceleration
-                ));
+                .child(format!("Acceleration: {}", glass.preflight.acceleration));
             for asset in &glass.preflight.runtime_assets {
                 view = view.child(format!("Runtime asset: {asset}"));
             }
@@ -710,10 +530,7 @@ fn details_view(state: &UiState) -> Div {
                 blocked.preflight.cpus
             ));
             view = view.child(format!("QEMU: {}", blocked.preflight.qemu));
-            view = view.child(format!(
-                "Acceleration: {}",
-                blocked.preflight.acceleration
-            ));
+            view = view.child(format!("Acceleration: {}", blocked.preflight.acceleration));
             for asset in &blocked.preflight.runtime_assets {
                 view = view.child(format!("Runtime asset: {asset}"));
             }
@@ -732,6 +549,11 @@ fn details_view(state: &UiState) -> Div {
             .v_flex()
             .size_full()
             .child("Booting")
+            .child(format!("Status: {}", run.status)),
+        UiState::Stopping(run) => div()
+            .v_flex()
+            .size_full()
+            .child("Stopping")
             .child(format!("Status: {}", run.status)),
         UiState::Running(run) => div()
             .v_flex()
@@ -752,6 +574,7 @@ fn status_view(state: &UiState) -> Div {
         UiState::Blocked(_) => div().child("Status: Blocked · Stopped."),
         UiState::Failed(error) => div().child(format!("Status: Failed · {}", error.summary)),
         UiState::Booting(run) => div().child(format!("Status: {}", run.status)),
+        UiState::Stopping(run) => div().child(format!("Status: {}", run.status)),
         UiState::Running(run) => div().child(format!("Status: {}", run.status)),
     }
 }
@@ -761,6 +584,10 @@ fn main() {
         .with_assets(gpui_kit::assets::Assets)
         .run(|cx| {
             gpui_kit::init(cx);
+            cx.bind_keys([
+                KeyBinding::new("cmd-o", OpenBundle, Some(ROOTGLASS_CONTEXT)),
+                KeyBinding::new("cmd-.", StopGlass, Some(ROOTGLASS_CONTEXT)),
+            ]);
             gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
                 cx.new(|cx| RootglassWindow::new(window, cx))
             })
