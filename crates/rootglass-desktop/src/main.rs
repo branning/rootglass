@@ -477,8 +477,11 @@ impl RootglassWindow {
                 }
             },
         );
+        let background_executor = cx.background_executor().clone();
         let _poll_task = cx.spawn(async move |view, cx| loop {
-            Timer::after(Duration::from_millis(100)).await;
+            background_executor
+                .timer(Duration::from_millis(100))
+                .await;
             if view
                 .update(cx, |view, cx| {
                     view.model.poll();
@@ -506,6 +509,7 @@ impl RootglassWindow {
         });
         let view = cx.entity();
         let library = self.model.service.package_library();
+        let background_executor = cx.background_executor().clone();
 
         cx.spawn_in(window, async move |cx, window| {
             let selected = selection
@@ -524,9 +528,9 @@ impl RootglassWindow {
 
             if is_archive {
                 let source = path.clone();
-                let import = cx
-                    .background_executor()
-                    .spawn(async move { library.import_archive(source) });
+                let import = background_executor.spawn(async move {
+                    library.import_archive(source)
+                });
                 let _ = window.update(|_, cx| {
                     view.update(cx, |this, cx| {
                         this.model.selected_path = Some(path.clone());
@@ -542,7 +546,7 @@ impl RootglassWindow {
                             cx.notify();
                         })
                     })
-                    .ok()
+                    .ok();
             } else {
                 window
                     .update(|_, cx| {
@@ -551,7 +555,7 @@ impl RootglassWindow {
                             cx.notify();
                         })
                     })
-                    .ok()
+                    .ok();
             }
         })
         .detach();
