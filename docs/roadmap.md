@@ -20,22 +20,24 @@ These are implementation milestones, not a claim that every v1 acceptance test h
 
 **Goal:** turn the merged GPUI vertical slice into a user-verified desktop workflow and close acceptance A-08.
 
+S13.1 has merged headless model tests for action availability, errors, and asynchronous lifecycle behavior. S13.2 remains blocked until an interactive desktop host is available for real GUI evidence.
+
 1. Exercise open/import, trust and manifest details, preflight, boot, serial input/output, stop, restart, and failure recovery using the real application service.
-2. Add or complete headless UI-model tests for action availability and error states; add GUI smoke coverage for file-open, verification, Boot/Stop, and console interaction where supported.
-3. Check that filesystem work, signature verification, archive extraction, and process waits stay off the render thread; exercise cancellation and stale-event handling.
-4. Record per-platform results and any narrower supported-host claims in the app spec.
+2. Check focus, native dialogs, resizing, responsiveness, cleanup on close and accessible labels; have a human review usability and accessibility.
+3. Record per-platform results and any narrower supported-host claims in the app spec.
 
 **Exit gate:** A-08 passes on supported desktop runners or has a documented, evidence-backed platform limitation. Core behavior remains covered by deterministic service/supervisor tests; GUI automation is reserved for user-visible integration.
 
-## Planned parallel milestone — headless TUI and GPUI terminal bridge
+## Current milestone — GPUI terminal bridge
 
-**Goal:** provide a Ratatui frontend that can drive Rootglass without a window server, then host the same TUI session in the GPUI desktop through libghostty. Work is decomposed in Ergo epic S16; no TUI or embedded terminal implementation is merged yet.
+**Goal:** host the merged Ratatui session in the existing GPUI desktop through public libghostty-vt and a custom GPUI view.
 
-1. Establish the workflow parity contract and preserve service boundaries in [tui-architecture.md](tui-architecture.md).
-2. Build one Ratatui controller/renderer with `TestBackend` coverage before adding app workflows.
-3. Add verified library, trust/preflight and lifecycle actions through `rootglass-app`, then guest serial interaction. Add state controls only after the S12.2 app-service contract is available. Cover signing/package through `rootglass-signature` with secret-file key input.
-4. Prototype the exact external libghostty API, GPUI adapter, PTY/session ownership, platform packaging and dependency notices. Upstream currently marks the full embedding API internal to its macOS app, so no cross-platform embedding support is assumed.
-5. Embed the same standalone TUI session only after the prototype gate and maintainer platform decision. Run host smoke for keyboard/focus, resize, clipboard, cleanup and guest serial input/output.
+S16.1–S16.5, S16.9 and S16.10 are merged: the TUI has a headless controller and renderer, CLI terminal lifecycle, verified library workflows, guest serial interaction, state/trust controls and signing/package flows. The maintainer approved public libghostty-vt with a custom renderer and PTY/session adapter. The Ghostty GUI apps use native SwiftUI (macOS) and GTK (Linux), not GPUI Kit; libghostty-vt is the terminal core, not a ready-made view.
+
+1. Keep the signed Linux x86_64 PTY smoke reproducible in focused CI and record upstream ABI, license and packaging boundaries in [tui-architecture.md](tui-architecture.md).
+2. Implement the GPUI view and terminal/PTY adapter using the same standalone TUI session, with keyboard, resize, clipboard, focus and orderly cleanup.
+3. Qualify each supported Rootglass package target on its native host before claiming it: Linux x86_64, macOS arm64 and Windows x86_64 are candidates, not yet proven embedded-host platforms.
+4. Publish the cross-surface acceptance record after the host evidence exists.
 
 **Exit gate:** headless tests exercise the same TUI controller and screens used by the standalone command; supported GPUI host platforms have evidence for the embedded terminal and real guest-console interaction. A host that lacks GUI automation remains blocked for that acceptance item; headless success does not substitute for it. This milestone is separate from A-08 desktop smoke and does not close app release gates.
 
