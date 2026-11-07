@@ -58,6 +58,8 @@ Only schedule these after release gates or with a separate product decision:
 - Multiple concurrent worlds, snapshots, and host-to-guest file transfer.
 - Enterprise trust deployment, cloud catalogs, bundle auto-updates, or non-generic hardware/HIL.
 
+Live task status and dependencies are tracked in [Ergo](agent-workflow.md); this roadmap remains a delivery summary. Run `ergo list --ready` to choose work.
+
 ## Working rules
 
 - Keep the CLI and shared Rust service usable as the reference path.

@@ -8,6 +8,10 @@ Rootglass is a cross-platform shell for running self-contained embedded Linux ap
 
 [**App spec and coding-agent swarm build contract**](docs/app-spec.md) describes the existing Rust implementation, GPUI Kit desktop UI, signed bundle install/release path, QEMU lifecycle, production trust, OS packaging, acceptance tests, and dependency-ordered work packages. Coding agents should start with [AGENTS.md](AGENTS.md).
 
+## Implementation backlog
+
+Use [Ergo v6](https://github.com/sandover/ergo) to browse the tracked backlog: `ergo list --ready` and `ergo show <id>`. See [setup and the atomic agent workflow](docs/agent-workflow.md). The backlog preserves merged S00–S11 history, separates open S12–S15 acceptance/release gates, and keeps post-v1 work in draft.
+
 ## Current status
 
 The CLI remains the reference workflow, and the GPUI Kit desktop shell now uses the shared application service. The current implementation supports:

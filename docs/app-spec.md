@@ -410,7 +410,9 @@ R2/v1 is complete only when all of the following hold simultaneously:
 
 ## 12. Swarm work packages (assign one owner per package)
 
-For remaining implementation, assign one owner per package with explicit paths, acceptance IDs and dependencies. The original S00–S11 packages are merged; S12–S15 track acceptance and release qualification. Small agents should not edit shared files outside their owned package.
+The executable backlog now lives in [`.ergo/backlog.jsonl`](../.ergo/backlog.jsonl), with progress/evidence in [`.ergo/journal.jsonl`](../.ergo/journal.jsonl). Use `ergo list --ready` and `ergo show <id>`; follow [the atomic agent workflow](agent-workflow.md). Ergo owns live task status, dependencies and assignments; this spec retains product requirements, acceptance criteria and the historical package index below. S12–S15 are split into independently reviewable tasks, and R3 is draft work.
+
+For remaining implementation, assign one owner per Ergo task with explicit paths, acceptance IDs and dependencies. The original S00–S11 packages are merged; S12–S15 track acceptance and release qualification. Small agents should not edit shared files outside their owned package.
 
 | ID | Phase | Work package and owned paths | Depends | Acceptance | State |
 |---|---|---|---|---|---|
@@ -439,7 +441,9 @@ For remaining implementation, assign one owner per package with explicit paths, 
 ```text
 You are Worker <ID> on branning/rootglass.
 Read docs/app-spec.md and your assigned source files.
-Implement only package <ID> (paths and prerequisites in section 12).
+Run ergo where and ergo show <task-id>; inspect prerequisite outcomes.
+Implement only the assigned Ergo task within package <ID>.
+Use docs/agent-workflow.md for atomic commits and progress recording.
 Before writing code, report the existing symbols you will reuse.
 Keep public interfaces compatible with the application-service contract in section 6.3.
 Implement positive, failure and cleanup-path tests.
@@ -451,7 +455,7 @@ If blocked by missing interface, open an issue or provide a tiny compileable con
 
 ### 12.2 Integration-owner checklist
 
-- Keep a single dependency DAG/owner map and prevent duplicate file ownership.
+- Keep the dependency DAG/owner map in Ergo and prevent duplicate file ownership; do not maintain a competing Markdown task queue.
 - Merge foundation fixes and rerun baseline tests before interpreting GPUI failures.
 - Review each PR for false-positive tests, security bypass, missing cleanup and unbounded logging.
 - Run workflow tests from the merge commit, not just an agent's branch.
