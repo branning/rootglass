@@ -1,14 +1,15 @@
 //! Ratatui rendering for the shared Rootglass UI model.
 
 use crate::{
-    BlockedDetails, FailureDetails, GlassPreview, ImportedDetails, PreflightDetails, RunDetails,
-    SignatureStatus, UiActions, UiModel, UiState,
+    BlockedDetails, FailureDetails, GlassPreview, ImportedDetails, LaunchPlanDetails,
+    PreflightDetails, RemovalDetails, RunDetails, SignatureStatus, UiActions, UiModel, UiState,
 };
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
+use rootglass_app::ManifestValidationReport;
 use std::fmt::Display;
 
 const TITLE_STYLE: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
@@ -34,13 +35,13 @@ pub fn render_with_prompt(frame: &mut Frame<'_>, model: &UiModel, prompt: Option
             Constraint::Length(3),
             Constraint::Min(0),
             Constraint::Length(3),
-            Constraint::Length(4),
+            Constraint::Length(5),
         ]
     } else {
         vec![
             Constraint::Length(3),
             Constraint::Min(0),
-            Constraint::Length(4),
+            Constraint::Length(5),
         ]
     };
     let sections = Layout::default()
@@ -72,12 +73,16 @@ pub fn render_with_prompt(frame: &mut Frame<'_>, model: &UiModel, prompt: Option
 
     render_library(frame, model, columns[0]);
 
-    let details = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(5), Constraint::Percentage(42)])
-        .split(columns[1]);
-    render_details(frame, &model.state, details[0]);
-    render_console(frame, &model.console, details[1]);
+    if model.run_id.is_some() || !model.console.is_empty() {
+        let details = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(5), Constraint::Percentage(42)])
+            .split(columns[1]);
+        render_details(frame, &model.state, details[0]);
+        render_console(frame, &model.console, details[1]);
+    } else {
+        render_details(frame, &model.state, columns[1]);
+    }
     render_actions(frame, model.actions(), actions_area);
 }
 
@@ -89,10 +94,13 @@ fn render_library(frame: &mut Frame<'_>, model: &UiModel, area: Rect) {
             ERROR_STYLE,
         )));
     }
+    let visible = model.visible_installed();
     if model.installed_glasses.is_empty() {
         lines.push(Line::from("No installed bundles."));
+    } else if visible.is_empty() {
+        lines.push(Line::from("No releases match this filter."));
     } else {
-        for glass in &model.installed_glasses {
+        for glass in visible {
             let selected = model.selected_path.as_ref() == Some(&glass.package_path);
             let marker = if selected { "▶ " } else { "  " };
             let style = if selected {
@@ -102,17 +110,32 @@ fn render_library(frame: &mut Frame<'_>, model: &UiModel, area: Rect) {
             };
             lines.push(Line::from(vec![
                 Span::styled(marker, style),
-                Span::styled(format!("{} {}", glass.name, glass.version), style),
+                Span::styled(
+                    format!(
+                        "{} {} · {}",
+                        glass.name, glass.version, glass.publisher_name
+                    ),
+                    style,
+                ),
             ]));
+            lines.push(Line::from(Span::styled(
+                format!("  {} · sha256:{}", glass.identifier, glass.content_sha256),
+                LABEL_STYLE,
+            )));
             lines.push(Line::from(Span::styled(
                 format!("  {}", glass.package_path.display()),
                 LABEL_STYLE,
             )));
         }
     }
+    let title = if model.library_filter.is_empty() {
+        "Library".to_string()
+    } else {
+        format!("Library · filter: {}", model.library_filter)
+    };
     frame.render_widget(
         Paragraph::new(lines)
-            .block(Block::default().borders(Borders::ALL).title("Library"))
+            .block(Block::default().borders(Borders::ALL).title(title))
             .wrap(Wrap { trim: false }),
         area,
     );
@@ -137,6 +160,15 @@ fn state_details(state: &UiState) -> (&'static str, Vec<Line<'static>>) {
                 Line::from("Open a .glass bundle to inspect it."),
             ],
         ),
+        UiState::Opening(path) => (
+            "Opening",
+            vec![
+                Line::from(
+                    "Directory inspection or archive verification/import runs in background.",
+                ),
+                field("Path", path.display()),
+            ],
+        ),
         UiState::Loading => ("Loading", vec![Line::from("Inspecting bundle…")]),
         UiState::Importing(path) => (
             "Importing",
@@ -145,6 +177,27 @@ fn state_details(state: &UiState) -> (&'static str, Vec<Line<'static>>) {
                 field("Path", path.display()),
             ],
         ),
+        UiState::Validating => (
+            "Manifest validation",
+            vec![
+                Line::from("Checking manifest fields only."),
+                Line::from(Span::styled(
+                    "Signature and publisher trust are not checked by Validate.",
+                    WARNING_STYLE,
+                )),
+            ],
+        ),
+        UiState::ManifestValidated(report) => {
+            ("Manifest valid · not verified", validation_lines(report))
+        }
+        UiState::Planning => (
+            "Launch plan",
+            vec![Line::from(
+                "Verifying signature, publisher trust, and runtime readiness…",
+            )],
+        ),
+        UiState::Planned(plan) => ("Verified launch plan", plan_lines(plan)),
+        UiState::Removing(details) => ("Removing release", removal_lines(details)),
         UiState::Imported(details) => ("Installed", imported_lines(details)),
         UiState::Ready(preview) => ("Ready", preview_lines(preview)),
         UiState::Blocked(details) => ("Blocked", blocked_lines(details)),
@@ -153,6 +206,95 @@ fn state_details(state: &UiState) -> (&'static str, Vec<Line<'static>>) {
         UiState::Stopping(run) => ("Stopping", run_lines(run)),
         UiState::Running(run) => ("Running", run_lines(run)),
     }
+}
+
+fn validation_lines(report: &ManifestValidationReport) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        field("Name", &report.name),
+        Line::from(Span::styled(
+            "Signature and publisher trust: not checked",
+            WARNING_STYLE,
+        )),
+        field("Identifier", &report.identifier),
+        field("Version", &report.version),
+        field("Declared publisher", &report.declared_publisher_name),
+        field("Declared identity", &report.declared_publisher_identity),
+        field(
+            "Architecture / profile",
+            format!("{} / {}", report.architecture, report.profile),
+        ),
+        field(
+            "Resources",
+            format!("{} MiB · {} CPUs", report.memory_mb, report.cpus),
+        ),
+        field("Rootfs", report.rootfs.display()),
+        field("Network", &report.network_mode),
+        field("Path", report.path.display()),
+    ];
+    if let Some(description) = &report.description {
+        lines.push(field("Description", description));
+    }
+    lines
+}
+
+fn plan_lines(plan: &LaunchPlanDetails) -> Vec<Line<'static>> {
+    let preview = &plan.preview;
+    let signature = match &preview.signature {
+        SignatureStatus::Verified(publisher) => format!("Verified · {publisher}"),
+        SignatureStatus::Untrusted(publisher) => format!("Untrusted · {publisher}"),
+        SignatureStatus::Invalid(reason) => format!("Invalid · {reason}"),
+        SignatureStatus::Tampered(reason) => format!("Tampered · {reason}"),
+    };
+    let mut lines = vec![
+        field("Bundle", format!("{} {}", preview.name, preview.version)),
+        field("Identifier", &preview.identifier),
+        field("Publisher", &preview.publisher),
+        field("Signature", signature),
+        field("Path", preview.path.display()),
+        field(
+            "Runtime",
+            format!(
+                "{} / {} · {} MiB · {} CPUs",
+                preview.preflight.architecture,
+                preview.preflight.profile,
+                preview.preflight.memory_mb,
+                preview.preflight.cpus
+            ),
+        ),
+        field("QEMU", &preview.preflight.qemu),
+        field("Acceleration", &preview.preflight.acceleration),
+    ];
+    if !preview.preflight.blockers.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "Preflight blockers",
+            WARNING_STYLE,
+        )));
+        lines.extend(
+            preview.preflight.blockers.iter().map(|blocker| {
+                Line::from(Span::styled(format!("Blocker: {blocker}"), WARNING_STYLE))
+            }),
+        );
+    } else {
+        lines.extend(
+            preview
+                .preflight
+                .runtime_assets
+                .iter()
+                .map(|asset| field("Runtime asset", asset)),
+        );
+    }
+    lines.push(Line::from("Resolved launch command"));
+    lines.push(Line::from(plan.command.clone()));
+    lines
+}
+
+fn removal_lines(details: &RemovalDetails) -> Vec<Line<'static>> {
+    vec![
+        field("Release", format!("{} {}", details.name, details.version)),
+        field("SHA-256", &details.content_sha256),
+        field("Path", details.path.display()),
+        Line::from("The immutable files remain until library garbage collection."),
+    ]
 }
 
 fn imported_lines(details: &ImportedDetails) -> Vec<Line<'static>> {
@@ -288,16 +430,23 @@ fn render_console(frame: &mut Frame<'_>, console: &str, area: Rect) {
 fn render_actions(frame: &mut Frame<'_>, actions: UiActions, area: Rect) {
     let lines = vec![
         action_line([
-            action("[o] Open", actions.open),
+            action("[o] Open/import", actions.open),
+            action("[v] Validate", actions.validate),
+            action("[p] Plan", actions.plan),
             action("[b] Boot", actions.boot),
             action("[s] Stop", actions.stop),
-            action("[r] Restart", actions.restart),
-            action("[Enter] Console", actions.console_input),
         ]),
         action_line([
-            action("↑/↓ Select", true),
-            action("[f] Refresh", true),
+            action("[r] Restart", actions.restart),
+            action("[d] Remove", actions.remove),
+            action("[/] Filter", true),
+            action("[f] Refresh", actions.refresh),
+            action("↑/↓ Select", actions.open),
+        ]),
+        action_line([
+            action("[Enter] Console", actions.console_input),
             action("[q] Quit", true),
+            action("[Ctrl-C] Quit", true),
         ]),
     ];
     frame.render_widget(
@@ -455,6 +604,10 @@ mod tests {
     fn core_states_render_their_status_and_recovery_details() {
         let cases = [
             (UiState::Empty, "No bundle selected."),
+            (
+                UiState::Opening(PathBuf::from("bundle.glass")),
+                "Directory inspection",
+            ),
             (UiState::Loading, "Inspecting bundle"),
             (UiState::Ready(preview()), "Verified · fixture-key"),
             (
@@ -482,6 +635,56 @@ mod tests {
         for (state, expected) in cases {
             assert!(snapshot(&model(state)).contains(expected));
         }
+    }
+
+    #[test]
+    fn validate_plan_and_removal_states_show_semantics_and_blockers() {
+        let validation = ManifestValidationReport {
+            path: PathBuf::from("/bundles/example.glass"),
+            name: "Example Guest".into(),
+            identifier: "org.example.guest".into(),
+            version: "1.2.3".into(),
+            description: Some("Test guest".into()),
+            declared_publisher_name: "Example Publisher".into(),
+            declared_publisher_identity: "example.test".into(),
+            architecture: "x86_64".into(),
+            profile: "linux".into(),
+            memory_mb: 1024,
+            cpus: 2,
+            rootfs: PathBuf::from("rootfs.img"),
+            network_mode: "user".into(),
+        };
+        let validation_output = snapshot(&model(UiState::ManifestValidated(validation)));
+        assert!(validation_output.contains("Manifest valid · not verified"));
+        assert!(
+            validation_output.contains("Signature and publisher trust:"),
+            "{validation_output}"
+        );
+        assert!(
+            validation_output.contains("not checked"),
+            "{validation_output}"
+        );
+
+        let mut planned = preview();
+        planned.preflight.blockers = vec!["rootfs.img is missing".into()];
+        let plan_output = snapshot(&model(UiState::Planned(LaunchPlanDetails {
+            preview: planned,
+            command: "/runtime/qemu-system -machine virt".into(),
+        })));
+        assert!(plan_output.contains("Verified launch plan"));
+        assert!(plan_output.contains("Blocker: rootfs.img is missing"));
+        assert!(plan_output.contains("/runtime/qemu-system -machine virt"));
+
+        let removal_output = snapshot(&model(UiState::Removing(RemovalDetails {
+            content_sha256: "abc123".into(),
+            name: "Example Guest".into(),
+            version: "1.2.3".into(),
+            path: PathBuf::from("/library/example.glass"),
+        })));
+        assert!(removal_output.contains("Removing release"));
+        assert!(
+            removal_output.contains("The immutable files remain until library garbage collection.")
+        );
     }
 
     #[test]

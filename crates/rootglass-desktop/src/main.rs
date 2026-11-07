@@ -4,8 +4,10 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::*;
 use gpui_kit::*;
 use rootglass_app::registry::InstalledGlass;
+use rootglass_app::ManifestValidationReport;
 use rootglass_desktop::ui_model::{
-    lock_service, SignatureStatus, StartEffect, StopRequest, UiModel, UiState,
+    lock_service, GlassPreview, RemovalDetails, SignatureStatus, StartEffect, StopRequest, UiModel,
+    UiState,
 };
 use std::path::PathBuf;
 use std::time::Duration;
@@ -443,6 +445,9 @@ fn library_view(
         view = view.child(format!("Selected: {} {}", glass.name, glass.version));
     }
     match state {
+        UiState::Opening(path) => {
+            view = view.child(format!("Opening {} in the background…", path.display()));
+        }
         UiState::Importing(path) => {
             view = view.child(format!("Verifying and importing {}…", path.display()));
         }
@@ -466,6 +471,11 @@ fn details_view(state: &UiState) -> Div {
             .child("No bundle selected")
             .child("Publisher, verification, and preflight details appear after inspection.")
             .child("Boot is unavailable until a bundle passes verification and preflight."),
+        UiState::Opening(path) => div()
+            .v_flex()
+            .size_full()
+            .child("Opening bundle in the background…")
+            .child(path.display().to_string()),
         UiState::Loading => div()
             .v_flex()
             .size_full()
@@ -475,44 +485,28 @@ fn details_view(state: &UiState) -> Div {
             .v_flex()
             .size_full()
             .child("Verifying archive and importing package…"),
+        UiState::Validating => div()
+            .v_flex()
+            .size_full()
+            .child("Checking manifest fields only…")
+            .child("Signature and publisher trust are not checked by Validate."),
+        UiState::ManifestValidated(report) => manifest_validation_view(report),
+        UiState::Planning => div()
+            .v_flex()
+            .size_full()
+            .child("Building verified launch plan…")
+            .child("Checking signature, publisher trust, and runtime preflight."),
+        UiState::Planned(plan) => {
+            preview_details_view("Verified launch plan", &plan.preview, Some(&plan.command))
+        }
+        UiState::Removing(details) => removal_details_view(details),
         UiState::Imported(glass) => div()
             .v_flex()
             .size_full()
             .child(format!("{} {} installed", glass.name, glass.version))
             .child(format!("Trusted publisher: {}", glass.publisher))
             .child("The archive was verified and copied into the local package store."),
-        UiState::Ready(glass) => {
-            let signature = match &glass.signature {
-                SignatureStatus::Verified(publisher) => format!("Verified: {publisher}"),
-                SignatureStatus::Untrusted(publisher) => format!("Untrusted: {publisher}"),
-                SignatureStatus::Invalid(reason) => format!("Invalid: {reason}"),
-                SignatureStatus::Tampered(reason) => format!("Tampered: {reason}"),
-            };
-            let mut view = div()
-                .v_flex()
-                .size_full()
-                .child(format!("{}  {}", glass.name, glass.version))
-                .child(format!("Identifier: {}", glass.identifier))
-                .child(glass.description.clone())
-                .child(format!("Publisher: {}", glass.publisher))
-                .child(format!("Signature: {signature}"))
-                .child(format!(
-                    "Guest: {} / {} · {} MiB · {} CPU(s)",
-                    glass.preflight.architecture,
-                    glass.preflight.profile,
-                    glass.preflight.memory_mb,
-                    glass.preflight.cpus
-                ))
-                .child(format!("QEMU: {}", glass.preflight.qemu))
-                .child(format!("Acceleration: {}", glass.preflight.acceleration));
-            for asset in &glass.preflight.runtime_assets {
-                view = view.child(format!("Runtime asset: {asset}"));
-            }
-            for blocker in &glass.preflight.blockers {
-                view = view.child(format!("Blocked: {blocker}"));
-            }
-            view
-        }
+        UiState::Ready(glass) => preview_details_view("Ready", glass, None),
         UiState::Blocked(blocked) => {
             let mut view = div()
                 .v_flex()
@@ -567,8 +561,17 @@ fn details_view(state: &UiState) -> Div {
 fn status_view(state: &UiState) -> Div {
     match state {
         UiState::Empty => div().child("Status: Stopped · Console is inactive."),
+        UiState::Opening(_) => div().child("Status: Opening bundle in the background."),
         UiState::Loading => div().child("Status: Loading · Console is inactive."),
         UiState::Importing(_) => div().child("Status: Verifying archive · Console is inactive."),
+        UiState::Validating => div().child("Status: Validating manifest fields."),
+        UiState::ManifestValidated(_) => div().child("Status: Manifest valid · Not verified."),
+        UiState::Planning => div().child("Status: Building verified launch plan."),
+        UiState::Planned(plan) if plan.preview.preflight.blockers.is_empty() => {
+            div().child("Status: Launch plan ready.")
+        }
+        UiState::Planned(_) => div().child("Status: Launch plan blocked by preflight."),
+        UiState::Removing(_) => div().child("Status: Removing installed release."),
         UiState::Imported(_) => div().child("Status: Installed · Stopped."),
         UiState::Ready(_) => div().child("Status: Ready · Stopped."),
         UiState::Blocked(_) => div().child("Status: Blocked · Stopped."),
@@ -577,6 +580,81 @@ fn status_view(state: &UiState) -> Div {
         UiState::Stopping(run) => div().child(format!("Status: {}", run.status)),
         UiState::Running(run) => div().child(format!("Status: {}", run.status)),
     }
+}
+
+fn manifest_validation_view(report: &ManifestValidationReport) -> Div {
+    let mut view = div()
+        .v_flex()
+        .size_full()
+        .child("Manifest valid · Signature and publisher trust are not checked.")
+        .child(format!("Name: {}", report.name))
+        .child(format!("Identifier: {}", report.identifier))
+        .child(format!("Version: {}", report.version))
+        .child(format!("Declared publisher: {}", report.declared_publisher_name))
+        .child(format!(
+            "Declared identity: {}",
+            report.declared_publisher_identity
+        ))
+        .child(format!(
+            "Runtime: {} / {} · {} MiB · {} CPU(s)",
+            report.architecture, report.profile, report.memory_mb, report.cpus
+        ))
+        .child(format!("Rootfs: {}", report.rootfs.display()))
+        .child(format!("Network: {}", report.network_mode))
+        .child(format!("Path: {}", report.path.display()));
+    if let Some(description) = &report.description {
+        view = view.child(format!("Description: {description}"));
+    }
+    view
+}
+
+fn preview_details_view(title: &str, glass: &GlassPreview, command: Option<&str>) -> Div {
+    let signature = match &glass.signature {
+        SignatureStatus::Verified(publisher) => format!("Verified: {publisher}"),
+        SignatureStatus::Untrusted(publisher) => format!("Untrusted: {publisher}"),
+        SignatureStatus::Invalid(reason) => format!("Invalid: {reason}"),
+        SignatureStatus::Tampered(reason) => format!("Tampered: {reason}"),
+    };
+    let mut view = div()
+        .v_flex()
+        .size_full()
+        .child(title.to_string())
+        .child(format!("{}  {}", glass.name, glass.version))
+        .child(format!("Identifier: {}", glass.identifier))
+        .child(glass.description.clone())
+        .child(format!("Publisher: {}", glass.publisher))
+        .child(format!("Signature: {signature}"))
+        .child(format!("Path: {}", glass.path.display()))
+        .child(format!(
+            "Guest: {} / {} · {} MiB · {} CPU(s)",
+            glass.preflight.architecture,
+            glass.preflight.profile,
+            glass.preflight.memory_mb,
+            glass.preflight.cpus
+        ))
+        .child(format!("QEMU: {}", glass.preflight.qemu))
+        .child(format!("Acceleration: {}", glass.preflight.acceleration));
+    for asset in &glass.preflight.runtime_assets {
+        view = view.child(format!("Runtime asset: {asset}"));
+    }
+    for blocker in &glass.preflight.blockers {
+        view = view.child(format!("Blocked: {blocker}"));
+    }
+    if let Some(command) = command {
+        view = view.child("Resolved launch command").child(command.to_string());
+    }
+    view
+}
+
+fn removal_details_view(details: &RemovalDetails) -> Div {
+    div()
+        .v_flex()
+        .size_full()
+        .child("Removing installed release…")
+        .child(format!("Release: {} {}", details.name, details.version))
+        .child(format!("SHA-256: {}", details.content_sha256))
+        .child(format!("Path: {}", details.path.display()))
+        .child("Immutable files remain until library garbage collection.")
 }
 
 fn main() {
