@@ -19,7 +19,7 @@ which it otherwise loads only after mounting the root filesystem. Override
 
 ## Generate assets
 
-Run from the repository root on Linux:
+Run from the repository root on Linux; no sudo, loop device, or display server is required:
 
 ```bash
 bash scripts/materialize-example-assets.sh
@@ -90,7 +90,8 @@ The `boot` command:
 2. verifies the DSSE/Ed25519 signature,
 3. resolves runtime assets,
 4. checks that kernel/initrd/rootfs/state files exist,
-5. spawns QEMU with inherited terminal I/O.
+5. copies the bundled state template into the per-user state store under the `default` name and holds a cross-process lock for the guest run,
+6. spawns QEMU with inherited terminal I/O. The guest mounts the state disk by label at `/state`; the rootfs remains read-only.
 
 With `-nographic -serial mon:stdio`, exit QEMU with:
 
@@ -108,13 +109,14 @@ error: missing kernel asset: runtime-assets/alpine-aarch64/vmlinuz-virt
 
 This behavior is intentional and is covered by tests.
 
-## End-to-end smoke boot
+## End-to-end boot and persistence smoke
 
 `bash scripts/smoke-boot-example.sh` uses a PTY to exercise the real serial
-console. It waits for the fixture login, logs in as `root` with the
-developer/CI-only password `rootglass-ci`, runs `uname -a`, checks for the
-guest hostname and `aarch64`, then requests guest shutdown and requires QEMU
-to exit. The raw console transcript is saved to
+console twice. It logs in as `root` with the developer/CI-only password
+`rootglass-ci`, checks `uname -a`, writes an exact marker under `/state`, powers
+off, boots again, and reads the marker back. It hashes both the read-only
+rootfs and bundled state template before and after to prove they stayed
+unchanged. The raw console transcript is saved to
 `.rootglass/build/hello-world-boot.log`. This disposable credential is only
 for the offline example fixture and must not be shipped in a production glass.
 

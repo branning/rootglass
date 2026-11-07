@@ -162,9 +162,17 @@ impl QemuLaunchPlan {
             args.push(accel.to_string());
         }
 
-        if !request.kernel_args.is_empty() {
+        let mut kernel_args = request.kernel_args.clone();
+        if request.writable_overlay.is_some()
+            && !kernel_args
+                .iter()
+                .any(|arg| arg.starts_with("rootglass.state="))
+        {
+            kernel_args.push("rootglass.state=required".to_string());
+        }
+        if !kernel_args.is_empty() {
             args.push("-append".to_string());
-            args.push(request.kernel_args.join(" "));
+            args.push(kernel_args.join(" "));
         }
 
         Self {
@@ -738,6 +746,7 @@ mod tests {
         assert!(command_line.contains("state.img"));
         assert!(command_line.find("id=state").unwrap() < command_line.find("id=rootfs").unwrap());
         assert!(command_line.contains("console=ttyAMA0"));
+        assert!(command_line.contains("rootglass.state=required"));
     }
 
     #[test]

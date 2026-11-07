@@ -45,7 +45,7 @@ boot-preflight-missing-assets:
       grep -q "missing kernel asset" /tmp/rootglass-boot-preflight.log; \
     fi
 
-# Download/generate local example assets. Requires Linux, sudo, curl, tar, dd, mkfs.ext4, mount, and umount.
+# Download/generate local example assets. Requires Linux, curl, tar, dd, mkfs.ext4, e2label, cpio, gzip, and squashfs-tools.
 materialize-assets:
     ./scripts/materialize-example-assets.sh
 
@@ -58,7 +58,7 @@ plan-with-assets: materialize-assets
 boot: materialize-assets
     cargo run --locked -p rootglass-cli -- boot {{glass}}
 
-# Run a bounded automated boot smoke test and look for the Alpine login marker.
+# Run bounded real-guest boot, serial-command, and state-persistence smoke tests.
 boot-smoke:
     ./scripts/smoke-boot-example.sh
 

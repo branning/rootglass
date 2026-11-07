@@ -268,8 +268,24 @@ impl AppService {
 
     /// Build a developer launch plan without requiring generated disk images.
     pub fn launch_plan(&mut self, source: &Path) -> Result<(GlassSummary, String), AppError> {
-        let launch = self.prepare(source)?;
+        let mut launch = self.prepare(source)?;
         let summary = summarize(source, &launch)?;
+        if let Some(template) = launch
+            .storage
+            .writable_overlay
+            .as_ref()
+            .map(|overlay| overlay.path().to_path_buf())
+        {
+            let store_root = self.state_root.join(safe_state_namespace(&launch));
+            let store = state::InstanceStateStore::new(store_root, template);
+            let path = store.path_for("default").map_err(state_app_error)?;
+            launch.writable_overlay = Some(path.clone());
+            launch.storage.writable_overlay =
+                Some(WritableOverlaySelection::Local(LocalWritableOverlay {
+                    name: "default".to_string(),
+                    path,
+                }));
+        }
         let command = QemuLaunchPlan::for_launch_request(&launch).command_line();
         Ok((summary, command))
     }
@@ -295,51 +311,7 @@ impl AppService {
                 detail: "Stop the active run before starting another.".to_string(),
             });
         }
-        let mut launch = self.prepare(source)?;
-        validate_assets(&launch).map_err(|detail| AppError {
-            phase: LifecycleState::Ready,
-            summary: "The glass runtime assets are incomplete.".to_string(),
-            detail,
-        })?;
-        let state_lock = if let Some(template) = launch
-            .storage
-            .writable_overlay
-            .as_ref()
-            .map(|overlay| overlay.path().to_path_buf())
-        {
-            let selected = options.state_id.as_deref().unwrap_or("default");
-            let store_root = self.state_root.join(safe_state_namespace(&launch));
-            let store = state::InstanceStateStore::new(store_root, template);
-            let record = match store
-                .list()
-                .map_err(state_app_error)?
-                .into_iter()
-                .find(|item| item.id == selected)
-            {
-                Some(record) => record,
-                None if selected == "default" => store.create(selected).map_err(state_app_error)?,
-                None => {
-                    return Err(state_app_error(state::StateError::NotFound(
-                        selected.to_string(),
-                    )))
-                }
-            };
-            let lock = store.acquire_run_lock().map_err(state_app_error)?;
-            launch.writable_overlay = Some(record.image_path.clone());
-            launch.storage.writable_overlay =
-                Some(WritableOverlaySelection::Local(LocalWritableOverlay {
-                    name: record.name,
-                    path: record.image_path,
-                }));
-            Some(lock)
-        } else {
-            if options.state_id.is_some() {
-                return Err(state_app_error(state::StateError::InvalidImage(
-                    "this glass has no state template".into(),
-                )));
-            }
-            None
-        };
+        let (launch, state_lock) = self.prepare_for_run(source, options)?;
         let plan = QemuLaunchPlan::for_launch_request(&launch);
         let process = plan.spawn_supervised().map_err(|error| AppError {
             phase: LifecycleState::Starting,
@@ -363,6 +335,45 @@ impl AppService {
             _state_lock: state_lock,
         });
         Ok(id)
+    }
+
+    fn prepare_for_run(
+        &mut self,
+        source: &Path,
+        options: RunOptions,
+    ) -> Result<(LaunchRequest, Option<state::StateRunLock>), AppError> {
+        let mut launch = self.prepare(source)?;
+        validate_assets(&launch).map_err(|detail| AppError {
+            phase: LifecycleState::Ready,
+            summary: "The glass runtime assets are incomplete.".to_string(),
+            detail,
+        })?;
+        let state_lock = if let Some(template) = launch
+            .storage
+            .writable_overlay
+            .as_ref()
+            .map(|overlay| overlay.path().to_path_buf())
+        {
+            let selected = options.state_id.as_deref().unwrap_or("default");
+            let store_root = self.state_root.join(safe_state_namespace(&launch));
+            let store = state::InstanceStateStore::new(store_root, template);
+            let (record, lock) = store.select_for_run(selected).map_err(state_app_error)?;
+            launch.writable_overlay = Some(record.image_path.clone());
+            launch.storage.writable_overlay =
+                Some(WritableOverlaySelection::Local(LocalWritableOverlay {
+                    name: record.name,
+                    path: record.image_path,
+                }));
+            Some(lock)
+        } else {
+            if options.state_id.is_some() {
+                return Err(state_app_error(state::StateError::InvalidImage(
+                    "this glass has no state template".into(),
+                )));
+            }
+            None
+        };
+        Ok((launch, state_lock))
     }
 
     pub fn poll_event(&mut self, timeout: Duration) -> Result<Option<RuntimeEvent>, AppError> {
@@ -562,12 +573,7 @@ impl AppService {
 
     /// Preserve the existing CLI's terminal-based developer workflow.
     pub fn boot_interactive(&mut self, source: &Path) -> Result<(), AppError> {
-        let launch = self.prepare(source)?;
-        validate_assets(&launch).map_err(|detail| AppError {
-            phase: LifecycleState::Ready,
-            summary: "The glass runtime assets are incomplete.".to_string(),
-            detail,
-        })?;
+        let (launch, _state_lock) = self.prepare_for_run(source, RunOptions::default())?;
         let mut child = QemuLaunchPlan::for_launch_request(&launch)
             .spawn_interactive()
             .map_err(|error| AppError {

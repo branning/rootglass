@@ -13,18 +13,17 @@ set -euo pipefail
 #   runtime-assets/alpine-aarch64/initramfs-virt
 #
 # Dependencies:
-#   curl, tar, dd, mkfs.ext4, sudo, mountpoint, mount, umount,
-#   cpio, gzip, squashfs-tools
+#   curl, tar, dd, mkfs.ext4, e2label, cpio, gzip, squashfs-tools
 #
-# Linux is currently required for rootfs image creation because this script
-# mounts an ext4 image locally. macOS/Windows users can run this inside an
-# Ubuntu 24.04 VM/container with loop-device support.
+# Linux is required for rootfs image creation. `mkfs.ext4 -d` populates the
+# image directly from a staging directory, so this script does not need sudo,
+# loop devices, or a display/desktop session.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GLASS_DIR="${ROOT_DIR}/examples/hello-world.glass"
 ASSET_DIR="${ROOT_DIR}/runtime-assets/alpine-aarch64"
 WORK_DIR="${ROOT_DIR}/.rootglass/build/hello-world-assets"
-MOUNT_DIR="${WORK_DIR}/mnt-rootfs"
+ROOTFS_TREE="${WORK_DIR}/rootfs-tree"
 
 # Use a versioned release directory so rootfs and netboot assets stay aligned.
 ALPINE_RELEASE="${ALPINE_RELEASE:-v3.23}"
@@ -54,15 +53,11 @@ require_cmd tar
 require_cmd dd
 require_cmd mkfs.ext4
 require_cmd e2label
-require_cmd sudo
-require_cmd mountpoint
-require_cmd mount
-require_cmd umount
 require_cmd cpio
 require_cmd gzip
 require_cmd unsquashfs
 
-mkdir -p "${GLASS_DIR}" "${ASSET_DIR}" "${WORK_DIR}" "${MOUNT_DIR}"
+mkdir -p "${GLASS_DIR}" "${ASSET_DIR}" "${WORK_DIR}" "${ROOTFS_TREE}"
 
 if [[ "${ALPINE_MINIROOTFS}" != "${EXPECTED_MINIROOTFS}" ]]; then
   echo "ALPINE_MINIROOTFS must match the pinned Alpine version ${ALPINE_VERSION}" >&2
@@ -80,14 +75,6 @@ MINIROOTFS_TARBALL="${ASSET_DIR}/${ALPINE_MINIROOTFS}"
 ROOTFS_IMG="${GLASS_DIR}/rootfs.img"
 STATE_IMG="${GLASS_DIR}/state.img"
 ROOTFS_VERSION_FILE="${ASSET_DIR}/rootfs-alpine-version"
-
-cleanup_mount() {
-  if mountpoint -q "${MOUNT_DIR}"; then
-    echo "unmount: ${MOUNT_DIR}"
-    sudo umount "${MOUNT_DIR}"
-  fi
-}
-trap cleanup_mount EXIT
 
 curl_if_missing() {
   local url="$1"
@@ -114,6 +101,18 @@ create_ext4_image() {
   echo "create ${description} image: ${path}"
   dd if=/dev/zero of="${path}" bs=1M count="${size_mb}" status=progress
   mkfs.ext4 -F -L "${label}" "${path}"
+}
+
+create_ext4_image_from_directory() {
+  local path="$1"
+  local size_mb="$2"
+  local description="$3"
+  local label="$4"
+  local source_dir="$5"
+
+  echo "create ${description} image: ${path}"
+  dd if=/dev/zero of="${path}" bs=1M count="${size_mb}" status=progress
+  mkfs.ext4 -F -L "${label}" -d "${source_dir}" "${path}"
 }
 
 curl_if_missing "${MINIROOTFS_URL}" "${MINIROOTFS_TARBALL}"
@@ -158,39 +157,49 @@ if [[ -f "${ROOTFS_IMG}" ]] && {
   exit 1
 fi
 
-if [[ ! -f "${ROOTFS_IMG}" ]]; then
-  create_ext4_image "${ROOTFS_IMG}" "${ROOTFS_SIZE_MB}" "rootfs" "${ROOTFS_LABEL}"
-  sudo mount -o loop "${ROOTFS_IMG}" "${MOUNT_DIR}"
-  sudo tar -xzf "${MINIROOTFS_TARBALL}" -C "${MOUNT_DIR}"
-else
-  echo "exists: ${ROOTFS_IMG}"
-  sudo mount -o loop "${ROOTFS_IMG}" "${MOUNT_DIR}"
-fi
+rm -rf "${ROOTFS_TREE}"
+mkdir -p "${ROOTFS_TREE}"
+tar -xzf "${MINIROOTFS_TARBALL}" -C "${ROOTFS_TREE}"
 
 # Make the minirootfs slightly friendlier for an interactive serial boot.
-if ! sudo grep -q '^ttyAMA0::respawn:' "${MOUNT_DIR}/etc/inittab"; then
+if ! grep -q '^ttyAMA0::respawn:' "${ROOTFS_TREE}/etc/inittab"; then
   echo 'ttyAMA0::respawn:/sbin/getty -L ttyAMA0 115200 vt100' \
-    | sudo tee -a "${MOUNT_DIR}/etc/inittab" >/dev/null
+    >> "${ROOTFS_TREE}/etc/inittab"
 fi
-echo 'rootglass-hello' | sudo tee "${MOUNT_DIR}/etc/hostname" >/dev/null
-if ! sudo grep -Fq '::sysinit:/bin/hostname rootglass-hello' "${MOUNT_DIR}/etc/inittab"; then
+echo 'rootglass-hello' > "${ROOTFS_TREE}/etc/hostname"
+if ! grep -Fq '::sysinit:/bin/hostname rootglass-hello' "${ROOTFS_TREE}/etc/inittab"; then
   echo '::sysinit:/bin/hostname rootglass-hello' \
-    | sudo tee -a "${MOUNT_DIR}/etc/inittab" >/dev/null
+    >> "${ROOTFS_TREE}/etc/inittab"
+fi
+mkdir -p "${ROOTFS_TREE}/state"
+cat > "${ROOTFS_TREE}/etc/rootglass-mount-state" <<'STATE_INIT'
+#!/bin/sh
+if /bin/mount -t ext4 LABEL=rootglass-state /state >/dev/null 2>&1; then
+  echo "ROOTGLASS_STATE_MOUNTED /state"
+elif grep -q 'rootglass.state=required' /proc/cmdline; then
+  echo "mount: mounting rootglass-state on /state failed"
+else
+  echo "ROOTGLASS_STATE_ABSENT /state is not persistent"
+fi
+STATE_INIT
+chmod 0755 "${ROOTFS_TREE}/etc/rootglass-mount-state"
+if ! grep -Fq '::sysinit:/bin/sh /etc/rootglass-mount-state' "${ROOTFS_TREE}/etc/inittab"; then
+  echo '::sysinit:/bin/sh /etc/rootglass-mount-state' >> "${ROOTFS_TREE}/etc/inittab"
 fi
 
 # This credential is only for the disposable, offline CI/developer fixture.
 # Production bundles must use their own locked-down account policy.
-sudo sed -i 's#^root:[^:]*:#root:$6$rootglassci$03D/aOvVxNSI1GfoL9z.d7c6a3pHi1LcBO.LHfVJI5IivzB4MpmYicGvCKJ8gGCfHVYxgpSAYOb9ideoLea/j.:#' "${MOUNT_DIR}/etc/shadow"
-cleanup_mount
+sed -i 's#^root:[^:]*:#root:$6$rootglassci$03D/aOvVxNSI1GfoL9z.d7c6a3pHi1LcBO.LHfVJI5IivzB4MpmYicGvCKJ8gGCfHVYxgpSAYOb9ideoLea/j.:#' "${ROOTFS_TREE}/etc/shadow"
+create_ext4_image_from_directory "${ROOTFS_IMG}" "${ROOTFS_SIZE_MB}" "rootfs" "${ROOTFS_LABEL}" "${ROOTFS_TREE}"
 printf '%s\n' "${ALPINE_VERSION}" > "${ROOTFS_VERSION_FILE}"
 
-if [[ "$(sudo e2label "${ROOTFS_IMG}")" != "${ROOTFS_LABEL}" ]]; then
+if [[ "$(e2label "${ROOTFS_IMG}")" != "${ROOTFS_LABEL}" ]]; then
   echo "rootfs image has an unexpected filesystem label" >&2
   exit 1
 fi
 
 create_ext4_image "${STATE_IMG}" "${STATE_SIZE_MB}" "writable state" "${STATE_LABEL}"
-if [[ "$(sudo e2label "${STATE_IMG}")" != "${STATE_LABEL}" ]]; then
+if [[ "$(e2label "${STATE_IMG}")" != "${STATE_LABEL}" ]]; then
   echo "state image has an unexpected filesystem label" >&2
   exit 1
 fi

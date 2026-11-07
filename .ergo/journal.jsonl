@@ -86,3 +86,9 @@
 {"version":1,"task_id":"Y4UJKY","kind":"open","at":"2026-11-07T08:56:29.10149311Z"}
 {"version":1,"task_id":"MJPX6T","kind":"result","at":"2026-11-07T09:07:43.274453859Z","agent":"codex@worker-1","text":"Parity/API docs and libghostty gates added; links, Ergo JSON, and diff checks pass. Awaiting PR review/merge."}
 {"version":1,"task_id":"MJPX6T","kind":"result","at":"2026-11-07T09:08:30.858596778Z","agent":"codex@worker-1","text":"Opened PR #49; doc checks pass; waiting for maintainer review and merge."}
+{"version":1,"task_id":"6623ZQ","kind":"claim","at":"2026-11-07T09:10:22.829635283Z","agent":"codex@worker-1"}
+{"version":1,"task_id":"6623ZQ","kind":"result","at":"2026-11-07T09:46:19.105058922Z","agent":"codex@worker-1","text":"A-05 x86_64 TCG: rootfs sha256 ff3a68b7bf6919781de52cbd4e7f43bb9f1a73c29903dd722217a085fcd1934e unchanged."}
+{"version":1,"task_id":"6623ZQ","kind":"result","at":"2026-11-07T09:46:19.112692502Z","agent":"codex@worker-1","text":"A-05 state template sha256 c704fa202947d1284b40240de1492517cf47a27ba94aadfe0080fc3955d85704 unchanged."}
+{"version":1,"task_id":"6623ZQ","kind":"result","at":"2026-11-07T09:46:19.118990576Z","agent":"codex@worker-1","text":"A-05 guest mounted /state; nonce 0a9d3c42ff59796ac7c0e2fcf4b0cb7d survived reboot; read exact bytes."}
+{"version":1,"task_id":"6623ZQ","kind":"result","at":"2026-11-07T09:46:19.125147067Z","agent":"codex@worker-1","text":"Checks: fmt; 17 app + 3 qemu tests; clippy -D warnings; real A-05 guest smoke passed."}
+{"version":1,"task_id":"6623ZQ","kind":"result","at":"2026-11-07T09:46:19.131226132Z","agent":"codex@worker-1","text":"Limit: persistent guest writes use /state; OverlayFS remains unimplemented."}

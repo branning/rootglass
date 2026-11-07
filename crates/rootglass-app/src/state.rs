@@ -69,6 +69,11 @@ impl InstanceStateStore {
     pub fn create(&self, name: &str) -> Result<StateRecord, StateError> {
         let name = validate_name(name)?;
         let _guard = self.acquire_run_lock()?;
+        self.create_locked(&name)
+    }
+
+    fn create_locked(&self, name: &str) -> Result<StateRecord, StateError> {
+        let name = name.to_string();
         let records = self.read_records()?;
         if records.iter().any(|r| r.name == name) {
             return Err(StateError::AlreadyExists(name.clone()));
@@ -83,8 +88,31 @@ impl InstanceStateStore {
         };
         let mut records = self.read_records()?;
         records.push(record.clone());
-        self.write_records(&records)?;
+        if let Err(error) = self.write_records(&records) {
+            let _ = fs::remove_file(&record.image_path);
+            return Err(error);
+        }
         Ok(record)
+    }
+
+    /// Select a state and retain the cross-process lock for the complete guest run.
+    /// The default state is created while the same lock is held, avoiding a race
+    /// between state creation and QEMU opening the image.
+    pub fn select_for_run(&self, id: &str) -> Result<(StateRecord, StateRunLock), StateError> {
+        let id = validate_name(id)?;
+        let lock = self.acquire_run_lock()?;
+        let record = self.read_records()?.into_iter().find(|item| item.id == id);
+        match record {
+            Some(record) => Ok((record, lock)),
+            None if id == "default" => Ok((self.create_locked(&id)?, lock)),
+            None => Err(StateError::NotFound(id)),
+        }
+    }
+
+    /// Resolve where a state image will live without creating it or taking a run lock.
+    pub fn path_for(&self, id: &str) -> Result<PathBuf, StateError> {
+        let id = validate_name(id)?;
+        Ok(self.state_path(&id))
     }
 
     /// Clone an existing state into a new independent image.
@@ -109,7 +137,10 @@ impl InstanceStateStore {
         };
         let mut records = records;
         records.push(record.clone());
-        self.write_records(&records)?;
+        if let Err(error) = self.write_records(&records) {
+            let _ = fs::remove_file(&record.image_path);
+            return Err(error);
+        }
         Ok(record)
     }
 
@@ -122,9 +153,30 @@ impl InstanceStateStore {
             .iter()
             .position(|r| r.id == id)
             .ok_or_else(|| StateError::NotFound(id.clone()))?;
-        let bytes = copy_image_atomic(&self.template, &self.state_path(&id), true)?;
+        let state_path = self.state_path(&id);
+        let backup = temp_path(&state_path);
+        copy_image_atomic(&state_path, &backup, false)?;
+        let bytes = match copy_image_atomic(&self.template, &state_path, true) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                let _ = fs::remove_file(&backup);
+                return Err(error);
+            }
+        };
         records[index].image_bytes = bytes;
-        self.write_records(&records)?;
+        if let Err(error) = self.write_records(&records) {
+            replace_file(&backup, &state_path).map_err(|restore| StateError::Io {
+                path: state_path,
+                source: io::Error::other(format!(
+                    "reset failed ({error}) and restoring the previous state also failed: {restore}"
+                )),
+            })?;
+            return Err(error);
+        }
+        fs::remove_file(&backup).map_err(|source| StateError::Io {
+            path: backup,
+            source,
+        })?;
         Ok(records[index].clone())
     }
 
@@ -149,7 +201,7 @@ impl InstanceStateStore {
             source,
         })?;
         let path = self.root.join(".state.lock");
-        OpenOptions::new()
+        let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&path)
@@ -163,6 +215,11 @@ impl InstanceStateStore {
                     }
                 }
             })?;
+        if let Err(source) = writeln!(file, "{}", std::process::id()).and_then(|_| file.sync_all())
+        {
+            let _ = fs::remove_file(&path);
+            return Err(StateError::Io { path, source });
+        }
         Ok(StateRunLock { path })
     }
 
@@ -308,7 +365,12 @@ fn copy_image_atomic(source: &Path, destination: &Path, replace: bool) -> Result
 
 fn install_temp(temp: &Path, destination: &Path, replace: bool) -> Result<(), StateError> {
     if replace {
-        replace_file(temp, destination)
+        replace_file(temp, destination).map_err(|source| StateError::Io {
+            path: destination.into(),
+            source,
+        })?;
+        sync_parent(destination);
+        Ok(())
     } else {
         fs::hard_link(temp, destination).map_err(|source| StateError::Io {
             path: destination.into(),
@@ -322,15 +384,12 @@ fn install_temp(temp: &Path, destination: &Path, replace: bool) -> Result<(), St
 }
 
 #[cfg(not(windows))]
-fn replace_file(temp: &Path, destination: &Path) -> Result<(), StateError> {
-    fs::rename(temp, destination).map_err(|source| StateError::Io {
-        path: destination.into(),
-        source,
-    })
+fn replace_file(temp: &Path, destination: &Path) -> io::Result<()> {
+    fs::rename(temp, destination)
 }
 
 #[cfg(windows)]
-fn replace_file(temp: &Path, destination: &Path) -> Result<(), StateError> {
+fn replace_file(temp: &Path, destination: &Path) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
     const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
@@ -352,10 +411,7 @@ fn replace_file(temp: &Path, destination: &Path) -> Result<(), StateError> {
         )
     };
     if succeeded == 0 {
-        Err(StateError::Io {
-            path: destination.into(),
-            source: io::Error::last_os_error(),
-        })
+        Err(io::Error::last_os_error())
     } else {
         Ok(())
     }
@@ -371,10 +427,7 @@ fn write_atomic(destination: &Path, bytes: &[u8]) -> Result<(), StateError> {
             path: temp.clone(),
             source,
         })?;
-    let result = file
-        .write_all(bytes)
-        .and_then(|_| file.sync_all())
-        .and_then(|_| fs::rename(&temp, destination));
+    let result = file.write_all(bytes).and_then(|_| file.sync_all());
     if let Err(source) = result {
         let _ = fs::remove_file(&temp);
         return Err(StateError::Io {
@@ -382,6 +435,12 @@ fn write_atomic(destination: &Path, bytes: &[u8]) -> Result<(), StateError> {
             source,
         });
     }
+    drop(file);
+    replace_file(&temp, destination).map_err(|source| StateError::Io {
+        path: destination.into(),
+        source,
+    })?;
+    sync_parent(destination);
     Ok(())
 }
 
@@ -412,9 +471,19 @@ fn temp_path(path: &Path) -> PathBuf {
     path.with_file_name(format!(".{name}.{}.{}.tmp", std::process::id(), id))
 }
 
+fn sync_parent(path: &Path) {
+    let parent = path.parent().filter(|path| !path.as_os_str().is_empty());
+    if let Some(parent) = parent {
+        if let Ok(directory) = File::open(parent) {
+            let _ = directory.sync_all();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::{Command, Stdio};
 
     fn temp_dir() -> PathBuf {
         let id = TEMP_ID.fetch_add(1, Ordering::Relaxed);
@@ -450,10 +519,94 @@ mod tests {
         let store = InstanceStateStore::new(dir.join("state"), template);
         let lock = store.acquire_run_lock().unwrap();
         assert!(matches!(store.create("default"), Err(StateError::InUse)));
+        assert!(matches!(
+            store.clone_state("default", "copy"),
+            Err(StateError::InUse)
+        ));
+        assert!(matches!(store.reset("default"), Err(StateError::InUse)));
+        assert!(matches!(store.delete("default"), Err(StateError::InUse)));
         assert!(matches!(store.acquire_run_lock(), Err(StateError::InUse)));
         drop(lock);
         assert!(store.create("default").is_ok());
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn selected_default_is_created_under_the_run_lock() {
+        let dir = temp_dir();
+        let template = dir.join("template.img");
+        fs::write(&template, b"pristine").unwrap();
+        let store_root = dir.join("state");
+        let store = InstanceStateStore::new(&store_root, &template);
+
+        let (record, lock) = store.select_for_run("default").unwrap();
+        assert_eq!(fs::read(&record.image_path).unwrap(), b"pristine");
+        assert!(matches!(
+            InstanceStateStore::new(&store_root, &template).delete("default"),
+            Err(StateError::InUse)
+        ));
+        drop(lock);
+        assert_eq!(store.list().unwrap(), vec![record]);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn run_lock_excludes_a_different_process() {
+        let dir = temp_dir();
+        let template = dir.join("template.img");
+        fs::write(&template, b"state").unwrap();
+        let state_root = dir.join("state");
+        fs::create_dir_all(&state_root).unwrap();
+        let ready = dir.join("child-ready");
+        let release = dir.join("child-release");
+        let child = Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("state::tests::hold_run_lock_for_parent_process")
+            .arg("--nocapture")
+            .env("ROOTGLASS_STATE_LOCK_CHILD", "1")
+            .env("ROOTGLASS_STATE_LOCK_ROOT", &state_root)
+            .env("ROOTGLASS_STATE_LOCK_READY", &ready)
+            .env("ROOTGLASS_STATE_LOCK_RELEASE", &release)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut child = child;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !ready.exists() && std::time::Instant::now() < deadline {
+            if child.try_wait().unwrap().is_some() {
+                panic!("state-lock child exited before acquiring the lock");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(ready.exists(), "state-lock child did not acquire the lock");
+        let store = InstanceStateStore::new(&state_root, &template);
+        assert!(matches!(store.acquire_run_lock(), Err(StateError::InUse)));
+        fs::write(&release, b"release").unwrap();
+        assert!(child.wait().unwrap().success());
+        let lock = store.acquire_run_lock().unwrap();
+        drop(lock);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn hold_run_lock_for_parent_process() {
+        let Some(root) = std::env::var_os("ROOTGLASS_STATE_LOCK_ROOT") else {
+            return;
+        };
+        let root = PathBuf::from(root);
+        let template = root.with_file_name("template.img");
+        let ready = PathBuf::from(std::env::var_os("ROOTGLASS_STATE_LOCK_READY").unwrap());
+        let release = PathBuf::from(std::env::var_os("ROOTGLASS_STATE_LOCK_RELEASE").unwrap());
+        let _lock = InstanceStateStore::new(root, template)
+            .acquire_run_lock()
+            .unwrap();
+        fs::write(ready, b"locked").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !release.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(release.exists(), "parent did not release the child lock");
     }
 
     #[test]
