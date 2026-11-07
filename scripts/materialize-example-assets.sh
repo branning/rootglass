@@ -26,6 +26,7 @@ ASSET_DIR="${ROOT_DIR}/runtime-assets/alpine-aarch64"
 WORK_DIR="${ROOT_DIR}/.rootglass/build/hello-world-assets"
 MOUNT_DIR="${WORK_DIR}/mnt-rootfs"
 
+# Use a versioned release directory so rootfs and netboot assets stay aligned.
 ALPINE_RELEASE="${ALPINE_RELEASE:-v3.23}"
 ALPINE_VERSION="${ALPINE_VERSION:-3.23.8}"
 ALPINE_BASE_URL="${ALPINE_BASE_URL:-https://dl-cdn.alpinelinux.org/alpine/${ALPINE_RELEASE}/releases/aarch64}"
