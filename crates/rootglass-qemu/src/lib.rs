@@ -90,8 +90,19 @@ pub struct QemuLaunchPlan {
 
 impl QemuLaunchPlan {
     pub fn for_launch_request(request: &LaunchRequest) -> Self {
+        Self::for_launch_request_with_binary(request, QemuBinary::default().path)
+    }
+
+    /// Build a launch plan using a caller-resolved QEMU executable. The caller is
+    /// responsible for selecting and, where required, verifying the binary.
+    pub fn for_launch_request_with_binary(
+        request: &LaunchRequest,
+        binary_path: impl Into<PathBuf>,
+    ) -> Self {
         let accelerator = Accelerator::from(request.accelerator);
-        let binary = QemuBinary::default();
+        let binary = QemuBinary {
+            path: binary_path.into(),
+        };
         let mut args = vec![
             "-machine".to_string(),
             "virt".to_string(),
@@ -741,5 +752,21 @@ mod tests {
         let plan = QemuLaunchPlan::for_launch_request(&request);
         assert_eq!(plan.accelerator, Accelerator::Kvm);
         assert!(plan.command_line().contains("-accel kvm"));
+    }
+
+    #[test]
+    fn uses_explicit_qemu_binary_when_supplied() {
+        let mut runtime = RootglassRuntime::new();
+        let capabilities = HostCapabilities::without_acceleration(HostPlatform::Other);
+        let request = runtime
+            .prepare_launch_with_host("../../examples/hello-world.glass", &capabilities)
+            .expect("sample glass produces launch request");
+
+        let binary = PathBuf::from("/opt/rootglass runtime/bin/qemu-system-aarch64");
+        let plan = QemuLaunchPlan::for_launch_request_with_binary(&request, binary.clone());
+
+        assert_eq!(plan.binary.path, binary);
+        assert!(plan.command_line().starts_with("'/opt/rootglass runtime/bin/qemu-system-aarch64' "));
+        assert!(!plan.command_line().contains(DEFAULT_QEMU_SYSTEM_AARCH64));
     }
 }
