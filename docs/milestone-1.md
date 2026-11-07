@@ -124,13 +124,12 @@ Milestone 1 is complete when:
 - [x] README quickstart explains the current CLI workflow.
 - [x] License and notice files are present.
 
-## Post-Milestone 1 backlog
+## Post-Milestone 1 status and backlog
 
-Important follow-on work that should not block Milestone 1:
+The GPUI Kit (`=0.9.0`) desktop shell, import/library integration, and cross-platform package builds have since been merged. Remaining follow-on work is tracked in [the delivery roadmap](roadmap.md):
 
-- GPUI Kit (`=0.9.0`) desktop shell.
-- QEMU bundling/distribution strategy.
-- Production trusted publisher and key-rotation policy.
-- Bundle signing tool.
-- Archive creation tooling.
-- Nontechnical installer and double-click UX.
+- Complete GPUI model and desktop smoke acceptance (A-08).
+- QEMU and versioned runtime assets for installed packages; clean-install and file-open validation (A-09).
+- Production trusted publisher provisioning and key-rotation policy.
+- Production signing, release provenance, and installer signing/notarization (A-10).
+- Complete nontechnical clean-install and double-click UX validation (A-09).

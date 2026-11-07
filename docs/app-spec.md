@@ -1,6 +1,6 @@
 # Rootglass — Complete Application Specification and Swarm Build Contract
 
-**Status:** Implementation contract, version 1.0, 2026-11-05  
+**Status:** Implementation contract, version 1.1, 2026-11-07  
 **Repository:** https://github.com/branning/rootglass  
 **Audience:** Coding agents (including small/Haiku-class agents), integration/review agents, human maintainers  
 **Scope:** What currently exists, every component needed for a distributable v1 desktop application, later extensions, and executable work packages  
@@ -9,8 +9,8 @@
 ## 0. Working instructions for a coding-agent swarm
 
 1. **Read this file, then the exact implementation files named in your task.** Do not invent APIs, fields, or source files. Inspect actual code and upstream GPUI Kit examples before writing GPUI code.
-2. **Do not implement the entire spec in one branch.** Work in the dependency-ordered work packages in `12. A typical worker owns 1–3 files and one testable outcome.
-3. **Do not report success merely because something compiles.** Use the acceptance tests in `10. Preserve the existing Rust CLI while adding the desktop app.
+2. **Do not implement the entire spec in one branch.** Work in the dependency-ordered work packages in section 12. A typical worker owns 1–3 files and one testable outcome.
+3. **Do not report success merely because something compiles.** Use the acceptance tests in section 10. Preserve the existing Rust CLI while maintaining the desktop app.
 4. **Make one focused branch/PR per work package.** No unrelated refactors. Reserve changes to shared `Cargo.toml`, `Cargo.lock`, and CI workflows for an integrator, or coordinate them explicitly. Never force-push shared branches.
 5. **Stop and report a real blocker** when a platform capability, security policy, license, or upstream API differs from this spec; propose the smallest verified adjustment. Do not silently stub a critical feature and call it done.
 6. **Treat host-facing security and user data as critical.** Never bypass bundle verification to make a demo pass. No embedded private signing keys or production test-login credentials.
@@ -33,50 +33,39 @@ Rootglass is a native desktop application that opens a signed `.glass` artifact 
 
 **Not a goal:** instruction-accurate target board simulation, arbitrary peripheral emulation, a hypervisor replacement, OCI compatibility, HIL, distributed clusters, multi-machine orchestration, guest root access for production users, or a JavaScript/webview frontend.
 
-## 2. Observed repository baseline (read before coding)
+## 2. Merged implementation baseline (checked 2026-11-07)
 
-The following is a source inventory, **not** a green-CI certification. Check fresh CI on your commit. Names and paths are from `main` when this spec was written.
+The S00–S11 implementation slices are merged to `main`. This inventory describes the merged feature surface; it does **not** certify every acceptance test or platform combination. Use current CI results and [docs/roadmap.md](roadmap.md) and [docs/desktop-packages.md](desktop-packages.md) for release status.
 
-| Item | Actually present | Missing or incomplete |
+| Area | Merged implementation | Remaining v1 work |
 |---|---|---|
-| `crates/rootglass-manifest` | `Glass`, TOML `Manifest` types, schema validation, aarch64/builtin constraints, manifest-only vs launch-ready checks | Full installed-archive model, robust migration/version policy |
-| `crates/rootglass-signature` | DSSE/Ed25519 verification, SHA-256 subjects, directory and ZIP verification, strict ZIP path/duplicate checks, fixture trust store | Signing tool; production trust roots/rotation; secure streamed archive extraction/resource limits; end-to-end signed package creation |
-| `crates/rootglass-core` | Lifecycle enum/status/errors, host-preflight model, `LaunchRequest`, verified plan preparation, profile resolution, overlay *selection* | Managed run lifecycle/event stream, import registry, persistent settings, actual process supervisor; currently defaults to fixture-only trust |
-| `crates/rootglass-core/src/runtime_profile.rs` | Maps builtin aarch64 references to local Alpine kernel/initramfs; QEMU generates device tree | Installed/bundled asset discovery, versioning, integrity checking |
-| `crates/rootglass-core/src/storage.rs` | `OverlayStore` paths, bundled-vs-local selection | Disk creation/cloning, filesystem locking, overlayfs wiring, state durability, reset operations |
-| `crates/rootglass-qemu` | QEMU launch-plan construction, accelerator args, child spawning; interactive boot inherits stdio | Capture + writable serial console, QMP control, shutdown, process supervision, output/events, portable bundled-binary lookup |
-| `crates/rootglass-cli` | `validate`, `plan`, `boot`; interactive QEMU run and process exit code | Shared supervisor with desktop, archive install/import, sign/package, session diagnostics, guest-success exit semantics |
-| `scripts/materialize-example-assets.sh` | Alpine 3.23.4 aarch64 download, ext4 root/state image creation, labels `rootglass-root` / `rootglass-state`, serial getty, trap for mount cleanup | Robust partial-file recovery, existing-image label verification, production-ready guest init/overlayfs, guaranteed boot/login success |
-| `scripts/smoke-boot-example.sh` | Bounded QEMU invocation, negative patterns for root mount failure/emergency shell, login-prompt pattern | **Does not log in or run `uname -a`.** Success-on-prompt does not prove usable guest session; QEMU may still run at timeout |
-| `.github/workflows/ci.yml` | Format, Clippy, unit tests, CLI smoke, x64 and arm64 hosted boot smoke jobs | Assert login + uname + controlled shutdown; desktop platform build/release matrix; acceleration coverage requires capable runner |
-| `examples/hello-world.glass` | Signed development-form manifest + fixture metadata; `root=LABEL=rootglass-root` | Fixture signature/trust synchronization must be reverified; production ZIP including signed images is not generated |
-| Desktop UI | GPUI Kit is specified in documentation and issue #25 | **No desktop crate, UI, installer, or application binary has been implemented** |
+| Manifest and bundle | Typed `.glass` manifest validation; development directory and ZIP archive paths; canonical signature coverage and archive safety checks | Confirm resource limits and negative-path coverage meet the final threat model; document any compatibility/migration policy |
+| Signature and trust | DSSE/Ed25519 verification, signed fixture/publishing path, and trust reports consumed by the app | Production publisher-root provisioning, rotation/revocation operations, and release trust policy |
+| Runtime and CLI | Shared application service, QEMU supervision, lifecycle events, preflight, CLI validation/planning/boot, and hosted guest boot smoke | Keep A-03/A-04/A-07 covered as runtime changes land; record platform-specific acceleration/performance evidence |
+| Import and library | Verified archive import, installed-glass registry/library, and desktop library selection | Validate complete open/import/recovery behavior through GPUI; strengthen limits or migration behavior where needed |
+| Guest state | Per-instance persistent state and writable-overlay handling around an immutable bundle root | Close persistence/reset behavior under A-05 on the supported guest path |
+| GPUI desktop | GPUI Kit `=0.9.0` native shell integrated with the shared app service, library, trust/details, lifecycle controls, and serial console | Complete A-08 model and GUI smoke coverage; verify responsiveness, event/cancellation behavior, and user-facing failures |
+| Platform packages | Linux, macOS, and Windows package builds; `.glass` association metadata and checksums | A-09 clean-install/file-open tests; installed QEMU/runtime inventory; A-10 signing, notarization, SBOM, and provenance |
 
-**Existing contract references:** `docs/architecture.md`, `docs/bundle-format.md`, `docs/signatures.md`, `docs/overlays.md`, `docs/milestone-1.md`, and issues [#11](https://github.com/branning/rootglass/issues/11), [#18](https://github.com/branning/rootglass/issues/18), [#19](https://github.com/branning/rootglass/issues/19), [#20](https://github.com/branning/rootglass/issues/20), [#25](https://github.com/branning/rootglass/issues/25).
+Hosted CI is the functioning guest-boot test environment: x64 and arm64 TCG jobs materialize the example assets, boot the signed fixture through the CLI, authenticate over serial, run `uname -a`, and shut QEMU down. Desktop package build artifacts are review artifacts; they are unsigned and have not been validated by clean-OS installation and file-open tests.
 
-### 2.1 Immediate integration blockers to recheck (P0)
+### 2.1 Current completion rule
 
-- The example manifest changed from `root=/dev/vda` to `root=LABEL=rootglass-root`; prior test/CLI failures showed a DSSE subject digest mismatch. The example envelope was subsequently changed, but the source inventory still shows the original fixture public key in `TrustStore::example_fixture`. **Do not assume this pairing verifies.** First run the CLI and signature suite and repair via a reproducible signing tool.
-- Prior x64/arm64 boot jobs entered Alpine initramfs recovery because the state image was `/dev/vda` while rootfs was `/dev/vdb`. The label-based boot is intended to remove ordering dependence; prove it on both runners.
-- The smoke harness detects a login prompt but does **not** type a username, obtain a shell, or run `uname -a`. Replace this with an end-to-end serial interaction; never restore the permissive "Alpine mentioned" predicate.
-- Existing host acceleration checks are incomplete: macOS/Windows capability cannot be inferred merely from host OS, and aarch64 KVM is not automatically available on GitHub-hosted ARM runners.
-- `justfile` calls scripts as executables; some checked-in script modes may not be executable. Either commit executable bits correctly or call `bash scripts/...` consistently.
-
-No desktop work package should claim an end-to-end completed product until these are resolved. Independent UI skeleton work can proceed concurrently.
+Treat a work package as implementation-complete when its code is merged and its required CI checks pass. Treat an acceptance ID as complete only when its stated evidence exists. A merged GPUI shell does not by itself close A-08; a successful package build does not close A-09 or A-10. Do not infer release readiness from merged PR count.
 
 ## 3. Versioned delivery scope
 
-### R0 — Restore a trustworthy CLI reference path (blocking foundation)
+### R0 — Trustworthy CLI reference path (implementation merged)
 
-Commands `validate`, `plan` and `boot` must work consistently for the signed example. Both CI boot matrix legs must boot the correct rootfs, reach a real guest login, execute `uname -a`, capture its kernel identity, shut down QEMU deliberately, and return a meaningful smoke-test status. A signing tool must reissue signatures when a signed file changes.
+The signed example, `validate`, `plan`, and `boot` workflows are implemented. Hosted x64 and arm64 CI boot the guest, authenticate over serial, run `uname -a`, and shut down deliberately. Keep this path green as a regression gate; see A-01–A-04.
 
-### R1 — Native desktop vertical slice
+### R1 — Native desktop vertical slice (implementation merged; A-08 qualification open)
 
-Build the GPUI Kit desktop shell with open/select, manifest and trust display, preflight, start, live serial/log view, stop/restart, and truthful errors. The desktop calls Rust libraries, **not** a CLI subprocess. Ship developer-runnable binaries on qualifying hosts. Rootfs and runtime assets may still be developer-provisioned for this phase.
+The GPUI Kit desktop shell is integrated with the shared Rust application service and includes bundle selection/library, manifest and trust details, preflight, lifecycle controls, and guest console integration. It calls Rust libraries, **not** a CLI subprocess. Complete the model and GUI smoke evidence in A-08 before treating this phase as accepted.
 
-### R2 — User-installable, offline-capable v1
+### R2 — User-installable, offline-capable v1 (implementation partial; release gates open)
 
-Implement verified ZIP `.glass` import, persistent installed-glass registry, isolated writable state, bundled/discovered QEMU and runtime assets, trusted publisher configuration, native installers, signed releases, platform validation, and a complete nontechnical open → verify → run → stop flow.
+Verified ZIP import, installed-glass registry, per-instance state, trust reporting, runtime asset resolution, and native package builds are merged. Finish installed-app QEMU/runtime inventory, clean-host install and OS file-open validation, production trust operations, application/installer signing, release provenance, and a complete nontechnical offline open → verify → run → stop flow. See A-05–A-10 and S13–S15.
 
 ### R3 — Explicitly deferred after v1
 
@@ -421,25 +410,27 @@ R2/v1 is complete only when all of the following hold simultaneously:
 
 ## 12. Swarm work packages (assign one owner per package)
 
-Each agent should receive exactly one package ID, explicit path ownership, acceptance IDs and dependencies. Names below are a **task DAG**; agents can execute independent branches concurrently but the integrator must merge them in order. Small agents should not edit shared files outside their owned package.
+For remaining implementation, assign one owner per package with explicit paths, acceptance IDs and dependencies. The original S00–S11 packages are merged; S12–S15 track acceptance and release qualification. Small agents should not edit shared files outside their owned package.
 
-| ID | Phase | Work package and owned paths | Depends | Acceptance |
-|---|---|---|---|---|
-| S00 | R0 | Repair fixture manifest/DSSE/trust pairing and record reproducible verification. Own example fixture + signature fixture tests. Coordinate signing tool changes. | none | A-01, A-02 |
-| S01 | R0 | Implement deterministic sign/package primitives and CLI surface, no production secrets. Own `rootglass-signature` and dedicated signing module/tool. | none | A-02, A-06 unit portion |
-| S02 | R0 | Correct rootfs boot path/getty/test login and implement serial `uname -a` E2E smoke. Own materialize/smoke scripts and fixture guest init. | S00; coordinate S01 | A-03, A-04 |
-| S03 | R1 | Add process-safe QEMU supervisor I/O/QMP, deadlines, cancellation, cleanup. Own `rootglass-qemu` + fake child tests. | existing core types | A-07 |
-| S04 | R1 | Implement `rootglass-app` orchestration API/event contract; CLI delegates to it. Own new app crate and CLI adapter. | S03 | A-03, A-07 |
-| S05 | R2 | Verified ZIP import, path/size limits, content store, registry transactions. Own `rootglass-app/src/import*`, `registry*`. | S01 + S04 | A-06 |
-| S06 | R2 | Persistent instance state and guest overlayfs or explicitly bounded read-only interim behavior. Own storage/state module and guest init. | S02 + S04 | A-05 |
-| S07 | R2 | Trusted publisher stores, unknown-key/revocation behavior, trust UI-facing reports. Own signature trust module + service adapter. | S01 + S04 | A-02, A-06 |
-| S08 | R1 | GPUI Kit `=0.9.0` desktop skeleton, main window, UI model, fake service, preview/preflight; no QEMU spawning in UI. Own desktop crate. | S04 interface contract (mock sufficient) | A-08 |
-| S09 | R1 | GPUI event/serial console, keyboard input, Boot/Stop integration with `rootglass-app`. Own desktop views/controller. | S03 + S04 + S08 | A-07, A-08 |
-| S10 | R2 | QEMU bundled/discovered resolver and versioned runtime assets. Own QEMU resolver + asset resolver; issue #20. | S03 | A-03, A-09 |
-| S11 | R2 | Cross-platform desktop build/installer/file-association/signing workflows and notices. Own release workflow and packaging config. | S08 + S10 | A-09, A-10 |
-| S12 | R2 | Integration and QA: production ZIP on each OS, threat tests, docs, support UX and release gate. Own CI matrices and final docs. | S05–S11 | A-01–A-10 |
+| ID | Phase | Work package and owned paths | Depends | Acceptance | State |
+|---|---|---|---|---|---|
+| S00 | R0 | Repair fixture manifest/DSSE/trust pairing and record reproducible verification. Own example fixture + signature fixture tests. Coordinate signing tool changes. | none | A-01, A-02 | Merged |
+| S01 | R0 | Implement deterministic sign/package primitives and CLI surface, no production secrets. Own `rootglass-signature` and dedicated signing module/tool. | none | A-02, A-06 unit portion | Merged |
+| S02 | R0 | Correct rootfs boot path/getty/test login and implement serial `uname -a` E2E smoke. Own materialize/smoke scripts and fixture guest init. | S00; coordinate S01 | A-03, A-04 | Merged; hosted x64/arm64 boot is the reference CI path |
+| S03 | R1 | Add process-safe QEMU supervisor I/O/QMP, deadlines, cancellation, cleanup. Own `rootglass-qemu` + fake child tests. | existing core types | A-07 | Merged |
+| S04 | R1 | Implement `rootglass-app` orchestration API/event contract; CLI delegates to it. Own app crate and CLI adapter. | S03 | A-03, A-07 | Merged |
+| S05 | R2 | Verified ZIP import, path/size limits, content store, registry transactions. Own `rootglass-app/src/import*`, `registry*`. | S01 + S04 | A-06 | Merged |
+| S06 | R2 | Persistent instance state and guest overlayfs or explicitly bounded read-only interim behavior. Own storage/state module and guest init. | S02 + S04 | A-05 | Merged; retain A-05 persistence evidence as a release check |
+| S07 | R2 | Trusted publisher stores, unknown-key/revocation behavior, trust UI-facing reports. Own signature trust module + service adapter. | S01 + S04 | A-02, A-06 | Merged; production trust operations remain a release decision |
+| S08 | R1 | GPUI Kit `=0.9.0` desktop skeleton, main window, UI model, fake service, preview/preflight; no QEMU spawning in UI. Own desktop crate. | S04 interface contract (mock sufficient) | A-08 | Merged |
+| S09 | R1 | GPUI event/serial console, keyboard input, Boot/Stop integration with `rootglass-app`. Own desktop views/controller. | S03 + S04 + S08 | A-07, A-08 | Merged; complete A-08 desktop smoke and interaction evidence |
+| S10 | R2 | QEMU bundled/discovered resolver and versioned runtime assets. Own QEMU resolver + asset resolver; issue #20. | S03 | A-03, A-09 | Merged implementation; installed package runtime inventory remains open |
+| S11 | R2 | Cross-platform desktop build/installer/file-association/signing workflows and notices. Own release workflow and packaging config. | S08 + S10 | A-09, A-10 | Merged package builds; clean install, signing, and provenance remain open |
+| S12 | R2 | Integration and QA: production ZIP on each OS, threat tests, docs, support UX and release gate. Own CI matrices and final docs. | S05–S11 | A-01–A-10 | Open as acceptance/qualification work; see S13–S15 |
+| S13 | R1 | GPUI qualification: UI-model tests, GUI smoke for open/verify/Boot/Stop/console, render-thread responsiveness, cancellation and stale-event checks. Own desktop tests and desktop CI. | S08 + S09 | A-07, A-08 | Next |
+| S14 | R2 | Clean-host install: resolve/package QEMU and versioned assets; install each platform package without developer tools; open via app and OS association; boot and stop. Own runtime inventory and install-test workflows. | S10 + S11 + S13 | A-03, A-09 | After S13; platform evidence required |
+| S15 | R2 | Release integrity: app/installer signing, macOS notarization, SBOM/notices, hashes, provenance, and final offline production-archive walkthrough. Own release workflow and evidence docs. | S14 | A-02, A-06, A-10 | Release gate |
 
-**Parallelization:** Start S00, S01, S03 and S08 (mocked service contract) concurrently. S02 follows fixture stabilization; S04 follows supervisor API stabilization; S05/S06/S07/S10 can work after their prerequisites with disjoint paths. S09 integrates desktop after service exists. S11 begins packaging once minimal desktop and resolver work. S12 is the final integration owner.
 
 **Shared-file ownership:** One integration agent owns repository-root `Cargo.toml`, `Cargo.lock` and generic CI workflows. Workers needing dependency edits provide the exact proposed diff in their PR and coordinate merge order. No agents concurrently update the same file on `main`.
 
@@ -448,9 +439,9 @@ Each agent should receive exactly one package ID, explicit path ownership, accep
 ```text
 You are Worker <ID> on branning/rootglass.
 Read docs/app-spec.md and your assigned source files.
-Implement only package <ID> (paths and prerequisites in `12).
+Implement only package <ID> (paths and prerequisites in section 12).
 Before writing code, report the existing symbols you will reuse.
-Keep public interfaces compatible with the application-service contract (`6.3).
+Keep public interfaces compatible with the application-service contract in section 6.3.
 Implement positive, failure and cleanup-path tests.
 Do not edit unrelated paths or weaken verification/CI.
 Run relevant cargo fmt, targeted test, clippy and scenario checks.
@@ -469,7 +460,7 @@ If blocked by missing interface, open an issue or provide a tiny compileable con
 
 ## 13. Outstanding product decisions requiring written ADRs
 
-These are not permission to stall S00–S09; use the defaults below until an ADR changes them.
+Use the defaults below for remaining implementation unless an ADR changes them.
 
 | Decision | v1 default | Required evidence / owner |
 |---|---|---|
