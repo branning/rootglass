@@ -148,3 +148,4 @@
 {"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-07T23:09:43.474958563Z","agent":"codex@worker-1","text":"cmux: Ratatui/libghostty-vt TUI and AppKit demo; no GPUI view. CI passed; platform/host proof pending."}
 {"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-07T23:13:04.808304792Z","agent":"codex@worker-1","text":"Maintainer approved Linux x86_64, macOS arm64, Windows x86_64; upstream vt Tier 1. Host qualification remains."}
 {"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-07T23:43:20.799089502Z","agent":"codex@worker-1","text":"Checks: signed Ghostty v1.0.0 build and Linux PTY smoke passed; fmt, Python, diff checks pass."}
+{"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-07T23:44:30.979331571Z","agent":"codex@worker-1","text":"PR: #72 opened; macOS/Windows matrix and GPUI host smoke remain pending."}
