@@ -131,22 +131,43 @@ Draft envelope shape:
 9. For production archives, reject any file not covered by the signed statement, except the DSSE envelope itself.
 10. Reject missing files, unsafe archive paths, duplicate archive entries, digest mismatches, unsupported signature versions, unknown publishers, or untrusted keys.
 
-## Trust policy
+## Production trust configuration
 
-MVP policy:
+The production GPUI app loads a local, per-user trust file at startup. Its location is `$XDG_CONFIG_HOME/rootglass/trust.json` when `XDG_CONFIG_HOME` is absolute, otherwise `$HOME/.config/rootglass/trust.json` on Linux/Unix; `$HOME/Library/Application Support/Rootglass/trust.json` on macOS; and `%APPDATA%\Rootglass\trust.json` on Windows.
 
-- A `.glass` bundle must be signed.
-- The signing key must be trusted by Rootglass/Riparium.
-- Unknown publisher or unknown key is a hard launch failure.
-- Signature verification must work offline.
+Version 1 has this shape:
 
-Future policy options:
+```json
+{
+  "schemaVersion": 1,
+  "trustedPublishers": [
+    {
+      "name": "Example Publisher",
+      "identity": "publisher.example/project",
+      "keyId": "ed25519:<sha256-of-raw-public-key-as-64-lowercase-hex>",
+      "publicKeyBase64url": "<32-byte-ed25519-public-key-as-unpadded-base64url>"
+    }
+  ],
+  "revokedKeyIds": []
+}
+```
 
-- User-installed trusted publishers.
-- Organization-managed trust bundle.
-- JFrog/AppTrust-backed publisher trust sync.
-- Key rotation and revocation metadata.
-- Transparency-log verification as an online enhancement.
+The parser rejects malformed or duplicate key IDs, key/fingerprint mismatches, unknown fields, unsupported schema versions, and files larger than 1 MiB. A key ID is `ed25519:` plus SHA-256 of the decoded 32-byte public key. Trust files contain no private material.
+
+The application reads the file once at startup. Missing, invalid, or inaccessible configuration produces a visible trust-configuration failure and an empty `AppService::deny_all()` store; the example fixture key is never merged into this production store. Unknown keys fail as “unknown signing key”; revoked keys have a distinct “signing key has been revoked” message. The CLI and `AppService::default()` remain development/test entry points and must not be used to construct a production GUI service.
+
+| Verification result | User-facing result |
+| --- | --- |
+| Trusted key and intact bundle | Preview includes the trusted publisher identity and verified status. |
+| Unknown key | Verification fails with `unknown signing key`; there is no run override. |
+| Revoked key | Verification fails with `This publisher's signing key has been revoked.` |
+| Rotated key | The new key is trusted after the updated file is loaded; the old key reports revoked. There is no separate rotated status. |
+| Expiry | Version 1 has no time-based expiry or expired-key status; offline clients do not rely on local clocks. |
+| Tampered bundle | Verification fails with `This glass could not be verified.` and a digest mismatch detail. |
+
+Provision the file outside Rootglass through an authenticated operator or release process. Replace it atomically and retain a known-good backup. To rotate, add the new key during an intentional overlap, then deploy a file that trusts the new key and lists the old key ID under `revokedKeyIds`. The parser rejects a key that appears in both arrays. Restart Rootglass after an update; the current process does not reload policy, and active guests are not reverified. Unknown and revoked keys both fail closed before preview/preflight/start can proceed. The current application has no trust-editing GUI/CLI and no enterprise-managed trust source.
+
+See [ADR-0001](adr/0001-offline-publisher-trust.md) for the proposed ownership, recovery, and review policy and [trust validation](trust-validation.md) for test evidence. Expiry is not automatic because offline clients cannot rely on a shared clock; there is no expired-key status in version 1. JFrog/AppTrust and transparency evidence remain optional distribution-time inputs, never runtime dependencies.
 
 ## JFrog integration
 

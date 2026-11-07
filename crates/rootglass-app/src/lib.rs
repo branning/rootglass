@@ -5,11 +5,13 @@ pub mod state;
 
 use rootglass_core::runtime_assets::RuntimeAssetsResolver;
 use rootglass_core::storage::{LocalWritableOverlay, WritableOverlaySelection};
-use rootglass_core::{HostCapabilities, LaunchRequest, LifecycleState, RootglassRuntime};
+use rootglass_core::{
+    CoreError, HostCapabilities, LaunchRequest, LifecycleState, RootglassRuntime,
+};
 use rootglass_qemu::{QemuLaunchPlan, QemuProcess, SerialChunk};
 use rootglass_signature::trust_config::{load_trust_store, LoadedTrustStore, TrustConfigError};
-use rootglass_signature::TrustStore;
-use std::collections::VecDeque;
+use rootglass_signature::{SignatureError, TrustStore};
+use std::collections::{BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -106,6 +108,7 @@ struct ActiveRun {
 pub struct PackageLibrary {
     root: PathBuf,
     trust_store: TrustStore,
+    revoked_key_ids: BTreeSet<String>,
 }
 
 impl PackageLibrary {
@@ -124,11 +127,16 @@ impl PackageLibrary {
             &self.trust_store,
             &import::ImportLimits::default(),
         )
-        .map_err(|error| {
-            import_app_error(
+        .map_err(|error| match &error {
+            import::ImportError::Signature(SignatureError::UnknownKey(key_id))
+                if self.revoked_key_ids.contains(key_id) =>
+            {
+                revoked_key_app_error(key_id)
+            }
+            _ => import_app_error(
                 "The .glass archive could not be verified or installed.",
                 error,
-            )
+            ),
         })
     }
 
@@ -160,6 +168,7 @@ pub struct AppService {
     state_root: PathBuf,
     library_root: PathBuf,
     trust_store: TrustStore,
+    revoked_key_ids: BTreeSet<String>,
     next_run_id: u64,
     active: Option<ActiveRun>,
     pending: VecDeque<RuntimeEvent>,
@@ -181,6 +190,7 @@ impl AppService {
             state_root: default_state_root(),
             library_root: default_library_root(),
             trust_store,
+            revoked_key_ids: BTreeSet::new(),
             next_run_id: 1,
             active: None,
             pending: VecDeque::new(),
@@ -190,7 +200,10 @@ impl AppService {
 
     /// Construct a service from a validated local production trust configuration.
     pub fn with_loaded_trust_store(loaded: LoadedTrustStore) -> Self {
-        Self::with_trust_store(loaded.trust_store().clone())
+        let revoked_key_ids = loaded.revoked_key_ids().map(str::to_owned).collect();
+        let mut service = Self::with_trust_store(loaded.trust_store().clone());
+        service.revoked_key_ids = revoked_key_ids;
+        service
     }
 
     /// Use integrity-checked, versioned runtime assets for packaged launches.
@@ -231,6 +244,7 @@ impl AppService {
         PackageLibrary {
             root: self.library_root.clone(),
             trust_store: self.trust_store.clone(),
+            revoked_key_ids: self.revoked_key_ids.clone(),
         }
     }
 
@@ -601,6 +615,11 @@ impl AppService {
         self.runtime
             .prepare_launch_with_host(source, &HostCapabilities::detect_current())
             .map_err(|error| {
+                if let CoreError::Signature(SignatureError::UnknownKey(key_id)) = &error {
+                    if self.revoked_key_ids.contains(key_id) {
+                        return revoked_key_app_error(key_id);
+                    }
+                }
                 let user_error = self.runtime.status().last_error.as_ref();
                 AppError {
                     phase: user_error
@@ -742,6 +761,16 @@ fn import_app_error(summary: &str, error: impl std::fmt::Display) -> AppError {
         phase: LifecycleState::Verifying,
         summary: summary.to_string(),
         detail: error.to_string(),
+    }
+}
+
+fn revoked_key_app_error(key_id: &str) -> AppError {
+    AppError {
+        phase: LifecycleState::Verifying,
+        summary: "This publisher's signing key has been revoked.".to_string(),
+        detail: format!(
+            "Signing key '{key_id}' is listed in the local trust policy's revokedKeyIds; this glass cannot be opened or run."
+        ),
     }
 }
 
@@ -1016,6 +1045,263 @@ mod library_tests {
             .remove_installed_glass(&installed.content_sha256)
             .unwrap();
         assert!(reopened.installed_glasses().unwrap().is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[cfg(test)]
+mod publisher_trust_tests {
+    use super::*;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+    use ed25519_dalek::SigningKey;
+    use rootglass_core::runtime_assets::RuntimeAssetsResolver;
+    use rootglass_signature::sign_glass_directory_at;
+    use serde_json::{json, Value};
+    use sha2::{Digest, Sha256};
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    const PUBLISHER_IDENTITY: &str = "rootglass.dev/examples";
+    const TEST_RUNTIME: &str = "trust-policy-test";
+
+    fn temp_root() -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "rootglass-publisher-trust-{}-{nonce}",
+            std::process::id()
+        ))
+    }
+
+    fn key_id(key: &SigningKey) -> String {
+        let digest = Sha256::digest(key.verifying_key().to_bytes());
+        format!(
+            "ed25519:{}",
+            digest
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        )
+    }
+
+    fn signed_glass(root: &Path, key: &SigningKey) {
+        let example =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/hello-world.glass");
+        fs::create_dir_all(root.join("metadata")).unwrap();
+        for name in ["README.md", "metadata/README.md", "rootglass.toml"] {
+            fs::copy(example.join(name), root.join(name)).unwrap();
+        }
+        fs::write(
+            root.join("rootfs.img"),
+            b"synthetic signed test root filesystem",
+        )
+        .unwrap();
+        fs::write(root.join("state.img"), b"synthetic signed test state image").unwrap();
+        sign_glass_directory_at(root, key, "2026-11-07T00:00:00Z").unwrap();
+    }
+
+    fn write_trust_config(path: &Path, trusted: &[&SigningKey], revoked: &[String]) {
+        let publishers = trusted
+            .iter()
+            .map(|key| {
+                json!({
+                    "name": "Rootglass Example Publisher",
+                    "identity": PUBLISHER_IDENTITY,
+                    "keyId": key_id(key),
+                    "publicKeyBase64url": URL_SAFE_NO_PAD.encode(key.verifying_key().to_bytes())
+                })
+            })
+            .collect::<Vec<Value>>();
+        fs::write(
+            path,
+            serde_json::to_vec_pretty(&json!({
+                "schemaVersion": 1,
+                "trustedPublishers": publishers,
+                "revokedKeyIds": revoked
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn install_test_runtime(root: &Path) -> PathBuf {
+        let resource_root = root.join("resources");
+        let version_root = resource_root.join("runtime-assets").join(TEST_RUNTIME);
+        fs::create_dir_all(&version_root).unwrap();
+        for (name, contents) in [
+            ("kernel", b"verified test kernel".as_slice()),
+            ("initramfs", b"verified test initramfs".as_slice()),
+            ("qemu", b"verified test qemu".as_slice()),
+        ] {
+            fs::write(version_root.join(name), contents).unwrap();
+        }
+        let digest = |name: &str| {
+            Sha256::digest(fs::read(version_root.join(name)).unwrap())
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        fs::write(
+            version_root.join("assets.json"),
+            serde_json::to_vec(&json!({
+                "schema_version": 1,
+                "runtime_version": TEST_RUNTIME,
+                "assets": [
+                    {"kind": "kernel", "path": "kernel", "sha256": digest("kernel")},
+                    {"kind": "initramfs", "path": "initramfs", "sha256": digest("initramfs")},
+                    {"kind": "qemu", "path": "qemu", "sha256": digest("qemu")}
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        resource_root
+    }
+
+    fn production_service(config: &Path, root: &Path) -> AppService {
+        AppService::from_trust_config(config)
+            .expect("valid offline trust configuration")
+            .with_verified_runtime_assets(
+                RuntimeAssetsResolver::new(root.join("resources"), root.join("user-data")),
+                TEST_RUNTIME,
+            )
+    }
+
+    fn is_unknown_signing_key(error: &AppError) -> bool {
+        error.phase == LifecycleState::Verifying && error.detail.contains("unknown signing key")
+    }
+
+    fn is_revoked_signing_key(error: &AppError) -> bool {
+        error.phase == LifecycleState::Verifying
+            && error.summary.contains("has been revoked")
+            && error.detail.contains("revokedKeyIds")
+    }
+
+    #[test]
+    fn offline_trust_rotation_reaches_preview_preflight_and_start_before_spawn() {
+        // These deterministic seeds exist only in this test module; no key material enters app UI.
+        let key_a = SigningKey::from_bytes(&[17_u8; 32]);
+        let key_b = SigningKey::from_bytes(&[29_u8; 32]);
+        let key_a_id = key_id(&key_a);
+        let root = temp_root();
+        let glass_a = root.join("publisher-a.glass");
+        let glass_b = root.join("publisher-b.glass");
+        fs::create_dir_all(&root).unwrap();
+        signed_glass(&glass_a, &key_a);
+        signed_glass(&glass_b, &key_b);
+        let assets = install_test_runtime(&root);
+        let config = root.join("trust.json");
+
+        write_trust_config(&config, &[&key_a], &[]);
+        let mut before_rotation = production_service(&config, &root);
+        let preview = before_rotation
+            .inspect(&glass_a)
+            .expect("explicitly trusted publisher reaches preview");
+        assert_eq!(preview.publisher_identity, PUBLISHER_IDENTITY);
+        before_rotation
+            .launch_plan(&glass_a)
+            .expect("explicitly trusted publisher reaches pre-run planning");
+        before_rotation
+            .preflight(&glass_a)
+            .expect("explicitly trusted publisher passes preflight verification");
+
+        // Trust is a startup snapshot. Replacing the file does not mutate an already-running
+        // service; the desktop reloads policy by restarting.
+        write_trust_config(&config, &[&key_b], &[]);
+        before_rotation
+            .launch_plan(&glass_a)
+            .expect("existing service retains its startup trust snapshot");
+
+        let mut unknown = production_service(&config, &root);
+        let unknown_error = unknown
+            .inspect(&glass_a)
+            .expect_err("a key absent from the new file is unknown");
+        assert!(is_unknown_signing_key(&unknown_error));
+        let example =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/hello-world.glass");
+        let fixture_error = unknown
+            .inspect(&example)
+            .expect_err("production trust does not merge the compiled example key");
+        assert!(is_unknown_signing_key(&fixture_error));
+
+        write_trust_config(&config, &[&key_b], &[key_a_id]);
+        let mut after_rotation = production_service(&config, &root);
+        let revoked_error = after_rotation
+            .inspect(&glass_a)
+            .expect_err("the old key is revoked after rotation");
+        assert!(is_revoked_signing_key(&revoked_error));
+        let preflight_error = after_rotation
+            .preflight(&glass_a)
+            .expect_err("revoked bundle must fail before runtime preflight");
+        assert!(is_revoked_signing_key(&preflight_error));
+        let start_error = after_rotation
+            .start(&glass_a, RunOptions::default())
+            .expect_err("revoked bundle must fail before QEMU spawn");
+        assert!(is_revoked_signing_key(&start_error));
+
+        let rotated_preview = after_rotation
+            .inspect(&glass_b)
+            .expect("newly trusted key reaches preview");
+        assert_eq!(rotated_preview.publisher_identity, PUBLISHER_IDENTITY);
+        after_rotation
+            .launch_plan(&glass_b)
+            .expect("newly trusted key reaches pre-run planning");
+        after_rotation
+            .preflight(&glass_b)
+            .expect("newly trusted key passes preflight verification");
+
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(assets);
+    }
+
+    #[test]
+    fn missing_or_invalid_production_trust_never_falls_back_to_fixture_keys() {
+        let root = temp_root();
+        fs::create_dir_all(&root).unwrap();
+        let missing = root.join("missing-trust.json");
+        assert!(AppService::from_trust_config(&missing).is_err());
+
+        let invalid = root.join("invalid-trust.json");
+        fs::write(
+            &invalid,
+            br#"{"schemaVersion":99,"trustedPublishers":[],"revokedKeyIds":[]}"#,
+        )
+        .unwrap();
+        assert!(AppService::from_trust_config(&invalid).is_err());
+
+        let mut denied = AppService::deny_all();
+        let example =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/hello-world.glass");
+        let error = denied
+            .inspect(&example)
+            .expect_err("deny-all policy rejects the test fixture publisher");
+        assert!(is_unknown_signing_key(&error));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn tampered_trusted_bundle_reports_digest_failure_without_launching() {
+        let key = SigningKey::from_bytes(&[43_u8; 32]);
+        let root = temp_root();
+        let glass = root.join("tampered.glass");
+        fs::create_dir_all(&root).unwrap();
+        signed_glass(&glass, &key);
+        install_test_runtime(&root);
+        let config = root.join("trust.json");
+        write_trust_config(&config, &[&key], &[]);
+        fs::write(glass.join("rootfs.img"), b"tampered after signing").unwrap();
+
+        let mut service = production_service(&config, &root);
+        let error = service
+            .inspect(&glass)
+            .expect_err("a trusted publisher cannot make tampered contents valid");
+        assert_eq!(error.summary, "This glass could not be verified.");
+        assert!(error.detail.contains("subject digest mismatch"));
+        assert_eq!(error.phase, LifecycleState::Verifying);
+
         let _ = fs::remove_dir_all(root);
     }
 }
