@@ -6,9 +6,7 @@ pub mod state;
 use rootglass_core::storage::{LocalWritableOverlay, WritableOverlaySelection};
 use rootglass_core::{HostCapabilities, LaunchRequest, LifecycleState, RootglassRuntime};
 use rootglass_qemu::{QemuLaunchPlan, QemuProcess, SerialChunk};
-use rootglass_signature::trust_config::{
-    load_trust_store, LoadedTrustStore, TrustConfigError,
-};
+use rootglass_signature::trust_config::{load_trust_store, LoadedTrustStore, TrustConfigError};
 use rootglass_signature::TrustStore;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -114,7 +112,14 @@ pub struct AppService {
 
 impl Default for AppService {
     fn default() -> Self {
-        Self::with_trust_store(TrustStore::example_fixture())
+        Self {
+            runtime: RootglassRuntime::new(),
+            state_root: default_state_root(),
+            next_run_id: 1,
+            active: None,
+            pending: VecDeque::new(),
+            last_stopped: None,
+        }
     }
 }
 
@@ -222,12 +227,11 @@ impl AppService {
             };
             let lock = store.acquire_run_lock().map_err(state_app_error)?;
             launch.writable_overlay = Some(record.image_path.clone());
-            launch.storage.writable_overlay = Some(WritableOverlaySelection::Local(
-                LocalWritableOverlay {
+            launch.storage.writable_overlay =
+                Some(WritableOverlaySelection::Local(LocalWritableOverlay {
                     name: record.name,
                     path: record.image_path,
-                },
-            ));
+                }));
             Some(lock)
         } else {
             if options.state_id.is_some() {
