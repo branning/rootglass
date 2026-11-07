@@ -47,7 +47,11 @@ impl Default for ImportLimits {
 #[derive(Debug, Error)]
 pub enum ImportError {
     #[error("I/O error at {path}: {source}")]
-    Io { path: PathBuf, #[source] source: io::Error },
+    Io {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
     #[error("invalid ZIP archive: {0}")]
     Zip(#[from] zip::result::ZipError),
     #[error("signature verification failed: {0}")]
@@ -121,7 +125,9 @@ pub fn import_glass_archive(
                     limit: limits.max_archive_bytes,
                 });
             }
-            snapshot_file.write_all(&buffer[..n]).map_err(|source| io_at(&snapshot, source))?;
+            snapshot_file
+                .write_all(&buffer[..n])
+                .map_err(|source| io_at(&snapshot, source))?;
             hasher.update(&buffer[..n]);
         }
         snapshot_file.sync_all().map_err(|source| io_at(&snapshot, source))?;
@@ -323,7 +329,11 @@ fn inspect_archive(path: &Path, limits: &ImportLimits) -> Result<(), ImportError
     Ok(())
 }
 
-fn extract_archive(path: &Path, destination: &Path, limits: &ImportLimits) -> Result<(), ImportError> {
+fn extract_archive(
+    path: &Path,
+    destination: &Path,
+    limits: &ImportLimits,
+) -> Result<(), ImportError> {
     let file = File::open(path).map_err(|source| io_at(path, source))?;
     let mut archive = ZipArchive::new(file)?;
     let mut total = 0u64;
@@ -353,12 +363,18 @@ fn extract_archive(path: &Path, destination: &Path, limits: &ImportLimits) -> Re
         let mut member = 0u64;
         let mut buffer = [0u8; 64 * 1024];
         loop {
-            let n = entry.read(&mut buffer).map_err(|source| io_at(&output, source))?;
-            if n == 0 { break; }
-            member = member.checked_add(n as u64).ok_or(ImportError::MemberTooLarge {
-                path: name.clone(),
-                limit: limits.max_member_bytes,
-            })?;
+            let n = entry
+                .read(&mut buffer)
+                .map_err(|source| io_at(&output, source))?;
+            if n == 0 {
+                break;
+            }
+            member = member
+                .checked_add(n as u64)
+                .ok_or(ImportError::MemberTooLarge {
+                    path: name.clone(),
+                    limit: limits.max_member_bytes,
+                })?;
             total = total
                 .checked_add(n as u64)
                 .ok_or(ImportError::TotalTooLarge {
@@ -375,7 +391,8 @@ fn extract_archive(path: &Path, destination: &Path, limits: &ImportLimits) -> Re
                     limit: limits.max_total_uncompressed_bytes,
                 });
             }
-            file.write_all(&buffer[..n]).map_err(|source| io_at(&output, source))?;
+            file.write_all(&buffer[..n])
+                .map_err(|source| io_at(&output, source))?;
         }
         if member != entry.size() {
             return Err(ImportError::ArchiveChanged);
@@ -418,7 +435,11 @@ fn normalized_name(name: &str, is_dir: bool) -> Result<String, ImportError> {
     {
         return Err(ImportError::UnsafePath(name.to_owned()));
     }
-    let trimmed = if is_dir { name.strip_suffix('/').unwrap_or(name) } else { name };
+    let trimmed = if is_dir {
+        name.strip_suffix('/').unwrap_or(name)
+    } else {
+        name
+    };
     let mut path = PathBuf::new();
     for segment in trimmed.split('/') {
         if segment.is_empty() || segment == "." || segment == ".." {
