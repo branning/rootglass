@@ -86,19 +86,18 @@
 {"version":1,"task_id":"Y4UJKY","kind":"open","at":"2026-11-07T08:56:29.10149311Z"}
 {"version":1,"task_id":"MJPX6T","kind":"result","at":"2026-11-07T09:07:43.274453859Z","agent":"codex@worker-1","text":"Parity/API docs and libghostty gates added; links, Ergo JSON, and diff checks pass. Awaiting PR review/merge."}
 {"version":1,"task_id":"MJPX6T","kind":"result","at":"2026-11-07T09:08:30.858596778Z","agent":"codex@worker-1","text":"Opened PR #49; doc checks pass; waiting for maintainer review and merge."}
-{"version":1,"task_id":"6623ZQ","kind":"claim","at":"2026-11-07T09:10:22.829635283Z","agent":"codex@worker-1"}
-{"version":1,"task_id":"6623ZQ","kind":"result","at":"2026-11-07T09:46:19.105058922Z","agent":"codex@worker-1","text":"A-05 x86_64 TCG: rootfs sha256 ff3a68b7bf6919781de52cbd4e7f43bb9f1a73c29903dd722217a085fcd1934e unchanged."}
-{"version":1,"task_id":"6623ZQ","kind":"result","at":"2026-11-07T09:46:19.112692502Z","agent":"codex@worker-1","text":"A-05 state template sha256 c704fa202947d1284b40240de1492517cf47a27ba94aadfe0080fc3955d85704 unchanged."}
-{"version":1,"task_id":"6623ZQ","kind":"result","at":"2026-11-07T09:46:19.118990576Z","agent":"codex@worker-1","text":"A-05 guest mounted /state; nonce 0a9d3c42ff59796ac7c0e2fcf4b0cb7d survived reboot; read exact bytes."}
-{"version":1,"task_id":"6623ZQ","kind":"result","at":"2026-11-07T09:46:19.125147067Z","agent":"codex@worker-1","text":"Checks: fmt; 17 app + 3 qemu tests; clippy -D warnings; real A-05 guest smoke passed."}
-{"version":1,"task_id":"6623ZQ","kind":"result","at":"2026-11-07T09:46:19.131226132Z","agent":"codex@worker-1","text":"Limit: persistent guest writes use /state; OverlayFS remains unimplemented."}
-{"version":1,"task_id":"6623ZQ","kind":"result","at":"2026-11-07T09:50:36.070418514Z","agent":"codex@worker-1","text":"PR #50 is stacked on S16.1 PR #49; awaiting maintainer review and merge."}
-{"version":1,"task_id":"6623ZQ","kind":"block","at":"2026-11-07T10:09:16.985163797Z","agent":"codex@worker-1","text":"PR #50 is open and mergeable; maintainer review and merge are required before completion. Revisit after review."}
-{"version":1,"task_id":"WS57HI","kind":"claim","at":"2026-11-07T10:09:43.634268878Z","agent":"codex@worker-1"}
-{"version":1,"task_id":"WS57HI","kind":"result","at":"2026-11-07T10:37:35.278816251Z","agent":"codex@worker-1","text":"Checks pass: fmt, cargo test --locked --workspace --all-targets, clippy, Python AST, shell syntax."}
-{"version":1,"task_id":"WS57HI","kind":"result","at":"2026-11-07T10:37:35.285478031Z","agent":"codex@worker-1","text":"A-04: Ubuntu 24.04 x86_64 TCG login, /state reboot persistence, shutdown and child reaping passed."}
-{"version":1,"task_id":"WS57HI","kind":"result","at":"2026-11-07T10:37:35.291801436Z","agent":"codex@worker-1","text":"Desktop: local check lacks fontconfig; CI desktop and arm64 TCG results pending."}
-{"version":1,"task_id":"WS57HI","kind":"result","at":"2026-11-07T10:37:35.297899869Z","agent":"codex@worker-1","text":"CI uploads the bounded boot transcript on failure, with no telemetry and 7-day retention."}
-{"version":1,"task_id":"WS57HI","kind":"result","at":"2026-11-07T10:38:04.91709408Z","agent":"codex@worker-1","text":"PR #52 open; CI/maintainer review pending. Next: resolve checks/review and merge before done."}
-{"version":1,"task_id":"WS57HI","kind":"result","at":"2026-11-07T10:43:20.615523613Z","agent":"codex@worker-1","text":"CI run 282 passed: fmt, CLI, tests, clippy, Linux desktop, x64 and arm64 boot smokes."}
-{"version":1,"task_id":"WS57HI","kind":"result","at":"2026-11-07T10:43:20.623643235Z","agent":"codex@worker-1","text":"PR #52 remains open and mergeable; maintainer review and merge are still required."}
+{"version":1,"task_id":"UJJ6VB","kind":"created","at":"2026-11-07T10:32:49.07251148Z"}
+{"version":1,"task_id":"UJJ6VB","kind":"open","at":"2026-11-07T10:33:11.870583044Z"}
+{"version":1,"task_id":"MJPX6T","kind":"result","at":"2026-11-07T10:35:57.148777034Z","agent":"codex@worker-1","text":"Refined S16 graph in PR #51; Ergo JSON and diff checks pass. Next: review/merge."}
+{"version":1,"task_id":"6623ZQ","kind":"claim","at":"2026-11-07T15:47:37.242121965Z","agent":"codex@worker-1"}
+{"version":1,"task_id":"6623ZQ","kind":"result","at":"2026-11-07T15:47:37.251678084Z","agent":"codex@worker-1","text":"Checks: fmt, 17 app and 3 QEMU tests, clippy, and real A-05 guest persistence smoke passed."}
+{"version":1,"task_id":"6623ZQ","kind":"result","at":"2026-11-07T15:47:37.259633748Z","agent":"codex@worker-1","text":"Limit: guest persistence is under /state; OverlayFS and writable-root behavior remain unimplemented."}
+{"version":1,"task_id":"6623ZQ","kind":"result","at":"2026-11-07T15:47:37.265975076Z","agent":"codex@worker-1","text":"PR #50 code is synchronized to current main; CI, maintainer review, and merge remain pending."}
+{"version":1,"task_id":"WS57HI","kind":"claim","at":"2026-11-07T15:47:37.272568332Z","agent":"codex@worker-1"}
+{"version":1,"task_id":"WS57HI","kind":"result","at":"2026-11-07T15:47:37.279249682Z","agent":"codex@worker-1","text":"Checks: fmt, workspace tests, clippy, syntax checks, and CI run 282 passed."}
+{"version":1,"task_id":"WS57HI","kind":"result","at":"2026-11-07T15:47:37.28535822Z","agent":"codex@worker-1","text":"A-04: x64 and arm64 TCG boot/login/shutdown smokes passed; child cleanup and bounded transcript verified."}
+{"version":1,"task_id":"WS57HI","kind":"result","at":"2026-11-07T15:47:37.29226319Z","agent":"codex@worker-1","text":"PR #52 merged into #50 head; S12.3 changes are included, with main merge and review pending."}
+{"version":1,"task_id":"6623ZQ","kind":"result","at":"2026-11-07T15:48:14.427272157Z","agent":"codex@worker-1","text":"Rootfs SHA-256 unchanged after A-05: ff3a68b7bf6919781de52cbd4e7f43bb9f1a73c29903dd722217a085fcd1934e."}
+{"version":1,"task_id":"6623ZQ","kind":"result","at":"2026-11-07T15:48:14.434305496Z","agent":"codex@worker-1","text":"State-template SHA-256 unchanged after A-05: c704fa202947d1284b40240de1492517cf47a27ba94aadfe0080fc3955d85704."}
+{"version":1,"task_id":"WS57HI","kind":"result","at":"2026-11-07T15:48:14.441059033Z","agent":"codex@worker-1","text":"CI 282 passed fmt, CLI, workspace tests, clippy, Linux desktop, and x64/arm64 boot smokes."}
+{"version":1,"task_id":"WS57HI","kind":"result","at":"2026-11-07T15:48:14.447539832Z","agent":"codex@worker-1","text":"CI uploads a bounded boot transcript on failure; telemetry is disabled and retention is 7 days."}
