@@ -60,3 +60,24 @@
 {"version":1,"task_id":"VTNG4C","kind":"done","at":"2026-11-07T08:34:39.847808964Z","agent":"codex@worker-1","text":"Merged PR #46 (6b136af); fmt, 8/8 headless tests, desktop check, clippy and diff checks pass; GUI smoke is S13.2."}
 {"version":1,"task_id":"GOMUP3","kind":"claim","at":"2026-11-07T08:35:34.831080405Z","agent":"codex@worker-1"}
 {"version":1,"task_id":"GOMUP3","kind":"block","at":"2026-11-07T08:35:34.839712056Z","agent":"codex@worker-1","text":"No desktop/computer-use tool is exposed in executor ccarenv_b64_Y2NhcmVudl83YWYzNjhjNThiMTQ4MTkxYTE5ZGQzYmY0NzRmMWNjMg; provide a supported GUI host to run S13.2 smoke evidence."}
+{"version":1,"task_id":"HC6FQ6","kind":"claim","at":"2026-11-07T08:36:38.781654716Z","agent":"codex@worker-1"}
+{"version":1,"task_id":"HC6FQ6","kind":"block","at":"2026-11-07T08:43:38.7379719Z","agent":"codex@worker-1","text":"Reprioritized by user to plan the Ratatui/libghostty TUI workstream; no S12.1 implementation started. Resume after the TUI backlog is staged."}
+{"version":1,"task_id":"PZ4QWK","kind":"created","at":"2026-11-07T08:45:09.000074418Z"}
+{"version":1,"task_id":"MJPX6T","kind":"created","at":"2026-11-07T08:45:09.000138745Z"}
+{"version":1,"task_id":"RKX2EW","kind":"created","at":"2026-11-07T08:45:09.000142972Z"}
+{"version":1,"task_id":"YPQI2O","kind":"created","at":"2026-11-07T08:45:09.000145936Z"}
+{"version":1,"task_id":"DG7JFG","kind":"created","at":"2026-11-07T08:45:09.000149061Z"}
+{"version":1,"task_id":"LQAYNN","kind":"created","at":"2026-11-07T08:45:09.000156622Z"}
+{"version":1,"task_id":"Q3HT7R","kind":"created","at":"2026-11-07T08:45:09.000161159Z"}
+{"version":1,"task_id":"WPEQ6N","kind":"created","at":"2026-11-07T08:45:09.000164364Z"}
+{"version":1,"task_id":"E6SUUH","kind":"created","at":"2026-11-07T08:45:09.000167278Z"}
+{"version":1,"task_id":"MJPX6T","kind":"open","at":"2026-11-07T08:45:38.112765697Z"}
+{"version":1,"task_id":"RKX2EW","kind":"open","at":"2026-11-07T08:45:38.285789551Z"}
+{"version":1,"task_id":"YPQI2O","kind":"open","at":"2026-11-07T08:45:38.465136679Z"}
+{"version":1,"task_id":"DG7JFG","kind":"open","at":"2026-11-07T08:45:38.639104853Z"}
+{"version":1,"task_id":"LQAYNN","kind":"open","at":"2026-11-07T08:45:38.817834492Z"}
+{"version":1,"task_id":"Q3HT7R","kind":"open","at":"2026-11-07T08:45:39.004253665Z"}
+{"version":1,"task_id":"WPEQ6N","kind":"open","at":"2026-11-07T08:45:39.195521515Z"}
+{"version":1,"task_id":"E6SUUH","kind":"open","at":"2026-11-07T08:45:39.372562236Z"}
+{"version":1,"task_id":"HC6FQ6","kind":"open","at":"2026-11-07T08:47:15.750662777Z","text":"Reopen pending the newly prioritized TUI headless foundation."}
+{"version":1,"task_id":"HC6FQ6","kind":"block","at":"2026-11-07T08:47:15.758562819Z","text":"User reprioritized current work to S16.1–S16.2; no S12.1 implementation started. Resume after the Ratatui TestBackend/controller foundation is merged, or if the user reprioritizes."}
