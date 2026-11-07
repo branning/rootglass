@@ -90,7 +90,11 @@ pub struct QemuLaunchPlan {
 
 impl QemuLaunchPlan {
     pub fn for_launch_request(request: &LaunchRequest) -> Self {
-        Self::for_launch_request_with_binary(request, QemuBinary::default().path)
+        let binary = request
+            .qemu_binary
+            .clone()
+            .unwrap_or_else(|| QemuBinary::default().path);
+        Self::for_launch_request_with_binary(request, binary)
     }
 
     /// Build a launch plan using a caller-resolved QEMU executable. The caller is
@@ -758,12 +762,13 @@ mod tests {
     fn uses_explicit_qemu_binary_when_supplied() {
         let mut runtime = RootglassRuntime::new();
         let capabilities = HostCapabilities::without_acceleration(HostPlatform::Other);
-        let request = runtime
+        let mut request = runtime
             .prepare_launch_with_host("../../examples/hello-world.glass", &capabilities)
             .expect("sample glass produces launch request");
 
         let binary = PathBuf::from("/opt/rootglass runtime/bin/qemu-system-aarch64");
-        let plan = QemuLaunchPlan::for_launch_request_with_binary(&request, binary.clone());
+        request.qemu_binary = Some(binary.clone());
+        let plan = QemuLaunchPlan::for_launch_request(&request);
 
         assert_eq!(plan.binary.path, binary);
         assert!(plan
