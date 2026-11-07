@@ -18,6 +18,8 @@ struct PtyChild {
     child: Option<Box<dyn Child + Send + Sync>>,
     output: Receiver<io::Result<Vec<u8>>>,
     reader_thread: Option<JoinHandle<()>>,
+    received_bytes: usize,
+    output_sample: Vec<u8>,
 }
 
 impl PtyChild {
@@ -71,10 +73,12 @@ impl PtyChild {
             child: Some(child),
             output,
             reader_thread: Some(reader_thread),
+            received_bytes: 0,
+            output_sample: Vec::new(),
         })
     }
 
-    fn wait_for(&self, parser: &mut GhosttyTerminal, needle: &str) -> io::Result<String> {
+    fn wait_for(&mut self, parser: &mut GhosttyTerminal, needle: &str) -> io::Result<String> {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             let screen = parser.screen()?;
@@ -85,14 +89,25 @@ impl PtyChild {
             if remaining.is_zero() {
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
-                    format!("screen did not contain {needle:?}; last screen: {screen:?}"),
+                    format!(
+                        "screen did not contain {needle:?}; last screen: {screen:?}; \
+                         child status: {:?}; received {} bytes, sample: {:?}",
+                        self.child.as_mut().map(|child| child.try_wait()),
+                        self.received_bytes,
+                        String::from_utf8_lossy(&self.output_sample),
+                    ),
                 ));
             }
-            match self
+            let next = self
                 .output
-                .recv_timeout(remaining.min(Duration::from_millis(100)))
-            {
-                Ok(Ok(bytes)) => parser.write(&bytes),
+                .recv_timeout(remaining.min(Duration::from_millis(100)));
+            match next {
+                Ok(Ok(bytes)) => {
+                    self.received_bytes += bytes.len();
+                    let sample_len = bytes.len().min(512 - self.output_sample.len());
+                    self.output_sample.extend_from_slice(&bytes[..sample_len]);
+                    parser.write(&bytes);
+                }
                 Ok(Err(error)) => return Err(error),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => {
@@ -175,6 +190,8 @@ fn libghostty_vt_round_trips_ratatui_over_pty_headlessly() -> io::Result<()> {
     let mut child = PtyChild::spawn(&binary)?;
     let mut ghostty = GhosttyTerminal::new(80, 24)?;
 
+    child.wait_for(&mut ghostty, "PTY-CHILD-READY")?;
+    child.write_all(b"\n")?;
     let screen = child.wait_for(&mut ghostty, "RATATUI-GHOSTTY-FIXTURE")?;
     assert!(screen.contains("LEFT:0"));
     assert!(ghostty.first_cell_is_styled()?);

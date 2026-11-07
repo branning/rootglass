@@ -89,7 +89,9 @@ def main() -> None:
     release_url = f"https://release.files.ghostty.org/libghostty-vt/{GHOSTTY_VT_VERSION}"
 
     with tempfile.TemporaryDirectory(prefix="rootglass-libghostty-vt-") as temporary:
-        work = Path(temporary)
+        # macOS exposes /var as a symlink to /private/var. Give Zig one
+        # canonical root so its generated relative helper paths stay valid.
+        work = Path(temporary).resolve()
         manifest = work / "SHA256SUMS"
         signature = work / "SHA256SUMS.minisig"
         source_archive = work / f"libghostty-vt-{GHOSTTY_VT_VERSION}.tar.gz"
