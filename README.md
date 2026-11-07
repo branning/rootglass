@@ -2,7 +2,7 @@
 
 Tiny worlds under glass.
 
-Rootglass is a cross-platform shell for running self-contained embedded Linux application environments on a regular computer. The long-term product shape is a friendly desktop app; the current Milestone 1 implementation is a Rust CLI and runtime that can validate, verify, plan, and boot a signed `.glass` example environment through QEMU.
+Rootglass is a cross-platform shell for running self-contained embedded Linux application environments on a regular computer. The product is a friendly desktop app backed by a Rust CLI and runtime. The merged implementation can validate, verify, import, plan, and boot signed `.glass` environments through QEMU, with a GPUI Kit desktop shell and cross-platform package builds.
 
 ## Complete application build specification
 
@@ -10,7 +10,7 @@ Rootglass is a cross-platform shell for running self-contained embedded Linux ap
 
 ## Current status
 
-Milestone 1 is CLI-first. It supports:
+The CLI remains the reference workflow, and the GPUI Kit desktop shell now uses the shared application service. The current implementation supports:
 
 - directory-form `.glass/` fixtures for development,
 - ZIP-based serialized `.glass` archive verification,
@@ -22,7 +22,7 @@ Milestone 1 is CLI-first. It supports:
 - an interactive CLI boot command once local assets exist,
 - CI for formatting, clippy, tests, and CLI smoke checks.
 
-The native desktop shell will use [GPUI Kit](https://github.com/longbridge/gpui-kit) `=0.9.0`, a curated distribution of Zed's GPUI with components, instead of Tauri or GPUI directly from Zed's moving branch. The desktop shell and nontechnical double-click workflow are future work; Milestone 1 remains CLI-first.
+The native desktop shell uses [GPUI Kit](https://github.com/longbridge/gpui-kit) `=0.9.0`, a curated distribution of Zed's GPUI with components. The desktop shell is implemented; clean-host installer validation, runtime bundling, release signing, and GUI acceptance coverage remain open. See [the delivery roadmap](docs/roadmap.md) and [desktop package status](docs/desktop-packages.md).
 
 ## Quickstart
 
@@ -188,7 +188,7 @@ rootglass/
 
 ## Non-goals for Milestone 1
 
-- GPUI desktop shell.
+- GPUI desktop shell (delivered after Milestone 1).
 - Nontechnical double-click workflow.
 - Bundled QEMU installers.
 - Production trust-store management.
