@@ -1,39 +1,59 @@
 name: Desktop packages
 
 on:
-  pull_request:
+  release:
+    types: [published]
   workflow_dispatch:
+    inputs:
+      platform:
+        description: Platform to package
+        type: choice
+        required: true
+        default: all
+        options:
+          - all
+          - linux
+          - macos
+          - windows
 
 permissions:
   contents: read
 
 concurrency:
-  group: desktop-packages-${{ github.workflow }}-${{ github.ref }}
+  group: desktop-packages-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ inputs.platform || 'all' }}
   cancel-in-progress: true
 
 jobs:
+  select-platforms:
+    name: Select package platforms
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - name: Select platform matrix
+        id: select
+        env:
+          PLATFORM: ${{ github.event_name == 'release' && 'all' || inputs.platform }}
+        run: |
+          case "$PLATFORM" in
+            all|linux|macos|windows) ;;
+            *) echo "Unsupported platform: $PLATFORM" >&2; exit 1 ;;
+          esac
+          matrix=$(jq -cn --arg platform "$PLATFORM" '
+            {include: ([
+              {config: "linux", name: "Linux x64", runner: "ubuntu-24.04", format: "deb", extension: "deb"},
+              {config: "macos", name: "macOS arm64", runner: "macos-15", format: "dmg", extension: "dmg"},
+              {config: "windows", name: "Windows x64", runner: "windows-2025", format: "nsis", extension: "exe"}
+            ] | map(select($platform == "all" or .config == $platform)))}')
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
   package:
     name: ${{ matrix.name }} package
+    needs: select-platforms
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - name: Linux x64
-            runner: ubuntu-24.04
-            format: deb
-            extension: deb
-            config: linux
-          - name: macOS arm64
-            runner: macos-15
-            format: dmg
-            extension: dmg
-            config: macos
-          - name: Windows x64
-            runner: windows-2025
-            format: nsis
-            extension: exe
-            config: windows
+      matrix: ${{ fromJSON(needs.select-platforms.outputs.matrix) }}
 
     steps:
       - name: Checkout
