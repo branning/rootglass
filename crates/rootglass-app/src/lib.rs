@@ -39,6 +39,25 @@ pub struct GlassSummary {
     pub signed_subject_count: usize,
 }
 
+/// Manifest-only validation output. Publisher fields are declarations from the manifest;
+/// this report does not verify a signature or establish trust.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestValidationReport {
+    pub path: PathBuf,
+    pub name: String,
+    pub identifier: String,
+    pub version: String,
+    pub description: Option<String>,
+    pub declared_publisher_name: String,
+    pub declared_publisher_identity: String,
+    pub architecture: String,
+    pub profile: String,
+    pub memory_mb: u32,
+    pub cpus: u32,
+    pub rootfs: PathBuf,
+    pub network_mode: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreflightReport {
     pub summary: GlassSummary,
@@ -273,6 +292,40 @@ impl AppService {
 
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Validate only the manifest schema and declared fields, matching the CLI `validate`
+    /// command. This deliberately does not verify the bundle signature or publisher trust.
+    pub fn validate_manifest_only(
+        &self,
+        source: &Path,
+    ) -> Result<ManifestValidationReport, AppError> {
+        let glass = rootglass_manifest::Glass::load(source).map_err(|error| AppError {
+            phase: LifecycleState::Validating,
+            summary: "The manifest could not be loaded.".to_string(),
+            detail: error.to_string(),
+        })?;
+        glass.validate_manifest_only().map_err(|error| AppError {
+            phase: LifecycleState::Validating,
+            summary: "The manifest is invalid.".to_string(),
+            detail: error.to_string(),
+        })?;
+        let manifest = glass.manifest;
+        Ok(ManifestValidationReport {
+            path: glass.root,
+            name: manifest.name,
+            identifier: manifest.identifier,
+            version: manifest.version,
+            description: manifest.description,
+            declared_publisher_name: manifest.publisher.name,
+            declared_publisher_identity: manifest.publisher.identity,
+            architecture: manifest.runtime.architecture,
+            profile: manifest.runtime.profile,
+            memory_mb: manifest.resources.memory_mb,
+            cpus: manifest.resources.cpus,
+            rootfs: PathBuf::from(manifest.boot.rootfs),
+            network_mode: manifest.network.mode,
+        })
     }
 
     pub fn inspect(&mut self, source: &Path) -> Result<GlassSummary, AppError> {

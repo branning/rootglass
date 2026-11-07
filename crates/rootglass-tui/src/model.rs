@@ -1,5 +1,8 @@
 use rootglass_app::registry::InstalledGlass;
-use rootglass_app::{AppError, AppService, PreflightReport, RunId, RunOptions, RuntimeEvent};
+use rootglass_app::{
+    AppError, AppService, ManifestValidationReport, PreflightReport, RunId, RunOptions,
+    RuntimeEvent,
+};
 use rootglass_core::LifecycleState;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,8 +14,14 @@ const MAX_CONSOLE_BYTES: usize = 80_000;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UiState {
     Empty,
+    Opening(PathBuf),
     Loading,
     Importing(PathBuf),
+    Validating,
+    ManifestValidated(ManifestValidationReport),
+    Planning,
+    Planned(LaunchPlanDetails),
+    Removing(RemovalDetails),
     Imported(ImportedDetails),
     Ready(GlassPreview),
     Blocked(BlockedDetails),
@@ -29,6 +38,20 @@ pub struct ImportedDetails {
     pub version: String,
     pub publisher: String,
     pub digest: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LaunchPlanDetails {
+    pub preview: GlassPreview,
+    pub command: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemovalDetails {
+    pub content_sha256: String,
+    pub name: String,
+    pub version: String,
+    pub path: PathBuf,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -88,9 +111,13 @@ pub struct RunDetails {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct UiActions {
     pub open: bool,
+    pub validate: bool,
+    pub plan: bool,
     pub boot: bool,
     pub stop: bool,
     pub restart: bool,
+    pub remove: bool,
+    pub refresh: bool,
     /// State management is intentionally disabled until the named-state UI is implemented.
     pub reset_state: bool,
     pub console_input: bool,
@@ -137,6 +164,30 @@ pub trait TuiService: Send {
     fn installed_glasses(&mut self) -> Result<Vec<InstalledGlass>, AppError>;
     fn import_archive(&mut self, source: &Path) -> Result<InstalledGlass, AppError>;
     fn inspect_bundle(&mut self, source: &Path) -> InspectionOutcome;
+    fn validate_manifest(&mut self, _source: &Path) -> Result<ManifestValidationReport, AppError> {
+        Err(AppError {
+            phase: LifecycleState::Validating,
+            summary: "Manifest validation is unavailable.".to_string(),
+            detail: "The active TUI service does not provide the validate workflow.".to_string(),
+        })
+    }
+    fn plan_bundle(&mut self, _source: &Path) -> Result<LaunchPlanDetails, AppError> {
+        Err(AppError {
+            phase: LifecycleState::Verifying,
+            summary: "Launch planning is unavailable.".to_string(),
+            detail: "The active TUI service does not provide the plan workflow.".to_string(),
+        })
+    }
+    fn remove_installed(
+        &mut self,
+        _content_sha256: &str,
+    ) -> Result<Option<InstalledGlass>, AppError> {
+        Err(AppError {
+            phase: LifecycleState::Stopped,
+            summary: "Library removal is unavailable.".to_string(),
+            detail: "The active TUI service does not provide package removal.".to_string(),
+        })
+    }
     fn start(&mut self, source: &Path) -> Result<RunId, AppError>;
     fn stop(&mut self, run: &RunId) -> Result<(), AppError>;
     fn poll_events(&mut self) -> Result<Vec<RuntimeEvent>, AppError>;
@@ -188,16 +239,41 @@ impl TuiService for AppService {
             Err(error) if error.phase == LifecycleState::Ready => {
                 return InspectionOutcome::Blocked(BlockedDetails {
                     path: Some(source.to_path_buf()),
-                    reason: error.summary,
-                    preflight: PreflightDetails {
-                        blockers: vec![error.detail],
-                        ..empty_preflight()
-                    },
+                    reason: error.summary.clone(),
+                    preflight: preflight_for_summary(&summary, Vec::new(), vec![error.detail]),
                 });
             }
             Err(error) => return InspectionOutcome::Failed(failure_details(source, error)),
         };
-        InspectionOutcome::Ready(preview_from_report(source, summary.publisher_name, report))
+        InspectionOutcome::Ready(preview_from_report(report))
+    }
+
+    fn validate_manifest(&mut self, source: &Path) -> Result<ManifestValidationReport, AppError> {
+        AppService::validate_manifest_only(self, source)
+    }
+
+    fn plan_bundle(&mut self, source: &Path) -> Result<LaunchPlanDetails, AppError> {
+        let (summary, command) = AppService::launch_plan(self, source)?;
+        let preflight = match AppService::preflight(self, source) {
+            Ok(report) => preflight_details(&report),
+            Err(error) if error.phase == LifecycleState::Ready => preflight_for_summary(
+                &summary,
+                Vec::new(),
+                vec![format!("{} {}", error.summary, error.detail)],
+            ),
+            Err(error) => return Err(error),
+        };
+        Ok(LaunchPlanDetails {
+            preview: preview_from_summary(summary, preflight),
+            command,
+        })
+    }
+
+    fn remove_installed(
+        &mut self,
+        content_sha256: &str,
+    ) -> Result<Option<InstalledGlass>, AppError> {
+        AppService::remove_installed_glass(self, content_sha256)
     }
 
     fn start(&mut self, source: &Path) -> Result<RunId, AppError> {
@@ -227,6 +303,7 @@ impl TuiService for AppService {
 pub struct UiModel {
     pub state: UiState,
     pub installed_glasses: Vec<InstalledGlass>,
+    pub library_filter: String,
     pub library_error: Option<String>,
     pub selected_path: Option<PathBuf>,
     pub run_id: Option<RunId>,
@@ -243,6 +320,7 @@ impl UiModel {
         Self {
             state: initial_state,
             installed_glasses: Vec::new(),
+            library_filter: String::new(),
             library_error: None,
             selected_path: None,
             run_id: None,
@@ -263,16 +341,76 @@ impl UiModel {
         let booting = matches!(self.state, UiState::Booting(_));
         let running = matches!(self.state, UiState::Running(_));
         let stopping = matches!(self.state, UiState::Stopping(_));
-        let ready = matches!(self.state, UiState::Ready(_));
+        let removing = matches!(self.state, UiState::Removing(_));
+        let ready = matches!(
+            &self.state,
+            UiState::Ready(preview) if matches!(&preview.signature, SignatureStatus::Verified(_))
+        );
         let has_run = self.run_id.is_some();
+        let busy = matches!(
+            self.state,
+            UiState::Loading
+                | UiState::Importing(_)
+                | UiState::Opening(_)
+                | UiState::Validating
+                | UiState::Planning
+                | UiState::Removing(_)
+                | UiState::Booting(_)
+                | UiState::Stopping(_)
+        );
+        let bootable_plan = matches!(
+            &self.state,
+            UiState::Planned(plan)
+                if plan.preview.preflight.blockers.is_empty()
+                    && matches!(&plan.preview.signature, SignatureStatus::Verified(_))
+        );
+        let has_path = self.selected_path.is_some();
+        let has_installed_selection = self.selected_installed().is_some();
         UiActions {
-            open: !stopping && !booting && !has_run,
-            boot: ready && !has_run,
+            // A new open/inspect request supersedes in-flight file operations. The
+            // generation ticket prevents their stale completions from replacing it.
+            open: !has_run && !booting && !stopping && !removing,
+            validate: !busy && !has_run && has_path,
+            plan: !busy && !has_run && has_path,
+            boot: (ready || bootable_plan) && !has_run,
             stop: !stopping && (has_run || booting),
             restart: running && has_run,
+            remove: !busy && !has_run && has_installed_selection,
+            refresh: !stopping,
             reset_state: false,
             console_input: running && has_run,
         }
+    }
+
+    pub fn selected_installed(&self) -> Option<&InstalledGlass> {
+        let path = self.selected_path.as_ref()?;
+        self.visible_installed()
+            .into_iter()
+            .find(|glass| &glass.package_path == path)
+    }
+
+    pub fn visible_installed(&self) -> Vec<&InstalledGlass> {
+        let filter = self.library_filter.trim().to_lowercase();
+        self.installed_glasses
+            .iter()
+            .filter(|glass| {
+                filter.is_empty()
+                    || [
+                        glass.name.as_str(),
+                        glass.identifier.as_str(),
+                        glass.version.as_str(),
+                        glass.publisher_name.as_str(),
+                        glass.publisher_identity.as_str(),
+                        glass.content_sha256.as_str(),
+                    ]
+                    .iter()
+                    .any(|value| value.to_lowercase().contains(&filter))
+            })
+            .collect()
+    }
+
+    pub fn set_library_filter(&mut self, filter: String) {
+        self.library_filter = filter;
     }
 
     pub fn begin_library_refresh(&self) -> SharedService {
@@ -294,7 +432,134 @@ impl UiModel {
             return None;
         }
         self.selected_path = Some(path.clone());
+        self.last_preview = None;
         Some(self.begin_operation(UiState::Loading))
+    }
+
+    pub fn begin_open(&mut self, path: PathBuf) -> Option<OperationTicket> {
+        if !self.actions().open {
+            return None;
+        }
+        self.selected_path = Some(path.clone());
+        self.last_preview = None;
+        Some(self.begin_operation(UiState::Opening(path)))
+    }
+
+    pub fn begin_validation(&mut self, path: PathBuf) -> Option<OperationTicket> {
+        if !self.actions().validate {
+            return None;
+        }
+        self.selected_path = Some(path);
+        self.last_preview = None;
+        Some(self.begin_operation(UiState::Validating))
+    }
+
+    pub fn finish_validation(
+        &mut self,
+        ticket: &OperationTicket,
+        result: Result<ManifestValidationReport, AppError>,
+    ) -> bool {
+        if !self.finishable(ticket) {
+            return false;
+        }
+        self.active_operation = None;
+        self.state = match result {
+            Ok(report) => UiState::ManifestValidated(report),
+            Err(error) => UiState::Failed(failure_details(
+                self.selected_path.as_deref().unwrap_or(Path::new("")),
+                error,
+            )),
+        };
+        true
+    }
+
+    pub fn begin_plan(&mut self, path: PathBuf) -> Option<OperationTicket> {
+        if !self.actions().plan {
+            return None;
+        }
+        self.selected_path = Some(path);
+        self.last_preview = None;
+        Some(self.begin_operation(UiState::Planning))
+    }
+
+    pub fn finish_plan(
+        &mut self,
+        ticket: &OperationTicket,
+        result: Result<LaunchPlanDetails, AppError>,
+    ) -> bool {
+        if !self.finishable(ticket) {
+            return false;
+        }
+        self.active_operation = None;
+        match result {
+            Ok(plan) => {
+                self.selected_path = Some(plan.preview.path.clone());
+                self.last_preview = Some(plan.preview.clone());
+                self.state = UiState::Planned(plan);
+            }
+            Err(error) => {
+                self.state = UiState::Failed(failure_details(
+                    self.selected_path.as_deref().unwrap_or(Path::new("")),
+                    error,
+                ));
+            }
+        }
+        true
+    }
+
+    pub fn begin_remove(&mut self) -> Option<(OperationTicket, String)> {
+        if !self.actions().remove {
+            return None;
+        }
+        let selected = self.selected_installed()?.clone();
+        let details = RemovalDetails {
+            content_sha256: selected.content_sha256.clone(),
+            name: selected.name,
+            version: selected.version,
+            path: selected.package_path,
+        };
+        let digest = details.content_sha256.clone();
+        Some((self.begin_operation(UiState::Removing(details)), digest))
+    }
+
+    pub fn finish_remove(
+        &mut self,
+        ticket: &OperationTicket,
+        result: Result<Option<InstalledGlass>, AppError>,
+    ) -> bool {
+        if !self.finishable(ticket) {
+            return false;
+        }
+        let details = match &self.state {
+            UiState::Removing(details) => details.clone(),
+            _ => return false,
+        };
+        self.active_operation = None;
+        match result {
+            Ok(removed) => {
+                let (digest, path) = removed.map_or_else(
+                    || (details.content_sha256, details.path),
+                    |glass| (glass.content_sha256, glass.package_path),
+                );
+                self.installed_glasses
+                    .retain(|glass| glass.content_sha256 != digest);
+                self.library_error = None;
+                if Some(&path) == self.selected_path.as_ref() {
+                    self.selected_path = None;
+                    self.last_preview = None;
+                    self.state = UiState::Empty;
+                } else {
+                    self.restore_preview();
+                }
+            }
+            Err(error) => {
+                self.state = UiState::Failed(failure_details(
+                    self.selected_path.as_deref().unwrap_or(Path::new("")),
+                    error,
+                ));
+            }
+        }
+        true
     }
 
     pub fn finish_inspection(
@@ -315,6 +580,7 @@ impl UiModel {
             return None;
         }
         self.selected_path = Some(path.clone());
+        self.last_preview = None;
         Some(self.begin_operation(UiState::Importing(path)))
     }
 
@@ -689,21 +955,28 @@ fn failure_details(source: &Path, error: AppError) -> FailureDetails {
     }
 }
 
-fn preview_from_report(source: &Path, publisher: String, report: PreflightReport) -> GlassPreview {
+fn preview_from_report(report: PreflightReport) -> GlassPreview {
     let preflight = preflight_details(&report);
-    let summary = report.summary;
+    preview_from_summary(report.summary, preflight)
+}
+
+fn preview_from_summary(
+    summary: rootglass_app::GlassSummary,
+    preflight: PreflightDetails,
+) -> GlassPreview {
     GlassPreview {
-        path: source.to_path_buf(),
+        path: summary.path,
         name: summary.name,
         identifier: summary.identifier,
         version: summary.version,
         description: summary.description,
-        publisher,
+        publisher: summary.publisher_name,
         signature: SignatureStatus::Verified(summary.publisher_identity),
         preflight,
     }
 }
 
+#[cfg(test)]
 fn empty_preflight() -> PreflightDetails {
     PreflightDetails {
         architecture: "Unknown".to_string(),
@@ -718,15 +991,23 @@ fn empty_preflight() -> PreflightDetails {
 }
 
 fn preflight_details(report: &PreflightReport) -> PreflightDetails {
+    preflight_for_summary(&report.summary, report.readiness.clone(), Vec::new())
+}
+
+fn preflight_for_summary(
+    summary: &rootglass_app::GlassSummary,
+    runtime_assets: Vec<String>,
+    blockers: Vec<String>,
+) -> PreflightDetails {
     PreflightDetails {
-        architecture: report.summary.architecture.clone(),
-        profile: report.summary.profile.clone(),
-        memory_mb: report.summary.memory_mb,
-        cpus: report.summary.cpus,
-        qemu: "Resolved by the launch plan; executable check pending".to_string(),
-        acceleration: "Selected by host preflight; capability detail pending".to_string(),
-        runtime_assets: report.readiness.clone(),
-        blockers: vec![],
+        architecture: summary.architecture.clone(),
+        profile: summary.profile.clone(),
+        memory_mb: summary.memory_mb,
+        cpus: summary.cpus,
+        qemu: "Resolved by runtime preparation; see launch command".to_string(),
+        acceleration: "Selected during host preflight".to_string(),
+        runtime_assets,
+        blockers,
     }
 }
 
@@ -941,6 +1222,61 @@ mod tests {
     }
 
     #[test]
+    fn library_filter_is_case_insensitive_and_hides_remove_for_hidden_selection() {
+        let mut model = model();
+        let mut alpha = installed(Path::new("/library/alpha.glass"));
+        alpha.content_sha256 = "alpha-digest".into();
+        alpha.identifier = "org.example.alpha".into();
+        alpha.name = "Alpha Guest".into();
+        alpha.version = "1.2.3".into();
+        let mut beta = installed(Path::new("/library/beta.glass"));
+        beta.content_sha256 = "beta-digest".into();
+        beta.identifier = "org.example.beta".into();
+        beta.name = "Beta Guest".into();
+        beta.publisher_name = "Beta Publisher".into();
+        model.installed_glasses = vec![alpha.clone(), beta.clone()];
+        model.selected_path = Some(alpha.package_path.clone());
+
+        model.set_library_filter("BETA PUBLISHER".into());
+
+        let visible = model.visible_installed();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].content_sha256, "beta-digest");
+        assert!(model.selected_installed().is_none());
+        assert!(!model.actions().remove);
+
+        model.set_library_filter(String::new());
+        assert_eq!(model.selected_installed(), Some(&alpha));
+        assert!(model.actions().remove);
+    }
+
+    #[test]
+    fn removal_clears_the_selected_release_and_handles_already_removed_entries() {
+        let mut model = model();
+        let selected = installed(Path::new("/library/hello.glass"));
+        model.installed_glasses = vec![selected.clone()];
+        model.selected_path = Some(selected.package_path.clone());
+
+        let (ticket, digest) = model
+            .begin_remove()
+            .expect("selected release can be removed");
+        assert_eq!(digest, selected.content_sha256);
+        assert!(!model.actions().open);
+        assert!(model.finish_remove(&ticket, Ok(Some(selected.clone()))));
+        assert!(model.installed_glasses.is_empty());
+        assert!(model.selected_path.is_none());
+        assert!(matches!(model.state, UiState::Empty));
+
+        model.installed_glasses = vec![selected.clone()];
+        model.selected_path = Some(selected.package_path.clone());
+        let (ticket, _) = model.begin_remove().expect("release can be retried");
+        assert!(model.finish_remove(&ticket, Ok(None)));
+        assert!(model.installed_glasses.is_empty());
+        assert!(model.selected_path.is_none());
+        assert!(matches!(model.state, UiState::Empty));
+    }
+
+    #[test]
     fn action_availability_matches_each_lifecycle_state() {
         let mut model = model();
         let empty = model.actions();
@@ -1021,6 +1357,27 @@ mod tests {
             StartEffect::Applied
         ));
         assert!(matches!(model.state, UiState::Booting(_)));
+    }
+
+    #[test]
+    fn boot_remains_disabled_for_unverified_previews_and_plans() {
+        let path = Path::new("untrusted.glass");
+        let mut untrusted_preview = preview(path);
+        untrusted_preview.signature = SignatureStatus::Untrusted("unknown publisher".into());
+        let model =
+            UiModel::with_service(FakeService::default(), UiState::Ready(untrusted_preview));
+        assert!(!model.actions().boot);
+
+        let mut invalid_plan = preview(path);
+        invalid_plan.signature = SignatureStatus::Tampered("digest mismatch".into());
+        let model = UiModel::with_service(
+            FakeService::default(),
+            UiState::Planned(LaunchPlanDetails {
+                preview: invalid_plan,
+                command: "qemu-system-x86_64".into(),
+            }),
+        );
+        assert!(!model.actions().boot);
     }
 
     #[test]
