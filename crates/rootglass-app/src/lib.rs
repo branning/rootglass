@@ -6,9 +6,6 @@ pub mod state;
 use rootglass_core::storage::{LocalWritableOverlay, WritableOverlaySelection};
 use rootglass_core::{HostCapabilities, LaunchRequest, LifecycleState, RootglassRuntime};
 use rootglass_qemu::{QemuLaunchPlan, QemuProcess, SerialChunk};
-use rootglass_signature::trust_config::{
-    load_trust_store, LoadedTrustStore, TrustConfigError,
-};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
