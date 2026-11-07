@@ -1,6 +1,6 @@
 # TUI architecture and feature parity
 
-**Status:** Planned work in Ergo epic [S16](agent-workflow.md). No Ratatui or libghostty TUI implementation is shipped yet. The existing GPUI shell and `rootglass-app` service remain the observed baseline.
+**Status:** S16.2's headless Ratatui controller and renderer are merged. S16.10 adds the standalone terminal runner and CLI entrypoint; the rest of the S16 parity work and the libghostty host remain open.
 
 ## Product contract
 
@@ -31,6 +31,12 @@ The current `rootglass validate` command only validates the manifest; it does no
 Production TUI startup must follow the desktop's trust configuration behavior: load the local publisher trust config and fall back to `AppService::deny_all()` with a visible blocked state if the config is missing or invalid. Do not use `AppService::new()` in production mode because its default trust store contains the example fixture key. The proposed offline policy is in [ADR-0001](adr/0001-offline-publisher-trust.md); the desktop's config-path resolver is currently private to its UI model, so S16.3 should share or safely reuse that resolution rule instead of introducing a second platform-specific path.
 
 The TUI must preserve signed release immutability and the existing development-only `.img` exception boundary. In particular, production signing/package operations cover generated `.img` assets as signed subjects, and the current signing API reads keys from an external secret file. Never paste, store in TUI state, or render private key bytes. Agent-backed signing requires an explicit library API before it is offered.
+
+## Standalone terminal session
+
+`rootglass tui [bundle-path]` runs the Ratatui session directly, with no GPUI window or installed Ghostty application. It requires interactive stdin and stdout, and also runs over a full-duplex PTY for a future embedded-terminal host. The terminal adapter owns Crossterm raw mode, the alternate screen, input events, resize redraws, and mode restoration. It restores the terminal on normal quit, Ctrl-C, returned errors, and Rust unwinding; an active guest is stopped before the process exits.
+
+The current keys are `o` to enter a bundle path, Up/Down to select an installed bundle, `b` to boot, `s` to stop, `r` to restart, `f` to refresh the library, Enter to type a guest serial line, and `q` or Ctrl-C to exit. Esc cancels a path or serial prompt and exits from the main view. The controller and Ratatui `TestBackend` remain usable without the terminal adapter.
 
 ## GPUI and libghostty contract
 

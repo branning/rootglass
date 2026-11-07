@@ -19,6 +19,13 @@ fn main() -> ExitCode {
 }
 
 fn run(args: Vec<String>) -> Result<(), String> {
+    run_with_tui(args, rootglass_tui::run_terminal)
+}
+
+fn run_with_tui(
+    args: Vec<String>,
+    launch_tui: impl FnOnce(Option<PathBuf>) -> Result<(), String>,
+) -> Result<(), String> {
     let Some(command) = args.first().map(String::as_str) else {
         print_usage();
         return Err("missing command".to_string());
@@ -36,6 +43,12 @@ fn run(args: Vec<String>) -> Result<(), String> {
         "boot" => {
             let glass_root = required_path_arg(&args, "boot")?;
             boot_glass(glass_root)
+        }
+        "tui" => {
+            if args.len() > 2 {
+                return Err("usage: rootglass tui [path-to.glass]".to_string());
+            }
+            launch_tui(args.get(1).map(PathBuf::from))
         }
         "sign" => sign_command(&args),
         "package" => package_command(&args),
@@ -193,6 +206,7 @@ fn print_usage() {
     eprintln!("  rootglass validate <path-to.glass>");
     eprintln!("  rootglass plan <path-to.glass>");
     eprintln!("  rootglass boot <path-to.glass>");
+    eprintln!("  rootglass tui [path-to.glass]");
     eprintln!("  rootglass sign <glass-directory> --key <secret-file> [--created-at <RFC3339>]");
     eprintln!("  rootglass package <glass-directory> <output.glass> --key <secret-file> [--created-at <RFC3339>]");
 }
@@ -200,6 +214,51 @@ fn print_usage() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tui_dispatch_passes_optional_bundle_path_to_the_session() {
+        let mut received = None;
+        run_with_tui(
+            vec!["tui".to_string(), "example.glass".to_string()],
+            |path| {
+                received = path;
+                Ok(())
+            },
+        )
+        .expect("TUI command dispatch succeeds");
+        assert_eq!(received, Some(PathBuf::from("example.glass")));
+    }
+
+    #[test]
+    fn tui_dispatch_accepts_no_bundle_path() {
+        let mut launched = false;
+        run_with_tui(vec!["tui".to_string()], |path| {
+            assert_eq!(path, None);
+            launched = true;
+            Ok(())
+        })
+        .expect("TUI command dispatch succeeds");
+        assert!(launched);
+    }
+
+    #[test]
+    fn tui_dispatch_rejects_multiple_bundle_paths_before_launch() {
+        let mut launched = false;
+        let error = run_with_tui(
+            vec![
+                "tui".to_string(),
+                "one.glass".to_string(),
+                "two.glass".to_string(),
+            ],
+            |_| {
+                launched = true;
+                Ok(())
+            },
+        )
+        .expect_err("the TUI accepts at most one bundle path");
+        assert!(error.contains("usage: rootglass tui [path-to.glass]"));
+        assert!(!launched);
+    }
 
     #[test]
     fn validate_accepts_sample_manifest() {

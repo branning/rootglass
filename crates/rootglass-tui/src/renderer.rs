@@ -23,13 +23,29 @@ const ERROR_STYLE: Style = Style::new().fg(Color::Red);
 /// GPUI, filesystem, or process side effects and can be exercised with
 /// [`ratatui::backend::TestBackend`].
 pub fn render(frame: &mut Frame<'_>, model: &UiModel) {
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
+    render_with_prompt(frame, model, None);
+}
+
+/// Draws the shared model and an optional keyboard-input prompt. The prompt is
+/// used by the terminal runner and keeps input-mode details out of the model.
+pub fn render_with_prompt(frame: &mut Frame<'_>, model: &UiModel, prompt: Option<&str>) {
+    let constraints = if prompt.is_some() {
+        vec![
             Constraint::Length(3),
             Constraint::Min(0),
             Constraint::Length(3),
-        ])
+            Constraint::Length(4),
+        ]
+    } else {
+        vec![
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(4),
+        ]
+    };
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
         .split(frame.area());
 
     frame.render_widget(
@@ -38,6 +54,16 @@ pub fn render(frame: &mut Frame<'_>, model: &UiModel) {
             .block(Block::default().borders(Borders::ALL)),
         sections[0],
     );
+
+    let actions_area = if let Some(prompt) = prompt {
+        frame.render_widget(
+            Paragraph::new(prompt).block(Block::default().borders(Borders::ALL).title("Input")),
+            sections[2],
+        );
+        sections[3]
+    } else {
+        sections[2]
+    };
 
     let columns = Layout::default()
         .direction(Direction::Horizontal)
@@ -52,7 +78,7 @@ pub fn render(frame: &mut Frame<'_>, model: &UiModel) {
         .split(columns[1]);
     render_details(frame, &model.state, details[0]);
     render_console(frame, &model.console, details[1]);
-    render_actions(frame, model.actions(), sections[2]);
+    render_actions(frame, model.actions(), actions_area);
 }
 
 fn render_library(frame: &mut Frame<'_>, model: &UiModel, area: Rect) {
@@ -260,13 +286,27 @@ fn render_console(frame: &mut Frame<'_>, console: &str, area: Rect) {
 }
 
 fn render_actions(frame: &mut Frame<'_>, actions: UiActions, area: Rect) {
-    let spans = [
-        action("Open [o]", actions.open),
-        action("Boot [b]", actions.boot),
-        action("Stop [s]", actions.stop),
-        action("Restart [r]", actions.restart),
-        action("Console input [Enter]", actions.console_input),
+    let lines = vec![
+        action_line([
+            action("[o] Open", actions.open),
+            action("[b] Boot", actions.boot),
+            action("[s] Stop", actions.stop),
+            action("[r] Restart", actions.restart),
+            action("[Enter] Console", actions.console_input),
+        ]),
+        action_line([
+            action("↑/↓ Select", true),
+            action("[f] Refresh", true),
+            action("[q] Quit", true),
+        ]),
     ];
+    frame.render_widget(
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title("Actions")),
+        area,
+    );
+}
+
+fn action_line<const N: usize>(spans: [Span<'static>; N]) -> Line<'static> {
     let mut line = Vec::with_capacity(spans.len() * 2 - 1);
     for (index, span) in spans.into_iter().enumerate() {
         if index > 0 {
@@ -274,11 +314,7 @@ fn render_actions(frame: &mut Frame<'_>, actions: UiActions, area: Rect) {
         }
         line.push(span);
     }
-    frame.render_widget(
-        Paragraph::new(Line::from(line))
-            .block(Block::default().borders(Borders::ALL).title("Actions")),
-        area,
-    );
+    Line::from(line)
 }
 
 fn action(label: &'static str, enabled: bool) -> Span<'static> {
@@ -467,9 +503,34 @@ mod tests {
 
         let output = snapshot(&model);
         assert!(output.contains("▶ Hello World 0.1.0"));
-        assert!(output.contains("Open [o]"));
-        assert!(output.contains("Boot [b]"));
-        assert!(output.contains("Console input [Enter]"));
+        assert!(output.contains("[o] Open"));
+        assert!(output.contains("[b] Boot"));
+        assert!(output.contains("[Enter] Console"));
+        assert!(output.contains("[q] Quit"));
+        assert!(output.contains("[f] Refresh"));
+    }
+
+    #[test]
+    fn terminal_input_prompt_is_rendered_by_the_shared_renderer() {
+        let model = model(UiState::Empty);
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).expect("test terminal is created");
+        terminal
+            .draw(|frame| {
+                render_with_prompt(frame, &model, Some("Bundle path: /tmp/example.glass"))
+            })
+            .expect("prompt renders to TestBackend");
+        let buffer = terminal.backend().buffer();
+        let output = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(output.contains("Bundle path: /tmp/example.glass"));
     }
 
     #[test]
@@ -480,8 +541,8 @@ mod tests {
 
         let output = snapshot(&model);
         assert!(output.contains("rootglass-hello login:"));
-        assert!(output.contains("Stop [s]"));
-        assert!(output.contains("Restart [r]"));
+        assert!(output.contains("[s] Stop"));
+        assert!(output.contains("[r] Restart"));
         assert!(!model.actions().boot);
     }
 }
