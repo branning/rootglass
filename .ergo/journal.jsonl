@@ -89,3 +89,6 @@
 {"version":1,"task_id":"UJJ6VB","kind":"created","at":"2026-11-07T10:32:49.07251148Z"}
 {"version":1,"task_id":"UJJ6VB","kind":"open","at":"2026-11-07T10:33:11.870583044Z"}
 {"version":1,"task_id":"MJPX6T","kind":"result","at":"2026-11-07T10:35:57.148777034Z","agent":"codex@worker-1","text":"Refined S16 graph in PR #51; Ergo JSON and diff checks pass. Next: review/merge."}
+{"version":1,"task_id":"MJPX6T","kind":"done","at":"2026-11-07T16:01:07.663522939Z","agent":"codex@worker-1","text":"Merged PR #51; format, clippy, tests, desktop compile, CLI smoke, and x64/arm64 boot checks passed."}
+{"version":1,"task_id":"Q3HT7R","kind":"claim","at":"2026-11-07T16:01:07.677349718Z","agent":"codex@worker-1"}
+{"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-07T16:34:12.754722722Z","agent":"codex@worker-1","text":"Linux x86_64 PTY smoke, format, test and clippy pass; GPUI host smoke/platform decision pending.","file":{"path":"prototypes/libghostty-vt-ratatui/README.md","sha256":"928fd28ddc93a8b5989e99ca33e7d62d68e80dd71538c2a40ad1041376f658b9","mtime":"2026-11-07T16:32:28.075473609Z","git_commit":"8560e0ab2f068ea996f9f9ddfcbbe0559fbe804e"}}
