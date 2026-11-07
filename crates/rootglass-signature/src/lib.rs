@@ -467,9 +467,9 @@ fn preflight_zip_entry_count<R: Read + Seek>(
     }
     let tail_len = file_len.min((EOCD_MIN_BYTES + u16::MAX as usize) as u64) as usize;
     if tail_len < EOCD_MIN_BYTES {
-        return Err(SignatureError::Zip(zip::result::ZipError::InvalidArchive(
+        return Err(invalid_zip_archive(
             "archive is too short to contain an end record",
-        )));
+        ));
     }
     let mut tail = vec![0; tail_len];
     reader
@@ -486,9 +486,7 @@ fn preflight_zip_entry_count<R: Read + Seek>(
                     )
                 }) == Some(tail.len())
         })
-        .ok_or(SignatureError::Zip(zip::result::ZipError::InvalidArchive(
-            "missing ZIP end record",
-        )))?;
+        .ok_or_else(|| invalid_zip_archive("missing ZIP end record"))?;
     let entries = u16::from_le_bytes([tail[eocd_offset + 10], tail[eocd_offset + 11]]);
     let eocd_absolute = file_len - tail_len as u64 + eocd_offset as u64;
     let zip64_locator = eocd_absolute.checked_sub(20).and_then(|locator_absolute| {
@@ -505,17 +503,13 @@ fn preflight_zip_entry_count<R: Read + Seek>(
             .map_err(zip_io_error)?;
         reader.read_exact(&mut zip64).map_err(zip_io_error)?;
         if &zip64[..4] != ZIP64_EOCD_SIGNATURE {
-            return Err(SignatureError::Zip(zip::result::ZipError::InvalidArchive(
-                "missing ZIP64 end record",
-            )));
+            return Err(invalid_zip_archive("missing ZIP64 end record"));
         }
         u64::from_le_bytes(zip64[32..40].try_into().unwrap())
     } else if entries != u16::MAX {
         u64::from(entries)
     } else {
-        return Err(SignatureError::Zip(zip::result::ZipError::InvalidArchive(
-            "missing ZIP64 locator",
-        )));
+        return Err(invalid_zip_archive("missing ZIP64 locator"));
     };
     if count > limits.max_entries as u64 {
         return Err(SignatureError::TooManyArchiveEntries {
@@ -528,6 +522,13 @@ fn preflight_zip_entry_count<R: Read + Seek>(
 
 fn zip_io_error(error: std::io::Error) -> SignatureError {
     SignatureError::Zip(zip::result::ZipError::Io(error))
+}
+
+fn invalid_zip_archive(message: &'static str) -> SignatureError {
+    zip_io_error(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        message,
+    ))
 }
 
 pub fn verify_envelope(
