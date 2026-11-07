@@ -28,7 +28,13 @@ STATE_FILE = "/state/rootglass-persistence.txt"
 
 
 class SmokeFailure(RuntimeError):
-    pass
+    def __init__(self, message: str, serial_log: bytes = b"") -> None:
+        super().__init__(message)
+        self.serial_log = serial_log
+
+
+def serial_tail(log: bytearray, limit: int = 8192) -> str:
+    return log[-limit:].decode("utf-8", errors="replace").strip()
 
 
 def cli_command(*args: str) -> list[str]:
@@ -69,7 +75,7 @@ def wait_for(fd: int, child: int, pattern: bytes, timeout: int, log: bytearray) 
                 available = MAX_LOG_BYTES - len(log)
                 if available > 0:
                     log.extend(data[:available])
-            detail = log.decode("utf-8", errors="replace").strip()
+            detail = serial_tail(log)
             suffix = f": {detail}" if detail else ""
             raise SmokeFailure(f"boot process exited early with status {os.waitstatus_to_exitcode(status)}{suffix}")
         ready, _, _ = select.select([fd], [], [], min(0.25, deadline - time.monotonic()))
@@ -87,7 +93,7 @@ def wait_for(fd: int, child: int, pattern: bytes, timeout: int, log: bytearray) 
             available = MAX_LOG_BYTES - len(log)
             if available > 0:
                 log.extend(data[:available])
-    detail = log.decode("utf-8", errors="replace").strip()
+    detail = serial_tail(log)
     suffix = f": {detail}" if detail else ""
     raise SmokeFailure(
         f"timed out waiting for {pattern.decode('ascii', errors='replace')}{suffix}"
@@ -110,6 +116,16 @@ def drain_until_exit(fd: int, child: int, timeout: int, log: bytearray) -> int:
             if available > 0:
                 log.extend(data[:available])
     raise SmokeFailure(f"QEMU did not exit within {timeout}s after guest shutdown")
+
+
+def ensure_process_group_exited(child: int) -> None:
+    try:
+        os.killpg(child, 0)
+    except ProcessLookupError:
+        return
+    except PermissionError as error:
+        raise SmokeFailure(f"could not check for leftover QEMU children: {error}") from error
+    raise SmokeFailure("the QEMU process group remained after the boot command exited")
 
 
 def terminate_group(child: int) -> None:
@@ -172,12 +188,13 @@ def run_state_session(nonce: str, write_state: bool) -> bytearray:
         exit_code = drain_until_exit(fd, child, STOP_TIMEOUT, log)
         if exit_code != 0:
             raise SmokeFailure(f"boot command exited with status {exit_code} after guest shutdown")
+        ensure_process_group_exited(child)
         return log
     except Exception as error:
         terminate_group(child)
-        detail = log.decode("utf-8", errors="replace").strip()
-        suffix = f"\nserial output:\n{detail}" if detail else ""
-        raise SmokeFailure(f"{error}{suffix}") from error
+        detail = serial_tail(log)
+        suffix = f"\nserial output (last {min(len(log), 8192)} bytes):\n{detail}" if detail else ""
+        raise SmokeFailure(f"{error}{suffix}", serial_log=bytes(log)) from error
     finally:
         os.close(fd)
 
@@ -227,6 +244,8 @@ def main() -> int:
                 raise SmokeFailure("the signed state template changed during guest boot")
     except Exception as error:
         failure = error
+        if isinstance(error, SmokeFailure):
+            log.extend(error.serial_log[: MAX_LOG_BYTES - len(log)])
     finally:
         LOG.write_bytes(log)
 

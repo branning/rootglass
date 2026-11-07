@@ -617,21 +617,34 @@ impl AppService {
     }
 
     fn require_active(&mut self, run: &RunId) -> Result<&mut ActiveRun, AppError> {
-        let Some(active) = self.active.as_mut() else {
-            return Err(AppError {
-                phase: LifecycleState::Stopped,
-                summary: "There is no active glass.".to_string(),
-                detail: "Start a glass before requesting run control.".to_string(),
-            });
-        };
-        if &active.id != run {
-            return Err(AppError {
-                phase: active.state,
-                summary: "The run identifier is stale.".to_string(),
-                detail: "Use the RunId returned by the most recent start.".to_string(),
-            });
+        if let Some(error) = active_run_error(
+            self.active
+                .as_ref()
+                .map(|active| (&active.id, active.state)),
+            run,
+        ) {
+            return Err(error);
         }
-        Ok(active)
+        Ok(self.active.as_mut().expect("active run was validated"))
+    }
+}
+
+fn active_run_error(
+    active: Option<(&RunId, LifecycleState)>,
+    requested: &RunId,
+) -> Option<AppError> {
+    match active {
+        None => Some(AppError {
+            phase: LifecycleState::Stopped,
+            summary: "There is no active glass.".to_string(),
+            detail: "Start a glass before requesting run control.".to_string(),
+        }),
+        Some((active_id, state)) if active_id != requested => Some(AppError {
+            phase: state,
+            summary: "The run identifier is stale.".to_string(),
+            detail: "Use the RunId returned by the most recent start.".to_string(),
+        }),
+        Some(_) => None,
     }
 }
 
@@ -776,6 +789,8 @@ fn scan_diagnostics(previous_tail: &[u8], bytes: &[u8]) -> DiagnosticScan {
     let failure = scan.split(|byte| *byte == b'\n').find_map(|line| {
         if contains(line, b"kernel panic") {
             Some("Kernel panic detected in the guest console.".to_string())
+        } else if contains(line, b"mount: mounting rootglass-state on /state failed") {
+            Some("The guest could not mount persistent state at /state.".to_string())
         } else if contains(line, b"mounting root: failed")
             || contains(line, b"failed to mount root")
             || (contains(line, b"mount: mounting ") && contains(line, b" failed"))
@@ -798,6 +813,57 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack
         .windows(needle.len())
         .any(|window| window == needle)
+}
+
+#[cfg(test)]
+mod diagnostics_tests {
+    use super::*;
+
+    #[test]
+    fn guest_panic_emergency_and_mount_errors_are_actionable_across_chunks() {
+        let prefix = scan_diagnostics(&[], b"Kernel pa");
+        let panic = scan_diagnostics(&prefix.tail, b"nic - not syncing: fatal exception\n");
+        assert_eq!(
+            panic.failure.as_deref(),
+            Some("Kernel panic detected in the guest console.")
+        );
+
+        let emergency = scan_diagnostics(&[], b"Entering initramfs emergency recovery shell\n");
+        assert_eq!(
+            emergency.failure.as_deref(),
+            Some("The guest entered its initramfs emergency shell.")
+        );
+
+        let root_mount = scan_diagnostics(&[], b"Mounting root: failed to mount root\n");
+        assert_eq!(
+            root_mount.failure.as_deref(),
+            Some("The guest could not mount its root filesystem.")
+        );
+
+        let state_mount =
+            scan_diagnostics(&[], b"mount: mounting rootglass-state on /state failed\n");
+        assert_eq!(
+            state_mount.failure.as_deref(),
+            Some("The guest could not mount persistent state at /state.")
+        );
+    }
+
+    #[test]
+    fn diagnostic_tail_is_bounded() {
+        let output = vec![b'x'; ERROR_SCAN_TAIL_BYTES * 4];
+        let scan = scan_diagnostics(&[], &output);
+        assert_eq!(scan.tail.len(), ERROR_SCAN_TAIL_BYTES);
+    }
+
+    #[test]
+    fn stale_run_ids_are_rejected_before_guest_io() {
+        let active = RunId(2);
+        let error = active_run_error(Some((&active, LifecycleState::Running)), &RunId(1))
+            .expect("a stale run id must fail");
+        assert_eq!(error.summary, "The run identifier is stale.");
+        assert_eq!(error.phase, LifecycleState::Running);
+        assert!(active_run_error(Some((&active, LifecycleState::Running)), &active).is_none());
+    }
 }
 
 #[cfg(test)]
