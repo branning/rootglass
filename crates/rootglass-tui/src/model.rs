@@ -1,3 +1,4 @@
+use crate::{DeveloperAction, DeveloperPanel, DeveloperResult};
 use rootglass_app::registry::InstalledGlass;
 use rootglass_app::{
     AppError, AppService, ManifestValidationReport, PreflightReport, RunId, RunOptions,
@@ -125,6 +126,7 @@ pub struct UiActions {
     pub console_pause: bool,
     pub console_clear: bool,
     pub console_copy: bool,
+    pub developer: bool,
 }
 
 #[derive(Clone)]
@@ -316,6 +318,7 @@ pub struct UiModel {
     pub console_scroll_offset: usize,
     pub console_truncated: bool,
     pub console_notice: Option<String>,
+    pub developer_panel: DeveloperPanel,
     service: SharedService,
     next_generation: u64,
     active_operation: Option<OperationTicket>,
@@ -339,6 +342,7 @@ impl UiModel {
             console_scroll_offset: 0,
             console_truncated: false,
             console_notice: None,
+            developer_panel: DeveloperPanel::Closed,
             service: Arc::new(Mutex::new(Box::new(service))),
             next_generation: 0,
             active_operation: None,
@@ -399,7 +403,39 @@ impl UiModel {
             console_pause: has_console,
             console_clear: !self.console.is_empty(),
             console_copy: !self.visible_console().is_empty(),
+            developer: !busy && !has_run,
         }
+    }
+
+    pub fn open_developer(&mut self) {
+        if self.actions().developer {
+            self.developer_panel = DeveloperPanel::Menu;
+        }
+    }
+
+    pub fn close_developer(&mut self) {
+        if !matches!(&self.developer_panel, DeveloperPanel::Working(_)) {
+            self.developer_panel = DeveloperPanel::Closed;
+        }
+    }
+
+    pub fn begin_developer(&mut self, action: DeveloperAction) {
+        self.developer_panel = DeveloperPanel::Working(action);
+    }
+
+    pub fn finish_developer(&mut self, result: Result<DeveloperResult, String>) {
+        let action = match &self.developer_panel {
+            DeveloperPanel::Working(action) => *action,
+            _ => return,
+        };
+        self.developer_panel = match result {
+            Ok(result) => DeveloperPanel::Complete(result),
+            Err(detail) => DeveloperPanel::Failed { action, detail },
+        };
+    }
+
+    pub fn developer_is_open(&self) -> bool {
+        !matches!(&self.developer_panel, DeveloperPanel::Closed)
     }
 
     pub fn visible_console(&self) -> &str {

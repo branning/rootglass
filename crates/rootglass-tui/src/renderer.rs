@@ -1,8 +1,9 @@
 //! Ratatui rendering for the shared Rootglass UI model.
 
 use crate::{
-    BlockedDetails, FailureDetails, GlassPreview, ImportedDetails, LaunchPlanDetails,
-    PreflightDetails, RemovalDetails, RunDetails, SignatureStatus, UiModel, UiState,
+    BlockedDetails, DeveloperPanel, FailureDetails, GlassPreview, ImportedDetails,
+    LaunchPlanDetails, PreflightDetails, RemovalDetails, RunDetails, SignatureStatus, UiModel,
+    UiState,
 };
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -35,13 +36,13 @@ pub fn render_with_prompt(frame: &mut Frame<'_>, model: &UiModel, prompt: Option
             Constraint::Length(3),
             Constraint::Min(0),
             Constraint::Length(3),
-            Constraint::Length(6),
+            Constraint::Length(7),
         ]
     } else {
         vec![
             Constraint::Length(3),
             Constraint::Min(0),
-            Constraint::Length(6),
+            Constraint::Length(7),
         ]
     };
     let sections = Layout::default()
@@ -73,7 +74,9 @@ pub fn render_with_prompt(frame: &mut Frame<'_>, model: &UiModel, prompt: Option
 
     render_library(frame, model, columns[0]);
 
-    if model.run_id.is_some() || !model.console.is_empty() {
+    if model.developer_is_open() {
+        render_developer_panel(frame, &model.developer_panel, columns[1]);
+    } else if model.run_id.is_some() || !model.console.is_empty() {
         let details = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(5), Constraint::Percentage(42)])
@@ -143,6 +146,56 @@ fn render_library(frame: &mut Frame<'_>, model: &UiModel, area: Rect) {
 
 fn render_details(frame: &mut Frame<'_>, state: &UiState, area: Rect) {
     let (title, lines) = state_details(state);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(Block::default().borders(Borders::ALL).title(title))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn render_developer_panel(frame: &mut Frame<'_>, panel: &DeveloperPanel, area: Rect) {
+    let (title, lines) = match panel {
+        DeveloperPanel::Closed => ("Developer", Vec::new()),
+        DeveloperPanel::Menu => (
+            "Developer signing and packaging",
+            vec![
+                Line::from("[s] Sign a .glass directory with the Rootglass signature API."),
+                Line::from("[p] Build a canonical production .glass ZIP package."),
+                Line::from("Signing keys are read from an external secret file."),
+                Line::from("Private key bytes are never requested, retained, or displayed."),
+                Line::from("No native file picker is available in the standalone headless TUI."),
+            ],
+        ),
+        DeveloperPanel::Working(action) => (
+            "Developer workflow",
+            vec![
+                field("Action", action.label()),
+                Line::from("Working in the background…"),
+                Line::from("Private key material stays in the signing worker."),
+            ],
+        ),
+        DeveloperPanel::Complete(result) => (
+            "Developer workflow complete",
+            vec![
+                field("Action", result.action.label()),
+                field("Publisher", &result.publisher_name),
+                field("Publisher identity", &result.publisher_identity),
+                field("Key ID", &result.key_id),
+                field("Signed subjects", result.subject_count),
+                field("Output", result.output_path.display()),
+                field("Verification", &result.verification),
+            ],
+        ),
+        DeveloperPanel::Failed { action, detail } => (
+            "Developer workflow failed",
+            vec![
+                field("Action", action.label()),
+                Line::from(Span::styled(detail.clone(), ERROR_STYLE)),
+                Line::from("Private key bytes are not included in this error."),
+            ],
+        ),
+    };
     frame.render_widget(
         Paragraph::new(lines)
             .block(Block::default().borders(Borders::ALL).title(title))
@@ -483,14 +536,17 @@ fn render_actions(frame: &mut Frame<'_>, model: &UiModel, area: Rect) {
             action("↑/↓ Select", actions.open),
         ]),
         action_line([
+            action("[D] Developer sign/package", actions.developer),
             action("[P] Pause/resume", actions.console_pause),
             action("[c] Clear", actions.console_clear),
             action("[y] Copy", actions.console_copy),
-            action("[PgUp/PgDn] Scroll", actions.console_pause),
         ]),
         action_line([
+            action("[PgUp/PgDn] Scroll", actions.console_pause),
             action("[Enter] Guest input", actions.console_input),
             action("[Esc] Controls", true),
+        ]),
+        action_line([
             action("[q/Ctrl-Q] Quit", true),
             action("[Ctrl-C] Interrupt guest", actions.console_input),
         ]),
@@ -533,6 +589,7 @@ fn field(label: &str, value: impl Display) -> Line<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DeveloperAction;
     use crate::{ImportCompletion, InspectionOutcome, TuiService};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -757,6 +814,27 @@ mod tests {
         assert!(output.contains("[Enter] Guest input"));
         assert!(output.contains("[q/Ctrl-Q] Quit"));
         assert!(output.contains("[f] Refresh"));
+        assert!(output.contains("[D] Developer sign/package"));
+    }
+
+    #[test]
+    fn developer_panel_reports_public_metadata_and_runtime_verification() {
+        let mut model = model(UiState::Empty);
+        model.developer_panel = DeveloperPanel::Complete(crate::DeveloperResult {
+            action: DeveloperAction::PackageArchive,
+            publisher_name: "Example Publisher".into(),
+            publisher_identity: "publisher.example".into(),
+            key_id: "ed25519:public-key-id".into(),
+            subject_count: 5,
+            output_path: PathBuf::from("/tmp/example.glass"),
+            verification: "Passed with the Rootglass archive verifier".into(),
+        });
+
+        let output = snapshot(&model);
+        assert!(output.contains("Developer workflow complete"));
+        assert!(output.contains("Example Publisher"));
+        assert!(output.contains("Signed subjects: 5"));
+        assert!(output.contains("Passed with the Rootglass archive verifier"));
     }
 
     #[test]
