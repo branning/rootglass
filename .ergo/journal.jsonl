@@ -138,3 +138,4 @@
 {"version":1,"task_id":"XHJH2U","kind":"done","at":"2026-11-07T20:52:29.864277212Z","agent":"codex@rootglass","text":"PR #44 merged; rerun 42351959183 passed all 7 jobs."}
 {"version":1,"task_id":"LQAYNN","kind":"result","at":"2026-11-07T21:19:40.523596794Z","agent":"codex@worker-1","text":"PR #66 merged at 3ae9827; CI 42414875065 passed all 7 jobs; 89 focused tests passed."}
 {"version":1,"task_id":"LQAYNN","kind":"done","at":"2026-11-07T21:19:40.529912664Z","agent":"codex@worker-1","text":"PR #66 merged at 3ae9827; CI 42414875065 passed all 7 jobs; 89 focused tests passed."}
+{"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-07T21:28:22.857633681Z","agent":"codex@worker-1","text":"PR #55 merged at 03c6df3; CI 42395510620 passed 7/7; Linux PTY smoke passes; GPUI/platform approval pending."}
