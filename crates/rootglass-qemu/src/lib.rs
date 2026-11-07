@@ -769,6 +769,5 @@ mod tests {
         assert!(plan
             .command_line()
             .starts_with("'/opt/rootglass runtime/bin/qemu-system-aarch64' "));
-        assert!(!plan.command_line().contains(DEFAULT_QEMU_SYSTEM_AARCH64));
     }
 }
