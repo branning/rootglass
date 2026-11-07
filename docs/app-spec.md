@@ -163,16 +163,34 @@ Single primary window, native appearance, keyboard-accessible controls, and sens
 - Keyboard: Open (`Cmd/Ctrl+O`), Stop (`Cmd/Ctrl+.`), switch focus between console/input, accessible focus rings, correct screen-reader labels. No blanket global keystroke capture that steals guest input from native shortcuts.
 - Prefer system-native window/dialog behavior. Do not reimplement custom frameless chrome before the basic app works.
 
+### 5.4 Planned headless TUI and GPUI terminal surface
+
+S16 adds a standalone Ratatui interface available as `rootglass tui`. It is a second frontend over the existing Rootglass service, not a new verification or lifecycle implementation. It must be testable without a display by rendering the same controller through Ratatui's `TestBackend` and a deterministic service fake.
+
+The TUI covers the existing `validate`, `plan`, `boot`, `sign`, and `package` workflows, plus bundle open/import, installed-release management, trust/preflight diagnostics, named state once S12.2 exposes the safe service contract, and interactive guest serial input/output. The current signing API accepts an external secret-file path; agent integration can be added only through a compatible library API. The TUI never accepts pasted key bytes or displays key material. See [tui-architecture.md](tui-architecture.md) for the current service coverage and gaps.
+
+The GPUI Kit `=0.9.0` shell hosts the same TUI session in an embedded terminal backed by libghostty. The TUI session and terminal host share a full-duplex terminal interface; the TUI calls `rootglass-app` for domain actions and the guest serial console, while the GPUI/libghostty surface owns terminal rendering, keyboard input, clipboard and resize. S16.6 must pin the upstream API/ABI and prove packaging/platform support before S16.7 ships. Upstream currently labels its full embedding API internal to the macOS app and directs external embedders to `libghostty-vt`; no cross-platform support is claimed by this spec until the prototype and maintainer review are complete.
+
 ## 6. Architecture and precise module boundaries
 
 ### 6.1 Dependency direction (avoid cycles)
 
-Current `rootglass-qemu` depends on `rootglass-core::LaunchRequest`. Therefore **do not put code in rootglass-core that imports rootglass-qemu**: that creates a Rust dependency cycle. Add a small application-service/integration crate:
+Current `rootglass-qemu` depends on `rootglass-core::LaunchRequest`. Therefore **do not put code in rootglass-core that imports rootglass-qemu**: that creates a Rust dependency cycle. Keep application orchestration in the existing `rootglass-app` integration crate:
 
 ```text
-rootglass-desktop (GPUI Kit binary) ──┐
-                                     ├──> rootglass-app (application service / supervisor)
-rootglass-cli (CLI binary) ──────────┘          │
+Current frontends:
+  rootglass-desktop ─────────────────────────> rootglass-app
+  rootglass-cli: validate ───────────────────> rootglass-manifest
+  rootglass-cli: plan/boot ──────────────────> rootglass-app
+  rootglass-cli: sign/package ───────────────> rootglass-signature
+
+Planned terminal frontends:
+  rootglass-cli: `tui` ──────────────────────> rootglass-tui
+  GPUI libghostty host <── terminal session ──> same TUI session
+                                                   │
+                                                   v
+rootglass-app (application service / supervisor)
+                                               │
                                                ├──> rootglass-core (validation, plan, types)
                                                ├──> rootglass-qemu (QEMU adapter → core types)
                                                ├──> rootglass-signature (DSSE, trust)
@@ -186,12 +204,13 @@ The `rootglass-app` crate owns installed-glass records, import transactions, run
 ```text
 crates/
   rootglass-manifest/            # existing; schema
-  rootglass-signature/           # existing; verify + planned signing primitives
+  rootglass-signature/           # existing; verification, trust, signing and package primitives
   rootglass-core/                # existing; preflight, launch request, profiles, storage model
-  rootglass-qemu/                # existing; QEMU adapter, add supervised process + QMP
-  rootglass-app/                 # NEW: app service + import, registry, lifecycle, state
+  rootglass-qemu/                # existing; QEMU adapter and supervised process I/O
+  rootglass-app/                 # existing; app service + import, registry, lifecycle, state
   rootglass-cli/                 # existing; preserve CLI, delegate to app service
-  rootglass-desktop/             # NEW: GPUI Kit binary and views
+  rootglass-desktop/             # existing; GPUI Kit binary and views
+  rootglass-tui/                 # PLANNED: Ratatui TUI session and TestBackend tests
 scripts/
   materialize-example-assets.sh  # existing, harden
   smoke-boot-example.sh          # existing, replace prompt-only criterion
@@ -429,9 +448,10 @@ For remaining implementation, assign one owner per Ergo task with explicit paths
 | S10 | R2 | QEMU bundled/discovered resolver and versioned runtime assets. Own QEMU resolver + asset resolver; issue #20. | S03 | A-03, A-09 | Merged implementation; installed package runtime inventory remains open |
 | S11 | R2 | Cross-platform desktop build/installer/file-association/signing workflows and notices. Own release workflow and packaging config. | S08 + S10 | A-09, A-10 | Merged package builds; clean install, signing, and provenance remain open |
 | S12 | R2 | Integration and QA: production ZIP on each OS, threat tests, docs, support UX and release gate. Own CI matrices and final docs. | S05–S11 | A-01–A-10 | Open as acceptance/qualification work; see S13–S15 |
-| S13 | R1 | GPUI qualification: UI-model tests, GUI smoke for open/verify/Boot/Stop/console, render-thread responsiveness, cancellation and stale-event checks. Own desktop tests and desktop CI. | S08 + S09 | A-07, A-08 | Next |
+| S13 | R1 | GPUI qualification: UI-model tests, GUI smoke for open/verify/Boot/Stop/console, render-thread responsiveness, cancellation and stale-event checks. Own desktop tests and desktop CI. | S08 + S09 | A-07, A-08 | S13.1 merged; S13.2 GUI smoke remains open |
 | S14 | R2 | Clean-host install: resolve/package QEMU and versioned assets; install each platform package without developer tools; open via app and OS association; boot and stop. Own runtime inventory and install-test workflows. | S10 + S11 + S13 | A-03, A-09 | After S13; platform evidence required |
 | S15 | R2 | Release integrity: app/installer signing, macOS notarization, SBOM/notices, hashes, provenance, and final offline production-archive walkthrough. Own release workflow and evidence docs. | S14 | A-02, A-06, A-10 | Release gate |
+| S16 | R1/R2 | Headless Ratatui TUI for all current Rootglass commands and app workflows, with the same TUI hosted in GPUI through a libghostty terminal session. Own `rootglass-tui`, CLI adapter, parity docs and desktop terminal host. | S04, S08–S09; S12.1/S12.2/S12.4 for gated workflows; S13.2 for GUI acceptance | Applicable F-01–F-26; A-02/A-05/A-07/A-08 | Planned; upstream libghostty API/platform fit remains unproven |
 
 
 **Shared-file ownership:** One integration agent owns repository-root `Cargo.toml`, `Cargo.lock` and generic CI workflows. Workers needing dependency edits provide the exact proposed diff in their PR and coordinate merge order. No agents concurrently update the same file on `main`.
@@ -469,6 +489,7 @@ Use the defaults below for remaining implementation unless an ADR changes them.
 | Decision | v1 default | Required evidence / owner |
 |---|---|---|
 | GPUI framework | GPUI Kit exactly 0.9.0 / default backend | Tagged examples build; S08 |
+| Embedded terminal | Use libghostty; prove the external API/ABI and platform package before shipping | S16.6 prototype and maintainer platform review; see [tui-architecture.md](tui-architecture.md) |
 | Guest UI | Serial console first; no embedded web UI | S09; web-forward after v1 |
 | Execution | One world at a time per desktop process | S04; multiworld after v1 |
 | Bundle contents | One read-only rootfs, optional state template; canonical ZIP | S01/S05 |

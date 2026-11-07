@@ -114,6 +114,7 @@ No open acceptance gate was closed by importing it.
 | S13 | UI models, asynchronous behavior and real GUI smoke (A-07/A-08) |
 | S14 | Offline runtime inventory and separate Linux/macOS/Windows clean installs (A-03/A-09), after S13 |
 | S15 | Signed release inventory/provenance and final offline artifact journey (A-02/A-06/A-10), after S14 |
+| S16 | Headless Ratatui frontend, Rootglass workflow parity and a libghostty-hosted GPUI terminal surface |
 | R3 | Draft product/design decisions; excluded from v1 gates |
 
 S12's final review depends on S15; S15 depends only on the specific independent
