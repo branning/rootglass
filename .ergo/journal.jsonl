@@ -94,3 +94,8 @@
 {"version":1,"task_id":"6623ZQ","kind":"result","at":"2026-11-07T09:46:19.131226132Z","agent":"codex@worker-1","text":"Limit: persistent guest writes use /state; OverlayFS remains unimplemented."}
 {"version":1,"task_id":"6623ZQ","kind":"result","at":"2026-11-07T09:50:36.070418514Z","agent":"codex@worker-1","text":"PR #50 is stacked on S16.1 PR #49; awaiting maintainer review and merge."}
 {"version":1,"task_id":"6623ZQ","kind":"block","at":"2026-11-07T10:09:16.985163797Z","agent":"codex@worker-1","text":"PR #50 is open and mergeable; maintainer review and merge are required before completion. Revisit after review."}
+{"version":1,"task_id":"WS57HI","kind":"claim","at":"2026-11-07T10:09:43.634268878Z","agent":"codex@worker-1"}
+{"version":1,"task_id":"WS57HI","kind":"result","at":"2026-11-07T10:37:35.278816251Z","agent":"codex@worker-1","text":"Checks pass: fmt, cargo test --locked --workspace --all-targets, clippy, Python AST, shell syntax."}
+{"version":1,"task_id":"WS57HI","kind":"result","at":"2026-11-07T10:37:35.285478031Z","agent":"codex@worker-1","text":"A-04: Ubuntu 24.04 x86_64 TCG login, /state reboot persistence, shutdown and child reaping passed."}
+{"version":1,"task_id":"WS57HI","kind":"result","at":"2026-11-07T10:37:35.291801436Z","agent":"codex@worker-1","text":"Desktop: local check lacks fontconfig; CI desktop and arm64 TCG results pending."}
+{"version":1,"task_id":"WS57HI","kind":"result","at":"2026-11-07T10:37:35.297899869Z","agent":"codex@worker-1","text":"CI uploads the bounded boot transcript on failure, with no telemetry and 7-day retention."}

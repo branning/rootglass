@@ -119,6 +119,8 @@ rootfs and bundled state template before and after to prove they stayed
 unchanged. The raw console transcript is saved to
 `.rootglass/build/hello-world-boot.log`. This disposable credential is only
 for the offline example fixture and must not be shipped in a production glass.
+The CI x64/arm64 boot matrix uploads this transcript on failure for maintainer
+diagnosis; it does not send guest output to a telemetry service.
 
 When changing any signed example file, regenerate its development DSSE envelope:
 

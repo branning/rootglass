@@ -785,3 +785,214 @@ mod tests {
             .starts_with("'/opt/rootglass runtime/bin/qemu-system-aarch64' "));
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod supervisor_tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct FakeQemu {
+        root: PathBuf,
+        binary: PathBuf,
+    }
+
+    impl Drop for FakeQemu {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn fake_qemu(mode: &str) -> FakeQemu {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "rootglass-fake-qemu-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let binary = root.join("fake-qemu.py");
+        let script = r##"#!/usr/bin/env python3
+import os
+import socket
+import sys
+
+MODE = "__MODE__"
+args = sys.argv[1:]
+endpoint = args[args.index("-qmp") + 1]
+port = int(endpoint.rsplit(":", 1)[1].split(",", 1)[0])
+server = socket.socket()
+server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+server.bind(("127.0.0.1", port))
+server.listen(1)
+client, _ = server.accept()
+server.close()
+with client:
+    reader = client.makefile("rb")
+    client.sendall(b'{"QMP":{"version":{},"capabilities":[]}}\r\n')
+    if not reader.readline():
+        sys.exit(2)
+    client.sendall(b'{"return":{}}\r\n')
+    print("FAKE_QEMU_READY", flush=True)
+    if MODE == "eof":
+        sys.exit(0)
+    if MODE == "crash":
+        os._exit(23)
+    if MODE == "flood":
+        sys.stdout.buffer.write(b"x" * (12 * 1024 * 1024))
+        sys.stdout.flush()
+        sys.exit(0)
+    for line in reader:
+        if MODE == "stop" and b'"system_powerdown"' in line:
+            print("FAKE_POWERDOWN", flush=True)
+            break
+        if MODE == "quit" and b'"quit"' in line:
+            break
+"##
+        .replace("__MODE__", mode);
+        fs::write(&binary, script).unwrap();
+        let mut permissions = fs::metadata(&binary).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&binary, permissions).unwrap();
+        FakeQemu { root, binary }
+    }
+
+    fn plan(binary: &Path) -> QemuLaunchPlan {
+        QemuLaunchPlan {
+            binary: QemuBinary {
+                path: binary.to_path_buf(),
+            },
+            accelerator: Accelerator::None,
+            args: vec![
+                "-machine".to_string(),
+                "virt".to_string(),
+                "-nographic".to_string(),
+                "-serial".to_string(),
+                "mon:stdio".to_string(),
+            ],
+        }
+    }
+
+    fn wait_for_exit(process: &mut QemuProcess, timeout: Duration) -> ExitStatus {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(status) = process.try_wait().unwrap() {
+                return status;
+            }
+            assert!(Instant::now() < deadline, "fake QEMU did not exit in time");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn supervised_spawn_reports_missing_binary() {
+        let missing =
+            std::env::temp_dir().join(format!("rootglass-missing-qemu-{}", std::process::id()));
+        let error = plan(&missing)
+            .spawn_supervised()
+            .err()
+            .expect("missing QEMU binary must fail to spawn");
+        assert!(matches!(error, QemuError::Spawn { .. }));
+    }
+
+    #[test]
+    fn supervised_stop_is_idempotent_and_uses_guest_powerdown() {
+        let fake = fake_qemu("stop");
+        let mut process = plan(&fake.binary).spawn_supervised().unwrap();
+        let ready = process.read_serial(Duration::from_secs(2)).unwrap();
+        assert!(String::from_utf8_lossy(&ready.bytes).contains("FAKE_QEMU_READY"));
+
+        let first = process
+            .stop(Duration::from_secs(1), Duration::from_secs(1))
+            .unwrap();
+        let second = process
+            .stop(Duration::from_millis(1), Duration::from_millis(1))
+            .unwrap();
+        assert!(first.success());
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn supervised_stop_uses_qmp_quit_then_kills_and_reaps_on_timeout() {
+        let fake = fake_qemu("quit");
+        let mut process = plan(&fake.binary).spawn_supervised().unwrap();
+        let _ = process.read_serial(Duration::from_secs(2)).unwrap();
+        let status = process
+            .stop(Duration::from_millis(20), Duration::from_secs(1))
+            .unwrap();
+        assert!(status.success());
+        assert!(process.try_wait().unwrap().is_some());
+
+        let holding = fake_qemu("hold");
+        let mut process = plan(&holding.binary).spawn_supervised().unwrap();
+        let _ = process.read_serial(Duration::from_secs(2)).unwrap();
+        let status = process
+            .stop(Duration::from_millis(20), Duration::from_millis(20))
+            .unwrap();
+        assert!(!status.success(), "forced termination must be visible");
+        assert!(
+            process.try_wait().unwrap().is_some(),
+            "child must be reaped"
+        );
+    }
+
+    #[test]
+    fn dropping_supervised_process_cancels_and_reaps_child() {
+        let fake = fake_qemu("hold");
+        let process = plan(&fake.binary).spawn_supervised().unwrap();
+        let _ = process.read_serial(Duration::from_secs(2)).unwrap();
+        let pid = process.child.id();
+        drop(process);
+        assert!(
+            !PathBuf::from(format!("/proc/{pid}")).exists(),
+            "dropped process must be terminated and reaped"
+        );
+    }
+
+    #[test]
+    fn serial_eof_and_unexpected_exit_are_observable() {
+        let eof = fake_qemu("eof");
+        let mut process = plan(&eof.binary).spawn_supervised().unwrap();
+        let ready = process.read_serial(Duration::from_secs(2)).unwrap();
+        assert!(String::from_utf8_lossy(&ready.bytes).contains("FAKE_QEMU_READY"));
+        assert!(process.read_serial(Duration::from_secs(2)).is_none());
+        assert!(wait_for_exit(&mut process, Duration::from_secs(2)).success());
+
+        let crash = fake_qemu("crash");
+        let mut process = plan(&crash.binary).spawn_supervised().unwrap();
+        let _ = process.read_serial(Duration::from_secs(2)).unwrap();
+        assert_eq!(
+            wait_for_exit(&mut process, Duration::from_secs(2)).code(),
+            Some(23)
+        );
+    }
+
+    #[test]
+    fn serial_flood_and_diagnostic_log_remain_bounded() {
+        let fake = fake_qemu("flood");
+        let mut process = plan(&fake.binary).spawn_supervised().unwrap();
+        assert!(wait_for_exit(&mut process, Duration::from_secs(5)).success());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !process.serial.state.lock().unwrap().closed && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(process.serial.state.lock().unwrap().closed);
+
+        let mut serial_bytes = 0usize;
+        let mut truncated = false;
+        while let Some(chunk) = process.read_serial(Duration::ZERO) {
+            serial_bytes += chunk.bytes.len();
+            truncated |= chunk.truncated;
+        }
+        assert!(serial_bytes <= SERIAL_BUFFER_LIMIT);
+        assert!(truncated, "dropping old serial output must be reported");
+        assert_eq!(
+            fs::metadata(process.diagnostic_log()).unwrap().len(),
+            DIAGNOSTIC_LOG_LIMIT
+        );
+    }
+}
