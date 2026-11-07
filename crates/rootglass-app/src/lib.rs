@@ -124,13 +124,16 @@ impl PackageLibrary {
             &import::ImportLimits::default(),
         )
         .map_err(|error| {
-            import_app_error("The .glass archive could not be verified or installed.", error)
+            import_app_error(
+                "The .glass archive could not be verified or installed.",
+                error,
+            )
         })
     }
 
     pub fn installed_glasses(&self) -> Result<Vec<registry::InstalledGlass>, AppError> {
-        let registry = registry::PackageRegistry::open(self.root.join("registry.json"))
-            .map_err(|error| {
+        let registry =
+            registry::PackageRegistry::open(self.root.join("registry.json")).map_err(|error| {
                 import_app_error("The installed-glass registry could not be opened.", error)
             })?;
         Ok(registry.packages().to_vec())
@@ -235,7 +238,7 @@ impl AppService {
     /// Remove a release from the visible library. Its immutable content may remain on disk
     /// until a later garbage-collection pass.
     pub fn remove_installed_glass(
-        &mut self,
+        &self,
         content_sha256: &str,
     ) -> Result<Option<registry::InstalledGlass>, AppError> {
         self.package_library()
@@ -782,14 +785,14 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 #[cfg(test)]
 mod library_tests {
     use super::*;
-    use std::fs::{self, File};
-    use std::io;
-    use std::time::{SystemTime, UNIX_EPOCH};
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
     use ed25519_dalek::{Signer, SigningKey};
     use serde_json::json;
     use sha2::{Digest, Sha256};
+    use std::fs::{self, File};
+    use std::io;
+    use std::time::{SystemTime, UNIX_EPOCH};
     use zip::write::SimpleFileOptions;
 
     fn temp_root() -> PathBuf {
@@ -823,7 +826,8 @@ mod library_tests {
     }
 
     fn signed_launch_ready_fixture(root: &Path) {
-        let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/hello-world.glass");
+        let example =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/hello-world.glass");
         fs::create_dir_all(root.join("metadata")).unwrap();
         fs::create_dir_all(root.join("signatures")).unwrap();
         for name in ["README.md", "metadata/README.md", "rootglass.toml"] {
@@ -866,7 +870,8 @@ mod library_tests {
         let payload = serde_json::to_vec(&statement).unwrap();
         let pae = dsse_pae(b"application/vnd.in-toto+json", &payload);
         // This is the public deterministic sample key documented by the fixture signer.
-        let seed: [u8; 32] = Sha256::digest(b"Rootglass public development fixture signing key v1").into();
+        let seed: [u8; 32] =
+            Sha256::digest(b"Rootglass public development fixture signing key v1").into();
         let signature = SigningKey::from_bytes(&seed).sign(&pae);
         let envelope = json!({
             "payloadType": "application/vnd.in-toto+json",
@@ -908,15 +913,21 @@ mod library_tests {
         writer.finish().unwrap();
 
         let library = root.join("library");
-        let service = AppService::with_trust_store(TrustStore::example_fixture())
-            .with_library_root(&library);
+        let service =
+            AppService::with_trust_store(TrustStore::example_fixture()).with_library_root(&library);
         let installed = service.import_archive(&archive).unwrap();
         assert_eq!(installed.identifier, "io.rootglass.examples.hello-world");
-        assert_eq!(service.installed_glasses().unwrap(), vec![installed.clone()]);
+        assert_eq!(
+            service.installed_glasses().unwrap(),
+            vec![installed.clone()]
+        );
 
-        let reopened = AppService::with_trust_store(TrustStore::example_fixture())
-            .with_library_root(&library);
-        assert_eq!(reopened.installed_glasses().unwrap(), vec![installed.clone()]);
+        let reopened =
+            AppService::with_trust_store(TrustStore::example_fixture()).with_library_root(&library);
+        assert_eq!(
+            reopened.installed_glasses().unwrap(),
+            vec![installed.clone()]
+        );
         reopened
             .remove_installed_glass(&installed.content_sha256)
             .unwrap();
