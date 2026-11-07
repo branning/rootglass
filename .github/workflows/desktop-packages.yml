@@ -63,7 +63,7 @@ jobs:
         working-directory: crates/rootglass-desktop
         run: |
           cargo build --release
-          cargo packager --release -c Packager.${{ matrix.config }}.toml
+          cargo-packager --release --config Packager.${{ matrix.config }}.toml
 
       - name: Write package checksum
         if: runner.os == 'Linux'
