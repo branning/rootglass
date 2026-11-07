@@ -2,6 +2,7 @@ use gpui_kit::component::button::*;
 use gpui_kit::component::*;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::*;
+use rootglass_app::registry::InstalledGlass;
 use rootglass_app::{AppService, RunId, RunOptions, RuntimeEvent};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -10,11 +11,22 @@ use std::time::Duration;
 enum UiState {
     Empty,
     Loading,
+    Importing(PathBuf),
+    Imported(ImportedDetails),
     Ready(GlassPreview),
     Blocked(BlockedDetails),
     Failed(FailureDetails),
     Booting(RunDetails),
     Running(RunDetails),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ImportedDetails {
+    path: PathBuf,
+    name: String,
+    version: String,
+    publisher: String,
+    digest: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -74,6 +86,8 @@ struct RunDetails {
 struct UiModel {
     state: UiState,
     service: AppService,
+    installed_glasses: Vec<InstalledGlass>,
+    library_error: Option<String>,
     selected_path: Option<PathBuf>,
     run_id: Option<RunId>,
     console: String,
@@ -81,9 +95,25 @@ struct UiModel {
 
 impl Default for UiModel {
     fn default() -> Self {
+        let (service, state) = match local_trust_config_path() {
+            Ok(path) => match AppService::from_trust_config(&path) {
+                Ok(service) => (service, UiState::Empty),
+                Err(error) => (
+                    AppService::deny_all(),
+                    trust_config_failure(format!("{} ({})", error, path.display())),
+                ),
+            },
+            Err(error) => (AppService::deny_all(), trust_config_failure(error)),
+        };
+        let (installed_glasses, library_error) = match service.installed_glasses() {
+            Ok(glasses) => (glasses, None),
+            Err(error) => (Vec::new(), Some(error.to_string())),
+        };
         Self {
-            state: UiState::Empty,
-            service: AppService::new(),
+            state,
+            service,
+            installed_glasses,
+            library_error,
             selected_path: None,
             run_id: None,
             console: String::new(),
@@ -91,7 +121,98 @@ impl Default for UiModel {
     }
 }
 
+fn trust_config_failure(detail: String) -> UiState {
+    UiState::Failed(FailureDetails {
+        path: None,
+        phase: "Trust configuration".to_string(),
+        summary: "Local publisher trust could not be loaded. Bundle verification is disabled."
+            .to_string(),
+        detail,
+    })
+}
+
+fn local_trust_config_path() -> Result<PathBuf, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let root = std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .ok_or_else(|| {
+                "APPDATA is not set; cannot locate Rootglass trust configuration.".to_string()
+            })?;
+        return Ok(root.join("Rootglass").join("trust.json"));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or_else(|| {
+                "HOME is not set; cannot locate Rootglass trust configuration.".to_string()
+            })?;
+        return Ok(home
+            .join("Library")
+            .join("Application Support")
+            .join("Rootglass")
+            .join("trust.json"));
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Some(config_home) = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from) {
+            if config_home.is_absolute() {
+                return Ok(config_home.join("rootglass").join("trust.json"));
+            }
+        }
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or_else(|| {
+                "Neither an absolute XDG_CONFIG_HOME nor HOME is set; cannot locate Rootglass trust configuration."
+                    .to_string()
+            })?;
+        return Ok(home.join(".config").join("rootglass").join("trust.json"));
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", unix)))]
+    {
+        Err("This platform has no configured Rootglass trust configuration directory.".to_string())
+    }
+}
+
 impl UiModel {
+    fn refresh_library(&mut self) {
+        match self.service.installed_glasses() {
+            Ok(glasses) => {
+                self.installed_glasses = glasses;
+                self.library_error = None;
+            }
+            Err(error) => self.library_error = Some(error.to_string()),
+        }
+    }
+
+    fn import_finished(&mut self, result: Result<InstalledGlass, rootglass_app::AppError>) {
+        match result {
+            Ok(installed) => {
+                self.selected_path = Some(installed.package_path.clone());
+                self.state = UiState::Imported(ImportedDetails {
+                    path: installed.package_path,
+                    name: installed.name,
+                    version: installed.version,
+                    publisher: installed.publisher_name,
+                    digest: installed.content_sha256,
+                });
+                self.refresh_library();
+            }
+            Err(error) => {
+                self.state = UiState::Failed(FailureDetails {
+                    path: self.selected_path.clone(),
+                    phase: format!("{:?}", error.phase),
+                    summary: error.summary,
+                    detail: error.detail,
+                });
+            }
+        }
+    }
+
     fn select_bundle(&mut self, path: PathBuf) {
         self.selected_path = Some(path.clone());
         self.state = UiState::Loading;
@@ -341,7 +462,12 @@ impl Render for RootglassWindow {
                     .h_flex()
                     .size_full()
                     .gap_2()
-                    .child(library_view(&self.model.state))
+                    .child(library_view(
+                        &self.model.state,
+                        &self.model.installed_glasses,
+                        self.model.library_error.as_deref(),
+                        cx,
+                    ))
                     .child(details_view(&self.model.state)),
             )
             .child(status_view(&self.model.state))
@@ -375,8 +501,11 @@ impl RootglassWindow {
                 }
             },
         );
+        let background_executor = cx.background_executor().clone();
         let _poll_task = cx.spawn(async move |view, cx| loop {
-            Timer::after(Duration::from_millis(100)).await;
+            background_executor
+                .timer(Duration::from_millis(100))
+                .await;
             if view
                 .update(cx, |view, cx| {
                     view.model.poll();
@@ -400,11 +529,13 @@ impl RootglassWindow {
             files: true,
             directories: true,
             multiple: false,
-            prompt: Some("Select a Rootglass .glass file or directory".into()),
+            prompt: Some("Select a Rootglass .glass archive or directory".into()),
         });
         let view = cx.entity();
+        let library = self.model.service.package_library();
+        let background_executor = cx.background_executor().clone();
 
-        cx.spawn_in(window, async move |_, window| {
+        cx.spawn_in(window, async move |cx, window| {
             let selected = selection
                 .await
                 .ok()
@@ -412,29 +543,94 @@ impl RootglassWindow {
                 .flatten()
                 .and_then(|paths| paths.into_iter().next());
 
-            window
-                .update(|_, cx| {
+            let Some(path) = selected else { return };
+            let is_archive = path.is_file()
+                && path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("glass"));
+
+            if is_archive {
+                let source = path.clone();
+                let import = background_executor.spawn(async move {
+                    library.import_archive(source)
+                });
+                let _ = window.update(|_, cx| {
                     view.update(cx, |this, cx| {
-                        if let Some(path) = selected {
-                            this.model.select_bundle(path);
-                        }
+                        this.model.selected_path = Some(path.clone());
+                        this.model.state = UiState::Importing(path.clone());
                         cx.notify();
                     })
-                })
-                .ok()
+                });
+                let result = import.await;
+                window
+                    .update(|_, cx| {
+                        view.update(cx, |this, cx| {
+                            this.model.import_finished(result);
+                            cx.notify();
+                        })
+                    })
+                    .ok();
+            } else {
+                window
+                    .update(|_, cx| {
+                        view.update(cx, |this, cx| {
+                            this.model.select_bundle(path);
+                            cx.notify();
+                        })
+                    })
+                    .ok();
+            }
         })
         .detach();
     }
 }
 
-fn library_view(state: &UiState) -> Div {
-    let mut view = div()
-        .v_flex()
-        .child("Library")
-        .child("No glasses are installed.")
-        .child("Open an existing .glass bundle to inspect it.");
+fn library_view(
+    state: &UiState,
+    installed_glasses: &[InstalledGlass],
+    library_error: Option<&str>,
+    cx: &mut Context<RootglassWindow>,
+) -> Div {
+    let mut view = div().v_flex().child("Library");
+    if installed_glasses.is_empty() {
+        view = view
+            .child("No glasses are installed.")
+            .child("Open an existing .glass bundle to inspect it.");
+    } else {
+        for glass in installed_glasses {
+            let path = glass.package_path.clone();
+            view = view
+                .child(
+                    Button::new(format!("installed-{}", glass.content_sha256))
+                        .label(format!("{} {}", glass.name, glass.version))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.model.select_bundle(path.clone());
+                            cx.notify();
+                        })),
+                )
+                .child(format!("Publisher: {}", glass.publisher_name))
+                .child(format!("Installed at: {}", glass.package_path.display()));
+        }
+    }
+    if let Some(error) = library_error {
+        view = view.child(format!("The installed library could not be loaded: {error}"));
+    }
     if let UiState::Ready(glass) = state {
         view = view.child(format!("Selected: {} {}", glass.name, glass.version));
+    }
+    match state {
+        UiState::Importing(path) => {
+            view = view.child(format!("Verifying and importing {}…", path.display()));
+        }
+        UiState::Imported(glass) => {
+            view = view
+                .child(format!("Installed: {} {}", glass.name, glass.version))
+                .child(format!("Publisher: {}", glass.publisher))
+                .child(format!("Content digest: {}", glass.digest))
+                .child(format!("Installed at: {}", glass.path.display()));
+        }
+        _ => {}
     }
     view
 }
@@ -452,6 +648,16 @@ fn details_view(state: &UiState) -> Div {
             .size_full()
             .child("Inspecting bundle…")
             .child("Verification and preflight are pending."),
+        UiState::Importing(_) => div()
+            .v_flex()
+            .size_full()
+            .child("Verifying archive and importing package…"),
+        UiState::Imported(glass) => div()
+            .v_flex()
+            .size_full()
+            .child(format!("{} {} installed", glass.name, glass.version))
+            .child(format!("Trusted publisher: {}", glass.publisher))
+            .child("The archive was verified and copied into the local package store."),
         UiState::Ready(glass) => {
             let signature = match &glass.signature {
                 SignatureStatus::Verified(publisher) => format!("Verified: {publisher}"),
@@ -540,6 +746,8 @@ fn status_view(state: &UiState) -> Div {
     match state {
         UiState::Empty => div().child("Status: Stopped · Console is inactive."),
         UiState::Loading => div().child("Status: Loading · Console is inactive."),
+        UiState::Importing(_) => div().child("Status: Verifying archive · Console is inactive."),
+        UiState::Imported(_) => div().child("Status: Installed · Stopped."),
         UiState::Ready(_) => div().child("Status: Ready · Stopped."),
         UiState::Blocked(_) => div().child("Status: Blocked · Stopped."),
         UiState::Failed(error) => div().child(format!("Status: Failed · {}", error.summary)),

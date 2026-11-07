@@ -1,8 +1,10 @@
+pub mod runtime_assets;
 pub mod runtime_profile;
 pub mod storage;
 
 use rootglass_manifest::{Glass, ManifestError};
 use rootglass_signature::{verify_glass_dir, SignatureError, TrustStore, VerificationReport};
+use runtime_assets::{RuntimeAssetsError, RuntimeAssetsResolver};
 use runtime_profile::{ResolvedRuntimeAssets, RuntimeAssetResolver, RuntimeProfileError};
 use std::path::{Path, PathBuf};
 use storage::{OverlayStore, StorageSelection};
@@ -57,6 +59,9 @@ pub enum CoreError {
 
     #[error("runtime profile resolution failed: {0}")]
     RuntimeProfile(#[from] RuntimeProfileError),
+
+    #[error("runtime asset resolution failed: {0}")]
+    RuntimeAssets(#[from] RuntimeAssetsError),
 }
 
 impl CoreError {
@@ -84,6 +89,14 @@ impl CoreError {
                 stage,
                 suggestion: Some(
                     "Only open signed glasses from trusted publishers. Re-download the glass or contact the publisher if verification fails.".to_string(),
+                ),
+            },
+            CoreError::RuntimeAssets(error) => UserFacingError {
+                summary: "The installed runtime assets could not be verified.".to_string(),
+                detail: error.to_string(),
+                stage,
+                suggestion: Some(
+                    "Repair the Rootglass runtime installation or choose a valid runtime version.".to_string(),
                 ),
             },
             CoreError::RuntimeProfile(error) => UserFacingError {
@@ -221,6 +234,8 @@ pub struct LaunchRequest {
     pub cpus: u32,
     pub requires_hardware_acceleration: bool,
     pub accelerator: Option<HostAccelerator>,
+    /// Verified QEMU executable for packaged runtimes; `None` uses the developer PATH resolver.
+    pub qemu_binary: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -229,7 +244,14 @@ pub struct RootglassRuntime {
     overlay_store: OverlayStore,
     trust_store: TrustStore,
     asset_resolver: RuntimeAssetResolver,
+    verified_asset_resolver: Option<VerifiedAssetResolver>,
     selected_local_overlay: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct VerifiedAssetResolver {
+    resolver: RuntimeAssetsResolver,
+    runtime_version: String,
 }
 
 impl Default for RootglassRuntime {
@@ -239,6 +261,7 @@ impl Default for RootglassRuntime {
             overlay_store: OverlayStore::new(".rootglass/overlays"),
             trust_store: TrustStore::example_fixture(),
             asset_resolver: RuntimeAssetResolver::default(),
+            verified_asset_resolver: None,
             selected_local_overlay: None,
         }
     }
@@ -268,6 +291,19 @@ impl RootglassRuntime {
             asset_resolver,
             ..Self::default()
         }
+    }
+
+    /// Use a versioned, integrity-checked runtime set from app resources or user app data.
+    pub fn with_verified_runtime_assets(
+        mut self,
+        resolver: RuntimeAssetsResolver,
+        runtime_version: impl Into<String>,
+    ) -> Self {
+        self.verified_asset_resolver = Some(VerifiedAssetResolver {
+            resolver,
+            runtime_version: runtime_version.into(),
+        });
+        self
     }
 
     pub fn select_local_overlay(&mut self, overlay_name: impl Into<String>) {
@@ -318,14 +354,35 @@ impl RootglassRuntime {
             }
         };
 
-        let runtime_assets = match self.asset_resolver.resolve(
-            &glass.manifest.boot.kernel,
-            &glass.manifest.boot.device_tree,
-        ) {
-            Ok(assets) => assets,
-            Err(error) => {
-                self.fail(CoreError::RuntimeProfile(error), LifecycleState::Validating)?;
-                unreachable!("fail always returns Err")
+        let (runtime_assets, qemu_binary) = {
+            let profile_assets = match self.asset_resolver.resolve(
+                &glass.manifest.boot.kernel,
+                &glass.manifest.boot.device_tree,
+            ) {
+                Ok(assets) => assets,
+                Err(error) => {
+                    self.fail(CoreError::RuntimeProfile(error), LifecycleState::Validating)?;
+                    unreachable!("fail always returns Err")
+                }
+            };
+            if let Some(config) = &self.verified_asset_resolver {
+                let resolved = match config.resolver.resolve(&config.runtime_version) {
+                    Ok(assets) => assets,
+                    Err(error) => {
+                        self.fail(CoreError::RuntimeAssets(error), LifecycleState::Validating)?;
+                        unreachable!("fail always returns Err")
+                    }
+                };
+                (
+                    ResolvedRuntimeAssets {
+                        kernel: resolved.kernel,
+                        device_tree: profile_assets.device_tree,
+                        initrd: Some(resolved.initramfs),
+                    },
+                    Some(resolved.qemu),
+                )
+            } else {
+                (profile_assets, None)
             }
         };
 
@@ -348,6 +405,7 @@ impl RootglassRuntime {
             &glass,
             accelerator,
             runtime_assets,
+            qemu_binary,
             signature,
             &self.overlay_store,
             self.selected_local_overlay.as_deref(),
@@ -419,6 +477,7 @@ impl LaunchRequest {
         glass: &Glass,
         accelerator: Option<HostAccelerator>,
         runtime_assets: ResolvedRuntimeAssets,
+        qemu_binary: Option<PathBuf>,
         signature: SignatureVerification,
         overlay_store: &OverlayStore,
         selected_local_overlay: Option<&str>,
@@ -454,6 +513,7 @@ impl LaunchRequest {
             cpus: manifest.resources.cpus,
             requires_hardware_acceleration: manifest.runtime.requires_hardware_acceleration,
             accelerator,
+            qemu_binary,
         }
     }
 }

@@ -67,6 +67,29 @@ jobs:
       - name: Run tests
         run: cargo test --locked --workspace --all-targets
 
+  desktop-linux:
+    name: Desktop compile (Linux)
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install GPUI Kit system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang g++ gcc \
+            libasound2-dev libfontconfig-dev libssl-dev libvulkan1 \
+            libwayland-dev libwebkit2gtk-4.1-dev libx11-xcb-dev \
+            libxkbcommon-x11-dev libzstd-dev vulkan-validationlayers
+
+      - name: Check desktop application
+        run: cargo check --manifest-path crates/rootglass-desktop/Cargo.toml
+
   cli-smoke:
     name: CLI smoke
     runs-on: ubuntu-latest
