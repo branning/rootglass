@@ -174,7 +174,12 @@ impl AppService {
             &self.trust_store,
             &import::ImportLimits::default(),
         )
-        .map_err(|error| import_app_error("The .glass archive could not be verified or installed.", error))
+        .map_err(|error| {
+            import_app_error(
+                "The .glass archive could not be verified or installed.",
+                error,
+            )
+        })
     }
 
     /// Return the persisted verified releases in the local library.
@@ -196,9 +201,9 @@ impl AppService {
         let mut registry = registry::PackageRegistry::open(&registry_path).map_err(|error| {
             import_app_error("The installed-glass registry could not be opened.", error)
         })?;
-        registry
-            .remove(content_sha256)
-            .map_err(|error| import_app_error("The installed-glass registry could not be updated.", error))
+        registry.remove(content_sha256).map_err(|error| {
+            import_app_error("The installed-glass registry could not be updated.", error)
+        })
     }
 
     pub fn new() -> Self {
