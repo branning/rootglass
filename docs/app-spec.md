@@ -9,8 +9,8 @@
 ## 0. Working instructions for a coding-agent swarm
 
 1. **Read this file, then the exact implementation files named in your task.** Do not invent APIs, fields, or source files. Inspect actual code and upstream GPUI Kit examples before writing GPUI code.
-2. **Do not implement the entire spec in one branch.** Work in the dependency-ordered work packages in `12. A typical worker owns 1–3 files and one testable outcome.
-3. **Do not report success merely because something compiles.** Use the acceptance tests in `10. Preserve the existing Rust CLI while adding the desktop app.
+2. **Do not implement the entire spec in one branch.** Work in the dependency-ordered work packages in section 12. A typical worker owns 1–3 files and one testable outcome.
+3. **Do not report success merely because something compiles.** Use the acceptance tests in section 10. Preserve the existing Rust CLI while maintaining the desktop app.
 4. **Make one focused branch/PR per work package.** No unrelated refactors. Reserve changes to shared `Cargo.toml`, `Cargo.lock`, and CI workflows for an integrator, or coordinate them explicitly. Never force-push shared branches.
 5. **Stop and report a real blocker** when a platform capability, security policy, license, or upstream API differs from this spec; propose the smallest verified adjustment. Do not silently stub a critical feature and call it done.
 6. **Treat host-facing security and user data as critical.** Never bypass bundle verification to make a demo pass. No embedded private signing keys or production test-login credentials.
@@ -55,17 +55,17 @@ Treat a work package as implementation-complete when its code is merged and its 
 
 ## 3. Versioned delivery scope
 
-### R0 — Restore a trustworthy CLI reference path (blocking foundation)
+### R0 — Trustworthy CLI reference path (implementation merged)
 
-Commands `validate`, `plan` and `boot` must work consistently for the signed example. Both CI boot matrix legs must boot the correct rootfs, reach a real guest login, execute `uname -a`, capture its kernel identity, shut down QEMU deliberately, and return a meaningful smoke-test status. A signing tool must reissue signatures when a signed file changes.
+The signed example, `validate`, `plan`, and `boot` workflows are implemented. Hosted x64 and arm64 CI boot the guest, authenticate over serial, run `uname -a`, and shut down deliberately. Keep this path green as a regression gate; see A-01–A-04.
 
-### R1 — Native desktop vertical slice
+### R1 — Native desktop vertical slice (implementation merged; A-08 qualification open)
 
-Build the GPUI Kit desktop shell with open/select, manifest and trust display, preflight, start, live serial/log view, stop/restart, and truthful errors. The desktop calls Rust libraries, **not** a CLI subprocess. Ship developer-runnable binaries on qualifying hosts. Rootfs and runtime assets may still be developer-provisioned for this phase.
+The GPUI Kit desktop shell is integrated with the shared Rust application service and includes bundle selection/library, manifest and trust details, preflight, lifecycle controls, and guest console integration. It calls Rust libraries, **not** a CLI subprocess. Complete the model and GUI smoke evidence in A-08 before treating this phase as accepted.
 
-### R2 — User-installable, offline-capable v1
+### R2 — User-installable, offline-capable v1 (implementation partial; release gates open)
 
-Implement verified ZIP `.glass` import, persistent installed-glass registry, isolated writable state, bundled/discovered QEMU and runtime assets, trusted publisher configuration, native installers, signed releases, platform validation, and a complete nontechnical open → verify → run → stop flow.
+Verified ZIP import, installed-glass registry, per-instance state, trust reporting, runtime asset resolution, and native package builds are merged. Finish installed-app QEMU/runtime inventory, clean-host install and OS file-open validation, production trust operations, application/installer signing, release provenance, and a complete nontechnical offline open → verify → run → stop flow. See A-05–A-10 and S13–S15.
 
 ### R3 — Explicitly deferred after v1
 
@@ -410,7 +410,7 @@ R2/v1 is complete only when all of the following hold simultaneously:
 
 ## 12. Swarm work packages (assign one owner per package)
 
-Each agent should receive exactly one package ID, explicit path ownership, acceptance IDs and dependencies. Names below are a **task DAG**; agents can execute independent branches concurrently but the integrator must merge them in order. Small agents should not edit shared files outside their owned package.
+For remaining implementation, assign one owner per package with explicit paths, acceptance IDs and dependencies. The original S00–S11 packages are merged; S12–S15 track acceptance and release qualification. Small agents should not edit shared files outside their owned package.
 
 | ID | Phase | Work package and owned paths | Depends | Acceptance | State |
 |---|---|---|---|---|---|
@@ -439,9 +439,9 @@ Each agent should receive exactly one package ID, explicit path ownership, accep
 ```text
 You are Worker <ID> on branning/rootglass.
 Read docs/app-spec.md and your assigned source files.
-Implement only package <ID> (paths and prerequisites in `12).
+Implement only package <ID> (paths and prerequisites in section 12).
 Before writing code, report the existing symbols you will reuse.
-Keep public interfaces compatible with the application-service contract (`6.3).
+Keep public interfaces compatible with the application-service contract in section 6.3.
 Implement positive, failure and cleanup-path tests.
 Do not edit unrelated paths or weaken verification/CI.
 Run relevant cargo fmt, targeted test, clippy and scenario checks.
@@ -460,7 +460,7 @@ If blocked by missing interface, open an issue or provide a tiny compileable con
 
 ## 13. Outstanding product decisions requiring written ADRs
 
-These are not permission to stall S00–S09; use the defaults below until an ADR changes them.
+Use the defaults below for remaining implementation unless an ADR changes them.
 
 | Decision | v1 default | Required evidence / owner |
 |---|---|---|
