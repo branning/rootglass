@@ -1,6 +1,6 @@
+pub mod runtime_assets;
 pub mod runtime_profile;
 pub mod storage;
-pub mod runtime_assets;
 
 use rootglass_manifest::{Glass, ManifestError};
 use rootglass_signature::{verify_glass_dir, SignatureError, TrustStore, VerificationReport};
