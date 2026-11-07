@@ -71,13 +71,14 @@ impl InstanceStateStore {
         let _guard = self.acquire_run_lock()?;
         let records = self.read_records()?;
         if records.iter().any(|r| r.name == name) {
-            return Err(StateError::AlreadyExists(name));
+            return Err(StateError::AlreadyExists(name.clone()));
         }
-        let bytes = copy_image_atomic(&self.template, &self.state_path(&name), false)?;
+        let image_path = self.state_path(&name);
+        let bytes = copy_image_atomic(&self.template, &image_path, false)?;
         let record = StateRecord {
             id: name.clone(),
             name,
-            image_path: self.state_path(&name),
+            image_path,
             image_bytes: bytes,
         };
         let mut records = self.read_records()?;
@@ -96,13 +97,14 @@ impl InstanceStateStore {
             .find(|r| r.id == source_id)
             .ok_or_else(|| StateError::NotFound(source_id.into()))?;
         if records.iter().any(|r| r.name == new_name) {
-            return Err(StateError::AlreadyExists(new_name));
+            return Err(StateError::AlreadyExists(new_name.clone()));
         }
-        let bytes = copy_image_atomic(&source.image_path, &self.state_path(&new_name), false)?;
+        let image_path = self.state_path(&new_name);
+        let bytes = copy_image_atomic(&source.image_path, &image_path, false)?;
         let record = StateRecord {
             id: new_name.clone(),
             name: new_name,
-            image_path: self.state_path(&new_name),
+            image_path,
             image_bytes: bytes,
         };
         let mut records = records;
@@ -262,10 +264,11 @@ fn copy_image_atomic(
         ));
     }
     let temp = temp_path(destination);
+    let source_path = source;
     let result = (|| {
-        let mut input = File::open(source).map_err(|source| StateError::Io {
-            path: source.into(),
-            source,
+        let mut input = File::open(source_path).map_err(|error| StateError::Io {
+            path: source_path.into(),
+            source: error,
         })?;
         let mut output = OpenOptions::new()
             .write(true)
@@ -278,9 +281,9 @@ fn copy_image_atomic(
         let mut copied = 0u64;
         let mut buffer = [0u8; 64 * 1024];
         loop {
-            let count = input.read(&mut buffer).map_err(|source| StateError::Io {
-                path: source.into(),
-                source,
+            let count = input.read(&mut buffer).map_err(|error| StateError::Io {
+                path: source_path.into(),
+                source: error,
             })?;
             if count == 0 {
                 break;
