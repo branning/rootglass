@@ -22,7 +22,7 @@ which it otherwise loads only after mounting the root filesystem. Override
 Run from the repository root on Linux:
 
 ```bash
-./scripts/materialize-example-assets.sh
+bash scripts/materialize-example-assets.sh
 ```
 
 Or with `just`:
@@ -49,7 +49,7 @@ ALPINE_RELEASE=v3.23 \
 ALPINE_VERSION=3.23.8 \
 ROOTFS_SIZE_MB=256 \
 STATE_SIZE_MB=64 \
-./scripts/materialize-example-assets.sh
+bash scripts/materialize-example-assets.sh
 ```
 
 ## Validate and plan
