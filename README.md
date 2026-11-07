@@ -38,7 +38,9 @@ For local example asset generation and boot:
 
 - Linux host or VM
 - `qemu-system-aarch64`
-- `curl`, `tar`, `dd`, `mkfs.ext4`, `sudo`, `mount`, and `umount`
+- `curl`, `tar`, `dd`, `mkfs.ext4`, `e2label`, `sudo`, `mount`, and `umount`.
+- `cpio`, `gzip`, and `unsquashfs` (provided by `squashfs-tools`) to rebuild the initramfs.
+- `python3` to run the bounded serial smoke test.
 
 The asset materialization script currently mounts an ext4 image, so macOS and Windows users should run it inside a Linux VM or container with loop-device support.
 
