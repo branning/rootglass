@@ -12,7 +12,7 @@ use ratatui::Terminal;
 use rootglass_app::registry::InstalledGlass;
 use rootglass_app::{AppError, RunId, RuntimeEvent};
 use rootglass_core::LifecycleState;
-use std::io::{self, IsTerminal, Stdout};
+use std::io::{self, IsTerminal, Stdout, Write};
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError};
@@ -144,7 +144,7 @@ impl InputBuffer {
                 self.text
             )),
             InputMode::Console => Some(format!(
-                "Guest input: {}  (Enter sends, Esc cancels)",
+                "Guest input: {}  (Enter sends line, Esc returns to controls, Ctrl-C cancels/interrupts)",
                 self.text
             )),
             InputMode::ConfirmRemoval => Some(format!(
@@ -172,7 +172,13 @@ fn handle_key(
     key: KeyEvent,
     worker: &mut ServiceWorker,
 ) -> Result<bool, String> {
-    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
+        return Ok(true);
+    }
+    if key.modifiers.contains(KeyModifiers::CONTROL)
+        && key.code == KeyCode::Char('c')
+        && input.mode != InputMode::Console
+    {
         return Ok(true);
     }
 
@@ -215,6 +221,21 @@ fn handle_console_key(
     key: KeyEvent,
     worker: &mut ServiceWorker,
 ) -> Result<bool, String> {
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+        if input.text.is_empty() {
+            if let Some(run) = model
+                .run_id
+                .clone()
+                .filter(|_| model.actions().console_input)
+            {
+                worker.write_serial(run, vec![0x03])?;
+            }
+        } else {
+            input.text.clear();
+        }
+        return Ok(false);
+    }
+
     match key.code {
         KeyCode::Esc => input.clear(),
         KeyCode::Enter => {
@@ -295,9 +316,14 @@ fn handle_normal_key(
             input.mode = InputMode::LibraryFilter;
         }
         KeyCode::Char('f') if model.actions().refresh => worker.refresh_library()?,
+        KeyCode::Char('P') if model.actions().console_pause => model.toggle_console_pause(),
+        KeyCode::Char('c') if model.actions().console_clear => model.clear_console(),
+        KeyCode::Char('y') if model.actions().console_copy => request_console_copy(model),
         KeyCode::Enter if model.actions().console_input => input.mode = InputMode::Console,
         KeyCode::Up => select_installed(model, false, worker)?,
         KeyCode::Down => select_installed(model, true, worker)?,
+        KeyCode::PageUp if model.actions().console_pause => model.scroll_console_up(10),
+        KeyCode::PageDown if model.actions().console_pause => model.scroll_console_down(10),
         _ => {}
     }
     Ok(false)
@@ -310,6 +336,57 @@ fn can_open(model: &UiModel) -> bool {
 fn accepts_text_key(key: KeyEvent) -> bool {
     !key.modifiers
         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+}
+
+fn request_console_copy(model: &mut UiModel) {
+    model.console_notice = Some(match copy_console_to_clipboard(model.visible_console()) {
+        Ok((bytes, truncated)) if truncated => {
+            format!("copy request sent for the last {bytes} bytes; host policy may restrict it")
+        }
+        Ok((bytes, _)) => {
+            format!("copy request sent for {bytes} bytes; host policy may restrict it")
+        }
+        Err(error) => format!("clipboard request failed: {error}"),
+    });
+}
+
+fn copy_console_to_clipboard(console: &str) -> Result<(usize, bool), String> {
+    const MAX_COPY_BYTES: usize = 60_000;
+    let mut start = console.len().saturating_sub(MAX_COPY_BYTES);
+    while !console.is_char_boundary(start) {
+        start += 1;
+    }
+    let contents = &console[start..];
+    let encoded = encode_base64(contents.as_bytes());
+    let mut stdout = io::stdout().lock();
+    stdout
+        .write_all(format!("\x1b]52;c;{encoded}\x07").as_bytes())
+        .and_then(|()| stdout.flush())
+        .map_err(|error| error.to_string())?;
+    Ok((contents.len(), start > 0))
+}
+
+fn encode_base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0];
+        let second = chunk.get(1).copied().unwrap_or(0);
+        let third = chunk.get(2).copied().unwrap_or(0);
+        encoded.push(ALPHABET[(first >> 2) as usize] as char);
+        encoded.push(ALPHABET[(((first & 0x03) << 4) | (second >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            encoded.push(ALPHABET[(((second & 0x0f) << 2) | (third >> 6)) as usize] as char);
+        } else {
+            encoded.push('=');
+        }
+        if chunk.len() > 2 {
+            encoded.push(ALPHABET[(third & 0x3f) as usize] as char);
+        } else {
+            encoded.push('=');
+        }
+    }
+    encoded
 }
 
 fn select_installed(
@@ -1577,7 +1654,7 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_c_quits_from_any_input_mode() {
+    fn ctrl_c_quits_outside_console_and_ctrl_q_quits_from_any_mode() {
         let mut model = UiModel::with_service(FakeService::default(), UiState::Empty);
         let mut worker = ServiceWorker::spawn(model.shared_service()).expect("worker starts");
         let mut input = InputBuffer {
@@ -1593,6 +1670,56 @@ mod tests {
         )
         .expect("Ctrl-C is handled as a clean quit"));
         assert_eq!(input.text, "unfinished");
+
+        input.mode = InputMode::Console;
+        assert!(handle_key(
+            &mut model,
+            &mut input,
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
+            &mut worker,
+        )
+        .expect("Ctrl-Q quits from console mode"));
+    }
+
+    #[test]
+    fn ctrl_c_interrupts_a_running_guest_from_console_mode() {
+        let service = FakeService::default();
+        let calls = Arc::clone(&service.calls);
+        let mut model = UiModel::with_service(
+            service,
+            UiState::Running(crate::RunDetails {
+                name: "Example".to_string(),
+                status: "Running".to_string(),
+                elapsed: String::new(),
+            }),
+        );
+        model.run_id = Some(RunId(7));
+        let mut input = InputBuffer {
+            mode: InputMode::Console,
+            text: String::new(),
+        };
+        let mut worker = ServiceWorker::spawn(model.shared_service()).expect("worker starts");
+
+        assert!(!handle_key(
+            &mut model,
+            &mut input,
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            &mut worker,
+        )
+        .expect("Ctrl-C is sent to the guest"));
+        worker
+            .drain_until_idle(&mut model)
+            .expect("interrupt write finishes");
+
+        assert_eq!(*calls.lock().unwrap(), ["serial:\u{3}"]);
+        assert_eq!(input.mode, InputMode::Console);
+    }
+
+    #[test]
+    fn base64_clipboard_encoding_matches_standard_vectors() {
+        assert_eq!(encode_base64(b"Rootglass"), "Um9vdGdsYXNz");
+        assert_eq!(encode_base64(b"f"), "Zg==");
+        assert_eq!(encode_base64(b"fo"), "Zm8=");
     }
 
     #[test]

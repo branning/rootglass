@@ -2,7 +2,7 @@
 
 use crate::{
     BlockedDetails, FailureDetails, GlassPreview, ImportedDetails, LaunchPlanDetails,
-    PreflightDetails, RemovalDetails, RunDetails, SignatureStatus, UiActions, UiModel, UiState,
+    PreflightDetails, RemovalDetails, RunDetails, SignatureStatus, UiModel, UiState,
 };
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -35,13 +35,13 @@ pub fn render_with_prompt(frame: &mut Frame<'_>, model: &UiModel, prompt: Option
             Constraint::Length(3),
             Constraint::Min(0),
             Constraint::Length(3),
-            Constraint::Length(5),
+            Constraint::Length(6),
         ]
     } else {
         vec![
             Constraint::Length(3),
             Constraint::Min(0),
-            Constraint::Length(5),
+            Constraint::Length(6),
         ]
     };
     let sections = Layout::default()
@@ -79,11 +79,11 @@ pub fn render_with_prompt(frame: &mut Frame<'_>, model: &UiModel, prompt: Option
             .constraints([Constraint::Min(5), Constraint::Percentage(42)])
             .split(columns[1]);
         render_details(frame, &model.state, details[0]);
-        render_console(frame, &model.console, details[1]);
+        render_console(frame, model, details[1]);
     } else {
         render_details(frame, &model.state, columns[1]);
     }
-    render_actions(frame, model.actions(), actions_area);
+    render_actions(frame, model, actions_area);
 }
 
 fn render_library(frame: &mut Frame<'_>, model: &UiModel, area: Rect) {
@@ -402,32 +402,71 @@ fn preflight_lines(preflight: &PreflightDetails) -> Vec<Line<'static>> {
     lines
 }
 
-fn render_console(frame: &mut Frame<'_>, console: &str, area: Rect) {
-    let mut lines = console.lines().rev().take(200).collect::<Vec<_>>();
-    lines.reverse();
-    let lines = if lines.is_empty() {
-        vec![Line::from(
-            "Console output appears here when a guest is running.",
-        )]
+fn render_console(frame: &mut Frame<'_>, model: &UiModel, area: Rect) {
+    let visible_console = model.visible_console();
+    let rows = if visible_console.is_empty() {
+        vec!["Console output appears here when a guest is running.".to_string()]
     } else {
-        lines
-            .into_iter()
-            .map(|line| Line::from(line.to_string()))
-            .collect()
+        visible_console
+            .split('\n')
+            .flat_map(|line| wrap_console_line(line, area.width.saturating_sub(2) as usize))
+            .collect::<Vec<_>>()
     };
+    let viewport_rows = area.height.saturating_sub(2).max(1) as usize;
+    let scroll = model
+        .console_scroll_offset
+        .min(rows.len().saturating_sub(viewport_rows));
+    let end = rows.len().saturating_sub(scroll);
+    let start = end.saturating_sub(viewport_rows);
+    let lines = rows[start..end]
+        .iter()
+        .cloned()
+        .map(Line::from)
+        .collect::<Vec<_>>();
+    let mut title = "Guest serial console".to_string();
+    if model.console_paused {
+        title.push_str(" · paused");
+    }
+    if model.console_truncated {
+        title.push_str(" · older output omitted");
+    }
+    if let Some(notice) = &model.console_notice {
+        title.push_str(" · ");
+        title.push_str(notice);
+    }
     frame.render_widget(
         Paragraph::new(lines)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Guest console"),
-            )
+            .block(Block::default().borders(Borders::ALL).title(title))
             .wrap(Wrap { trim: false }),
         area,
     );
 }
 
-fn render_actions(frame: &mut Frame<'_>, actions: UiActions, area: Rect) {
+fn wrap_console_line(line: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    if line.is_empty() {
+        return vec![String::new()];
+    }
+    let mut wrapped = Vec::new();
+    let mut row = String::new();
+    let mut cells = 0;
+    for character in line.chars() {
+        let character_width = if character.is_ascii() { 1 } else { 2 };
+        if cells + character_width > width && !row.is_empty() {
+            wrapped.push(std::mem::take(&mut row));
+            cells = 0;
+        }
+        row.push(character);
+        cells += character_width;
+    }
+    if !row.is_empty() {
+        wrapped.push(row);
+    }
+    wrapped
+}
+
+fn render_actions(frame: &mut Frame<'_>, model: &UiModel, area: Rect) {
+    let actions = model.actions();
     let lines = vec![
         action_line([
             action("[o] Open/import", actions.open),
@@ -444,9 +483,16 @@ fn render_actions(frame: &mut Frame<'_>, actions: UiActions, area: Rect) {
             action("↑/↓ Select", actions.open),
         ]),
         action_line([
-            action("[Enter] Console", actions.console_input),
-            action("[q] Quit", true),
-            action("[Ctrl-C] Quit", true),
+            action("[P] Pause/resume", actions.console_pause),
+            action("[c] Clear", actions.console_clear),
+            action("[y] Copy", actions.console_copy),
+            action("[PgUp/PgDn] Scroll", actions.console_pause),
+        ]),
+        action_line([
+            action("[Enter] Guest input", actions.console_input),
+            action("[Esc] Controls", true),
+            action("[q/Ctrl-Q] Quit", true),
+            action("[Ctrl-C] Interrupt guest", actions.console_input),
         ]),
     ];
     frame.render_widget(
@@ -708,8 +754,8 @@ mod tests {
         assert!(output.contains("▶ Hello World 0.1.0"));
         assert!(output.contains("[o] Open"));
         assert!(output.contains("[b] Boot"));
-        assert!(output.contains("[Enter] Console"));
-        assert!(output.contains("[q] Quit"));
+        assert!(output.contains("[Enter] Guest input"));
+        assert!(output.contains("[q/Ctrl-Q] Quit"));
         assert!(output.contains("[f] Refresh"));
     }
 
@@ -746,6 +792,45 @@ mod tests {
         assert!(output.contains("rootglass-hello login:"));
         assert!(output.contains("[s] Stop"));
         assert!(output.contains("[r] Restart"));
+        assert!(output.contains("[P] Pause/resume"));
+        assert!(output.contains("[c] Clear"));
+        assert!(output.contains("[y] Copy"));
         assert!(!model.actions().boot);
+    }
+
+    #[test]
+    fn console_scrollback_renders_the_latest_rows_and_can_page_back() {
+        let mut model = model(UiState::Running(run("Running")));
+        model.run_id = Some(RunId(7));
+        model.console = (0..20).map(|line| format!("line-{line:02}\n")).collect();
+
+        let snapshot_console = |model: &UiModel| {
+            let backend = TestBackend::new(30, 8);
+            let mut terminal = Terminal::new(backend).expect("test terminal is created");
+            terminal
+                .draw(|frame| {
+                    let area = frame.area();
+                    render_console(frame, model, area);
+                })
+                .expect("console renders to TestBackend");
+            let buffer = terminal.backend().buffer();
+            (0..buffer.area.height)
+                .map(|y| {
+                    (0..buffer.area.width)
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let latest = snapshot_console(&model);
+        assert!(latest.contains("line-19"));
+        assert!(!latest.contains("line-00"));
+
+        model.scroll_console_up(2);
+        let earlier = snapshot_console(&model);
+        assert!(earlier.contains("line-18"));
+        assert!(!earlier.contains("line-19"));
     }
 }
