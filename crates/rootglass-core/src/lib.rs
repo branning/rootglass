@@ -579,4 +579,3 @@ mod tests {
             .ends_with("experiment-1.img"));
     }
 }
-
