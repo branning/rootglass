@@ -123,27 +123,27 @@ impl RuntimeAssetsResolver {
         let canonical_manifest =
             manifest_path
                 .canonicalize()
-            .map_err(|source| RuntimeAssetsError::ReadManifest {
-                path: manifest_path.clone(),
-                source,
-            })?;
+                .map_err(|source| RuntimeAssetsError::ReadManifest {
+                    path: manifest_path.clone(),
+                    source,
+                })?;
         let canonical_root =
             allowed_root
                 .canonicalize()
-            .map_err(|source| RuntimeAssetsError::ReadManifest {
-                path: allowed_root.clone(),
-                source,
-            })?;
+                .map_err(|source| RuntimeAssetsError::ReadManifest {
+                    path: allowed_root.clone(),
+                    source,
+                })?;
         if !canonical_manifest.starts_with(&canonical_root) {
             return Err(RuntimeAssetsError::UnsafePath(manifest_path));
         }
         let metadata =
             manifest_path
                 .metadata()
-            .map_err(|source| RuntimeAssetsError::ReadManifest {
-                path: manifest_path.clone(),
-                source,
-            })?;
+                .map_err(|source| RuntimeAssetsError::ReadManifest {
+                    path: manifest_path.clone(),
+                    source,
+                })?;
         if metadata.len() > MAX_MANIFEST_BYTES {
             return Err(RuntimeAssetsError::ManifestTooLarge(manifest_path));
         }
