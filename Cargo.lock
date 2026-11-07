@@ -320,6 +320,12 @@ dependencies = [
  "rootglass-core",
  "rootglass-manifest",
  "rootglass-qemu",
+ "rootglass-signature",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 1.0.69",
+ "zip",
 ]
 
 [[package]]

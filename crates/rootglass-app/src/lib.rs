@@ -1,4 +1,6 @@
 //! UI-independent application orchestration shared by the CLI and desktop.
+pub mod import;
+pub mod registry;
 use rootglass_core::{HostCapabilities, LaunchRequest, LifecycleState, RootglassRuntime};
 use rootglass_qemu::{QemuLaunchPlan, QemuProcess, SerialChunk};
 use std::collections::VecDeque;
