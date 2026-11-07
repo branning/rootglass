@@ -1,6 +1,8 @@
 pub mod runtime_profile;
 pub mod storage;
 
+pub mod runtime_assets;
+
 use rootglass_manifest::{Glass, ManifestError};
 use rootglass_signature::{verify_glass_dir, SignatureError, TrustStore, VerificationReport};
 use runtime_profile::{ResolvedRuntimeAssets, RuntimeAssetResolver, RuntimeProfileError};
@@ -577,3 +579,4 @@ mod tests {
             .ends_with("experiment-1.img"));
     }
 }
+
