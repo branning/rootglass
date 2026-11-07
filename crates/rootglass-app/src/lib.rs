@@ -4,6 +4,7 @@ pub mod registry;
 pub mod state;
 
 use rootglass_core::storage::{LocalWritableOverlay, WritableOverlaySelection};
+use rootglass_core::runtime_assets::RuntimeAssetsResolver;
 use rootglass_core::{HostCapabilities, LaunchRequest, LifecycleState, RootglassRuntime};
 use rootglass_qemu::{QemuLaunchPlan, QemuProcess, SerialChunk};
 use rootglass_signature::trust_config::{load_trust_store, LoadedTrustStore, TrustConfigError};
@@ -190,6 +191,17 @@ impl AppService {
     /// Construct a service from a validated local production trust configuration.
     pub fn with_loaded_trust_store(loaded: LoadedTrustStore) -> Self {
         Self::with_trust_store(loaded.trust_store().clone())
+    }
+
+    /// Use integrity-checked, versioned runtime assets for packaged launches.
+    pub fn with_verified_runtime_assets(
+        mut self,
+        resolver: RuntimeAssetsResolver,
+        runtime_version: impl Into<String>,
+    ) -> Self {
+        self.runtime = RootglassRuntime::with_trust_store(self.trust_store.clone())
+            .with_verified_runtime_assets(resolver, runtime_version);
+        self
     }
 
     /// Load and use a local production trust configuration.
@@ -932,6 +944,96 @@ mod library_tests {
             .remove_installed_glass(&installed.content_sha256)
             .unwrap();
         assert!(reopened.installed_glasses().unwrap().is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[cfg(test)]
+mod verified_runtime_launch_tests {
+    use super::*;
+    use rootglass_signature::TrustStore;
+    use serde_json::json;
+    use sha2::{Digest, Sha256};
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_root() -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("rootglass-verified-runtime-{}-{nonce}", std::process::id()))
+    }
+
+    fn digest(path: &Path) -> String {
+        Sha256::digest(fs::read(path).unwrap())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
+    fn install_test_runtime(root: &Path) -> PathBuf {
+        let version_root = root.join("runtime-assets/test-1");
+        fs::create_dir_all(&version_root).unwrap();
+        for (name, bytes) in [
+            ("kernel", b"verified test kernel".as_slice()),
+            ("initramfs", b"verified test initramfs".as_slice()),
+            ("qemu", b"verified test qemu".as_slice()),
+        ] {
+            fs::write(version_root.join(name), bytes).unwrap();
+        }
+        let manifest = json!({
+            "schema_version": 1,
+            "runtime_version": "test-1",
+            "assets": [
+                {"kind": "kernel", "path": "kernel", "sha256": digest(&version_root.join("kernel"))},
+                {"kind": "initramfs", "path": "initramfs", "sha256": digest(&version_root.join("initramfs"))},
+                {"kind": "qemu", "path": "qemu", "sha256": digest(&version_root.join("qemu"))}
+            ]
+        });
+        fs::write(
+            version_root.join("assets.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        version_root
+    }
+
+    fn service_with_assets(root: &Path) -> AppService {
+        AppService::with_trust_store(TrustStore::example_fixture()).with_verified_runtime_assets(
+            RuntimeAssetsResolver::new(root, root.join("user-data")),
+            "test-1",
+        )
+    }
+
+    #[test]
+    fn app_launch_plan_uses_integrity_checked_assets_and_qemu() {
+        let root = temp_root();
+        let version_root = install_test_runtime(&root);
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/hello-world.glass");
+
+        let (_summary, command) = service_with_assets(&root)
+            .launch_plan(&source)
+            .expect("verified app launch plan should be prepared");
+
+        assert!(command.starts_with(&version_root.join("qemu").display().to_string()));
+        assert!(command.contains(&format!("-kernel {}", version_root.join("kernel").display())));
+        assert!(command.contains(&format!("-initrd {}", version_root.join("initramfs").display())));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn app_launch_plan_rejects_tampered_runtime_asset_before_spawn() {
+        let root = temp_root();
+        let version_root = install_test_runtime(&root);
+        fs::write(version_root.join("kernel"), b"tampered kernel").unwrap();
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/hello-world.glass");
+
+        let error = service_with_assets(&root)
+            .launch_plan(&source)
+            .expect_err("tampered runtime must not produce a launch plan");
+
+        assert!(error.detail.contains("runtime asset integrity check failed"));
         let _ = fs::remove_dir_all(root);
     }
 }
