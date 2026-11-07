@@ -12,6 +12,7 @@ use rootglass_qemu::{QemuLaunchPlan, QemuProcess, SerialChunk};
 use rootglass_signature::trust_config::{load_trust_store, LoadedTrustStore, TrustConfigError};
 use rootglass_signature::{SignatureError, TrustStore};
 use std::collections::{BTreeSet, VecDeque};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -179,7 +180,50 @@ impl PackageLibrary {
             registry::PackageRegistry::open(self.root.join("registry.json")).map_err(|error| {
                 import_app_error("The installed-glass registry could not be opened.", error)
             })?;
-        Ok(registry.packages().to_vec())
+        let packages = registry.packages().to_vec();
+        if packages.is_empty() {
+            return Ok(packages);
+        }
+        let packages_root = self.root.join("packages");
+        let packages_metadata = fs::symlink_metadata(&packages_root).map_err(|error| AppError {
+            phase: LifecycleState::Verifying,
+            summary: "The managed package store could not be opened.".to_string(),
+            detail: error.to_string(),
+        })?;
+        if packages_metadata.file_type().is_symlink() || !packages_metadata.is_dir() {
+            return Err(AppError {
+                phase: LifecycleState::Verifying,
+                summary: "The managed package store is not a regular directory.".to_string(),
+                detail: packages_root.display().to_string(),
+            });
+        }
+        for package in &packages {
+            let expected = self.root.join("packages").join(&package.content_sha256);
+            if package.package_path != expected {
+                return Err(AppError {
+                    phase: LifecycleState::Verifying,
+                    summary: "The installed-glass registry contains an invalid package path."
+                        .to_string(),
+                    detail: format!(
+                        "The registry path '{}' does not match the managed package store.",
+                        package.package_path.display()
+                    ),
+                });
+            }
+            let metadata = fs::symlink_metadata(&expected).map_err(|error| AppError {
+                phase: LifecycleState::Verifying,
+                summary: "An installed package is missing from the managed store.".to_string(),
+                detail: error.to_string(),
+            })?;
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(AppError {
+                    phase: LifecycleState::Verifying,
+                    summary: "An installed package is not a regular directory.".to_string(),
+                    detail: expected.display().to_string(),
+                });
+            }
+        }
+        Ok(packages)
     }
 
     pub fn remove_installed_glass(
@@ -1132,6 +1176,10 @@ mod library_tests {
     }
 
     fn signed_launch_ready_fixture(root: &Path) {
+        signed_launch_ready_fixture_version(root, "0.1.0");
+    }
+
+    fn signed_launch_ready_fixture_version(root: &Path, version: &str) {
         let example =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/hello-world.glass");
         fs::create_dir_all(root.join("metadata")).unwrap();
@@ -1139,6 +1187,13 @@ mod library_tests {
         for name in ["README.md", "metadata/README.md", "rootglass.toml"] {
             fs::copy(example.join(name), root.join(name)).unwrap();
         }
+        let manifest_path = root.join("rootglass.toml");
+        let manifest = fs::read_to_string(&manifest_path).unwrap();
+        fs::write(
+            &manifest_path,
+            manifest.replace("version = \"0.1.0\"", &format!("version = \"{version}\"")),
+        )
+        .unwrap();
         fs::write(root.join("rootfs.img"), b"synthetic test root filesystem").unwrap();
         fs::write(root.join("state.img"), b"synthetic test state image").unwrap();
 
@@ -1162,7 +1217,7 @@ mod library_tests {
             "predicate": {
                 "createdAt": "2026-11-07T00:00:00Z",
                 "glassIdentifier": "io.rootglass.examples.hello-world",
-                "glassVersion": "0.1.0",
+                "glassVersion": version,
                 "publisher": {
                     "identity": "rootglass.dev/examples",
                     "keyId": "ed25519:rootglass-example-fixture",
@@ -1194,6 +1249,59 @@ mod library_tests {
         .unwrap();
     }
 
+    fn create_archive(source: &Path, archive: &Path) {
+        let file = File::create(archive).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        add_directory(source, source, &mut writer).unwrap();
+        writer.finish().unwrap();
+    }
+
+    fn make_tree_writable(root: &Path) {
+        if let Ok(entries) = fs::read_dir(root) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_dir()) {
+                    make_tree_writable(&path);
+                }
+                if let Ok(metadata) = fs::symlink_metadata(&path) {
+                    make_path_writable(&path, metadata);
+                }
+            }
+        }
+        if let Ok(metadata) = fs::metadata(root) {
+            make_path_writable(root, metadata);
+        }
+    }
+
+    fn copy_tree(source: &Path, destination: &Path) {
+        fs::create_dir_all(destination).unwrap();
+        for entry in fs::read_dir(source).unwrap() {
+            let entry = entry.unwrap();
+            let source_path = entry.path();
+            let destination_path = destination.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_tree(&source_path, &destination_path);
+            } else {
+                fs::copy(&source_path, &destination_path).unwrap();
+            }
+        }
+    }
+
+    fn make_path_writable(path: &Path, metadata: fs::Metadata) {
+        if metadata.file_type().is_symlink() {
+            return;
+        }
+        let mut permissions = metadata.permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            permissions.set_mode(permissions.mode() | 0o200);
+        }
+        #[cfg(not(unix))]
+        permissions.set_readonly(false);
+        let _ = fs::set_permissions(path, permissions);
+    }
+
     fn dsse_pae(payload_type: &[u8], payload: &[u8]) -> Vec<u8> {
         let mut out = b"DSSEv1 ".to_vec();
         out.extend_from_slice(payload_type.len().to_string().as_bytes());
@@ -1211,33 +1319,101 @@ mod library_tests {
         let root = temp_root();
         fs::create_dir_all(&root).unwrap();
         let archive = root.join("hello-world.glass");
-        let file = File::create(&archive).unwrap();
-        let mut writer = zip::ZipWriter::new(file);
         let source = root.join("source.glass");
         signed_launch_ready_fixture(&source);
-        add_directory(&source, &source, &mut writer).unwrap();
-        writer.finish().unwrap();
+        create_archive(&source, &archive);
 
         let library = root.join("library");
         let service =
             AppService::with_trust_store(TrustStore::example_fixture()).with_library_root(&library);
         let installed = service.import_archive(&archive).unwrap();
         assert_eq!(installed.identifier, "io.rootglass.examples.hello-world");
+        let reimported = service.import_archive(&archive).unwrap();
+        assert_eq!(reimported.content_sha256, installed.content_sha256);
         assert_eq!(
             service.installed_glasses().unwrap(),
-            vec![installed.clone()]
+            vec![reimported.clone()]
         );
+
+        let source_v2 = root.join("source-v2.glass");
+        let archive_v2 = root.join("hello-world-v2.glass");
+        signed_launch_ready_fixture_version(&source_v2, "0.2.0");
+        create_archive(&source_v2, &archive_v2);
+        let installed_v2 = service.import_archive(&archive_v2).unwrap();
+        assert_ne!(installed_v2.content_sha256, installed.content_sha256);
+        assert_ne!(installed_v2.package_path, installed.package_path);
+        assert_eq!(service.installed_glasses().unwrap().len(), 2);
 
         let reopened =
             AppService::with_trust_store(TrustStore::example_fixture()).with_library_root(&library);
-        assert_eq!(
-            reopened.installed_glasses().unwrap(),
-            vec![installed.clone()]
-        );
+        assert_eq!(reopened.installed_glasses().unwrap().len(), 2);
+
+        let tampered = reimported.package_path.join("README.md");
+        make_path_writable(&tampered, fs::metadata(&tampered).unwrap());
+        fs::write(&tampered, b"tampered installed package").unwrap();
+        let error = service
+            .import_archive(&archive)
+            .expect_err("reimport must revalidate an existing content-addressed package");
+        assert!(error.detail.contains("subject digest mismatch"));
+        assert_eq!(service.installed_glasses().unwrap().len(), 2);
+
+        make_tree_writable(&reimported.package_path);
+        fs::remove_dir_all(&reimported.package_path).unwrap();
+        copy_tree(&installed_v2.package_path, &reimported.package_path);
+        let error = service
+            .import_archive(&archive)
+            .expect_err("a different valid package must not be reused at this digest");
+        assert!(error.detail.contains("archive changed"));
+
         reopened
             .remove_installed_glass(&installed.content_sha256)
             .unwrap();
-        assert!(reopened.installed_glasses().unwrap().is_empty());
+        assert_eq!(reopened.installed_glasses().unwrap().len(), 1);
+        make_tree_writable(&root);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn import_recovers_when_registry_commit_fails_after_package_publication() {
+        let root = temp_root();
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("source.glass");
+        let archive = root.join("hello-world.glass");
+        signed_launch_ready_fixture(&source);
+        create_archive(&source, &archive);
+
+        let registry_home = root.join("registry-home");
+        fs::create_dir_all(&registry_home).unwrap();
+        let registry_path = registry_home.join("registry.json");
+        let mut registry = crate::registry::PackageRegistry::open(&registry_path).unwrap();
+        fs::remove_dir_all(&registry_home).unwrap();
+        fs::write(&registry_home, b"block registry parent").unwrap();
+        let store = root.join("store");
+        let failure = crate::import::import_glass_archive(
+            &archive,
+            &store,
+            &mut registry,
+            &TrustStore::example_fixture(),
+            &crate::import::ImportLimits::default(),
+        )
+        .expect_err("registry write should fail after package publication");
+        assert!(matches!(failure, crate::import::ImportError::Registry(_)));
+        assert!(registry.packages().is_empty());
+        assert_eq!(fs::read_dir(store.join("packages")).unwrap().count(), 1);
+
+        fs::remove_file(&registry_home).unwrap();
+        fs::create_dir_all(&registry_home).unwrap();
+        let mut recovered = crate::registry::PackageRegistry::open(&registry_path).unwrap();
+        let installed = crate::import::import_glass_archive(
+            &archive,
+            &store,
+            &mut recovered,
+            &TrustStore::example_fixture(),
+            &crate::import::ImportLimits::default(),
+        )
+        .expect("reimport should verify and reuse the orphaned immutable package");
+        assert_eq!(recovered.packages(), &[installed]);
+        make_tree_writable(&root);
         let _ = fs::remove_dir_all(root);
     }
 }

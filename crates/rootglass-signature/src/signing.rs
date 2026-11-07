@@ -1,7 +1,7 @@
 use super::{
     dsse_pae, hex_sha256, normalize_relative_path, verify_glass_archive, DsseEnvelope,
-    SignatureError, TrustStore, TrustedPublisher, DSSE_PAYLOAD_TYPE, PREDICATE_TYPE,
-    STATEMENT_TYPE,
+    SignatureError, TrustStore, TrustedPublisher, VerificationLimits, DSSE_PAYLOAD_TYPE,
+    PREDICATE_TYPE, STATEMENT_TYPE,
 };
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -29,15 +29,27 @@ struct GlassFile {
     name: String,
     path: PathBuf,
     digest: String,
+    size: u64,
 }
+
+const MAX_SIGNING_KEY_FILE_BYTES: u64 = 256;
 
 /// Load a raw 32-byte Ed25519 seed or base64url-encoded seed from a secret file.
 pub fn load_signing_key(path: impl AsRef<Path>) -> Result<SigningKey, SignatureError> {
     let path = path.as_ref();
-    let bytes = fs::read(path).map_err(|source| SignatureError::ReadSigningKey {
-        path: path.to_path_buf(),
-        source,
-    })?;
+    let mut bytes = Vec::new();
+    File::open(path)
+        .and_then(|file| {
+            file.take(MAX_SIGNING_KEY_FILE_BYTES + 1)
+                .read_to_end(&mut bytes)
+        })
+        .map_err(|source| SignatureError::ReadSigningKey {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    if bytes.len() as u64 > MAX_SIGNING_KEY_FILE_BYTES {
+        return Err(SignatureError::InvalidSigningKey(path.to_path_buf()));
+    }
     let seed = if bytes.len() == 32 {
         bytes
     } else {
@@ -72,7 +84,9 @@ pub fn sign_glass_directory_at(
     created_at: &str,
 ) -> Result<SigningReport, SignatureError> {
     let root = glass_root.as_ref();
-    let (signature_path, envelope, report, _) = prepare_signature(root, signing_key, created_at)?;
+    let limits = VerificationLimits::default();
+    let (signature_path, envelope, report, _) =
+        prepare_signature(root, signing_key, created_at, &limits)?;
     let envelope_path = root.join(signature_path);
     let parent = envelope_path.parent().unwrap_or(root);
     fs::create_dir_all(parent).map_err(|source| SignatureError::WriteEnvelope {
@@ -80,6 +94,11 @@ pub fn sign_glass_directory_at(
         source,
     })?;
     let encoded = serde_json::to_vec_pretty(&envelope)?;
+    if encoded.len() as u64 + 1 > limits.max_signature_bytes {
+        return Err(SignatureError::SignatureEnvelopeTooLarge {
+            limit: limits.max_signature_bytes,
+        });
+    }
     fs::write(&envelope_path, [encoded.as_slice(), b"\n"].concat()).map_err(|source| {
         SignatureError::WriteEnvelope {
             path: envelope_path,
@@ -111,11 +130,17 @@ pub fn package_glass_directory_at(
         return Err(SignatureError::PackageOutputExists(output.to_path_buf()));
     }
 
+    let limits = VerificationLimits::default();
     let (signature_path, envelope, report, files) =
-        prepare_signature(root, signing_key, created_at)?;
+        prepare_signature(root, signing_key, created_at, &limits)?;
     let signature_name = super::path_to_string(&signature_path);
     let encoded = serde_json::to_vec_pretty(&envelope)?;
     let envelope_bytes = [encoded.as_slice(), b"\n"].concat();
+    if envelope_bytes.len() as u64 > limits.max_signature_bytes {
+        return Err(SignatureError::SignatureEnvelopeTooLarge {
+            limit: limits.max_signature_bytes,
+        });
+    }
     let trust = signer_trust_store(
         signing_key,
         &report.publisher_name,
@@ -123,17 +148,23 @@ pub fn package_glass_directory_at(
     );
     let temporary = temporary_sibling(output)?;
 
-    let write_result = write_archive(&temporary, &files, &signature_name, &envelope_bytes)
-        .and_then(|()| {
-            verify_glass_archive(&temporary, &signature_name, &trust)
-                .map(|_| ())
-                .map_err(|error| SignatureError::WritePackage {
-                    path: temporary.clone(),
-                    source: std::io::Error::other(format!(
-                        "newly generated package did not verify: {error}"
-                    )),
-                })
-        });
+    let write_result = write_archive(
+        &temporary,
+        &files,
+        &signature_name,
+        &envelope_bytes,
+        &limits,
+    )
+    .and_then(|()| {
+        verify_glass_archive(&temporary, &signature_name, &trust)
+            .map(|_| ())
+            .map_err(|error| SignatureError::WritePackage {
+                path: temporary.clone(),
+                source: std::io::Error::other(format!(
+                    "newly generated package did not verify: {error}"
+                )),
+            })
+    });
 
     if let Err(error) = write_result {
         let _ = fs::remove_file(&temporary);
@@ -159,7 +190,18 @@ fn prepare_signature(
     root: &Path,
     signing_key: &SigningKey,
     created_at: &str,
+    limits: &VerificationLimits,
 ) -> Result<(PathBuf, DsseEnvelope, SigningReport, Vec<GlassFile>), SignatureError> {
+    let root_metadata =
+        fs::symlink_metadata(root).map_err(|source| SignatureError::ReadSignedFile {
+            path: root.to_path_buf(),
+            source,
+        })?;
+    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+        return Err(SignatureError::UnsupportedArchiveEntry(
+            root.display().to_string(),
+        ));
+    }
     let glass = rootglass_manifest::Glass::load(root)
         .map_err(|error| SignatureError::InvalidManifest(error.to_string()))?;
     glass
@@ -167,7 +209,16 @@ fn prepare_signature(
         .map_err(|error| SignatureError::InvalidManifest(error.to_string()))?;
 
     let signature_path = normalize_relative_path(Path::new(&glass.manifest.publisher.signature))?;
-    let mut files = collect_glass_files(root, root, &signature_path)?;
+    let mut total = 0u64;
+    let mut file_count = 0usize;
+    let mut files = collect_glass_files(
+        root,
+        root,
+        &signature_path,
+        limits,
+        &mut total,
+        &mut file_count,
+    )?;
     files.sort_by(|left, right| left.name.cmp(&right.name));
 
     let public_key = signing_key.verifying_key().to_bytes();
@@ -213,6 +264,26 @@ fn prepare_signature(
             "sig": URL_SAFE_NO_PAD.encode(signature.to_bytes())
         }]
     }))?;
+    let payload_size = URL_SAFE_NO_PAD
+        .decode(&envelope.payload)
+        .map_err(|error| SignatureError::InvalidPayloadEncoding(error.to_string()))?
+        .len() as u64;
+    if payload_size > limits.max_signature_bytes {
+        return Err(SignatureError::SignatureEnvelopeTooLarge {
+            limit: limits.max_signature_bytes,
+        });
+    }
+    let envelope_size = serde_json::to_vec(&envelope)?.len() as u64 + 1;
+    if envelope_size > limits.max_signature_bytes {
+        return Err(SignatureError::SignatureEnvelopeTooLarge {
+            limit: limits.max_signature_bytes,
+        });
+    }
+    if total.saturating_add(envelope_size) > limits.max_total_uncompressed_bytes {
+        return Err(SignatureError::ArchiveUncompressedTooLarge {
+            limit: limits.max_total_uncompressed_bytes,
+        });
+    }
     Ok((signature_path, envelope, report, files))
 }
 
@@ -220,6 +291,9 @@ fn collect_glass_files(
     root: &Path,
     current: &Path,
     signature_path: &Path,
+    limits: &VerificationLimits,
+    total: &mut u64,
+    file_count: &mut usize,
 ) -> Result<Vec<GlassFile>, SignatureError> {
     let mut files = Vec::new();
     let entries = fs::read_dir(current).map_err(|source| SignatureError::ReadSignedFile {
@@ -247,7 +321,14 @@ fn collect_glass_files(
             return Err(SignatureError::SymlinkInGlass(relative_text.to_string()));
         }
         if metadata.is_dir() {
-            files.extend(collect_glass_files(root, &path, signature_path)?);
+            files.extend(collect_glass_files(
+                root,
+                &path,
+                signature_path,
+                limits,
+                total,
+                file_count,
+            )?);
             continue;
         }
         if !metadata.is_file() {
@@ -258,24 +339,51 @@ fn collect_glass_files(
             continue;
         }
         let name = super::path_to_string(&normalized);
-        if name.contains('\\') {
-            return Err(SignatureError::UnsafeArchivePath(name));
+        let size = metadata.len();
+        if size > limits.max_member_bytes {
+            return Err(SignatureError::SignedFileTooLarge {
+                path: name,
+                limit: limits.max_member_bytes,
+            });
         }
-        let digest = hash_file(&path)?;
-        files.push(GlassFile { name, path, digest });
+        *total = total
+            .checked_add(size)
+            .ok_or(SignatureError::ArchiveUncompressedTooLarge {
+                limit: limits.max_total_uncompressed_bytes,
+            })?;
+        if *total > limits.max_total_uncompressed_bytes {
+            return Err(SignatureError::ArchiveUncompressedTooLarge {
+                limit: limits.max_total_uncompressed_bytes,
+            });
+        }
+        if *file_count >= limits.max_entries.saturating_sub(1) {
+            return Err(SignatureError::TooManyArchiveEntries {
+                limit: limits.max_entries,
+            });
+        }
+        *file_count += 1;
+        let digest = hash_file(&path, size, limits.max_member_bytes)?;
+        files.push(GlassFile {
+            name,
+            path,
+            digest,
+            size,
+        });
     }
     Ok(files)
 }
 
-fn hash_file(path: &Path) -> Result<String, SignatureError> {
-    let mut file = File::open(path).map_err(|source| SignatureError::ReadSignedFile {
+fn hash_file(path: &Path, expected_size: u64, limit: u64) -> Result<String, SignatureError> {
+    let file = File::open(path).map_err(|source| SignatureError::ReadSignedFile {
         path: path.to_path_buf(),
         source,
     })?;
+    let mut reader = file.take(limit.saturating_add(1));
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
+    let mut total = 0u64;
     loop {
-        let count = file
+        let count = reader
             .read(&mut buffer)
             .map_err(|source| SignatureError::ReadSignedFile {
                 path: path.to_path_buf(),
@@ -284,7 +392,20 @@ fn hash_file(path: &Path) -> Result<String, SignatureError> {
         if count == 0 {
             break;
         }
+        total = total.saturating_add(count as u64);
+        if total > limit {
+            return Err(SignatureError::SignedFileTooLarge {
+                path: path.display().to_string(),
+                limit,
+            });
+        }
         hasher.update(&buffer[..count]);
+    }
+    if total != expected_size {
+        return Err(SignatureError::InvalidStatement(format!(
+            "file '{}' changed while it was being signed",
+            path.display()
+        )));
     }
     let digest = hasher.finalize();
     Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
@@ -295,6 +416,7 @@ fn write_archive(
     files: &[GlassFile],
     signature_name: &str,
     envelope: &[u8],
+    limits: &VerificationLimits,
 ) -> Result<(), SignatureError> {
     let file = OpenOptions::new()
         .write(true)
@@ -335,17 +457,31 @@ fn write_archive(
                 .iter()
                 .find(|file| file.name == name)
                 .expect("archive order was built from files");
-            let mut input =
+            let input =
                 File::open(&file.path).map_err(|source| SignatureError::ReadSignedFile {
                     path: file.path.clone(),
                     source,
                 })?;
-            std::io::copy(&mut input, &mut writer).map_err(|source| {
-                SignatureError::WritePackage {
-                    path: output.to_path_buf(),
-                    source,
-                }
+            let copied = std::io::copy(
+                &mut input.take(limits.max_member_bytes.saturating_add(1)),
+                &mut writer,
+            )
+            .map_err(|source| SignatureError::WritePackage {
+                path: output.to_path_buf(),
+                source,
             })?;
+            if copied > limits.max_member_bytes {
+                return Err(SignatureError::SignedFileTooLarge {
+                    path: file.name.clone(),
+                    limit: limits.max_member_bytes,
+                });
+            }
+            if copied != file.size {
+                return Err(SignatureError::InvalidStatement(format!(
+                    "file '{}' changed while it was packaged",
+                    file.name
+                )));
+            }
         }
     }
 
@@ -359,7 +495,20 @@ fn write_archive(
         .map_err(|source| SignatureError::WritePackage {
             path: output.to_path_buf(),
             source,
-        })
+        })?;
+    let size = file
+        .metadata()
+        .map_err(|source| SignatureError::WritePackage {
+            path: output.to_path_buf(),
+            source,
+        })?
+        .len();
+    if size > limits.max_archive_bytes {
+        return Err(SignatureError::ArchiveTooLarge {
+            limit: limits.max_archive_bytes,
+        });
+    }
+    Ok(())
 }
 
 fn signer_trust_store(
