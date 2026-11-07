@@ -1,6 +1,10 @@
 use rootglass_core::{HostCapabilities, LaunchRequest, RootglassRuntime};
 use rootglass_manifest::Glass;
 use rootglass_qemu::QemuLaunchPlan;
+use rootglass_signature::{
+    load_signing_key, package_glass_directory, package_glass_directory_at, sign_glass_directory,
+    sign_glass_directory_at, SigningReport,
+};
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -34,6 +38,8 @@ fn run(args: Vec<String>) -> Result<(), String> {
             let glass_root = required_path_arg(&args, "boot")?;
             boot_glass(glass_root)
         }
+        "sign" => sign_command(&args),
+        "package" => package_command(&args),
         "help" | "--help" | "-h" => {
             print_usage();
             Ok(())
@@ -43,6 +49,79 @@ fn run(args: Vec<String>) -> Result<(), String> {
             Err(format!("unknown command '{other}'"))
         }
     }
+}
+
+fn sign_command(args: &[String]) -> Result<(), String> {
+    let directory = args.get(1).ok_or_else(|| {
+        "usage: rootglass sign <glass-directory> --key <secret-file> [--created-at <RFC3339>]"
+            .to_string()
+    })?;
+    let (key_path, created_at) = signing_options(args, 2)?;
+    let key = load_signing_key(key_path).map_err(|error| error.to_string())?;
+    let report = match created_at {
+        Some(timestamp) => sign_glass_directory_at(directory, &key, timestamp),
+        None => sign_glass_directory(directory, &key),
+    }
+    .map_err(|error| error.to_string())?;
+    print_signing_report(&report);
+    Ok(())
+}
+
+fn package_command(args: &[String]) -> Result<(), String> {
+    let directory = args
+        .get(1)
+        .ok_or_else(|| "usage: rootglass package <glass-directory> <output.glass> --key <secret-file> [--created-at <RFC3339>]".to_string())?;
+    let output = args.get(2).ok_or_else(|| {
+        "usage: rootglass package <glass-directory> <output.glass> --key <secret-file> [--created-at <RFC3339>]"
+            .to_string()
+    })?;
+    let (key_path, created_at) = signing_options(args, 3)?;
+    let key = load_signing_key(key_path).map_err(|error| error.to_string())?;
+    let report = match created_at {
+        Some(timestamp) => package_glass_directory_at(directory, output, &key, timestamp),
+        None => package_glass_directory(directory, output, &key),
+    }
+    .map_err(|error| error.to_string())?;
+    print_signing_report(&report);
+    println!("created package: {}", output);
+    Ok(())
+}
+
+fn signing_options(args: &[String], start: usize) -> Result<(&str, Option<&str>), String> {
+    let mut key = None;
+    let mut created_at = None;
+    let mut index = start;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--key" => {
+                index += 1;
+                key = args.get(index).map(String::as_str);
+                if key.is_none() {
+                    return Err("--key requires a secret-file path".to_string());
+                }
+            }
+            "--created-at" => {
+                index += 1;
+                created_at = args.get(index).map(String::as_str);
+                if created_at.is_none() {
+                    return Err("--created-at requires an RFC3339 timestamp".to_string());
+                }
+            }
+            other => return Err(format!("unexpected signing option '{other}'")),
+        }
+        index += 1;
+    }
+    let key = key.ok_or_else(|| "--key <secret-file> is required".to_string())?;
+    Ok((key, created_at))
+}
+
+fn print_signing_report(report: &SigningReport) {
+    println!(
+        "signed publisher: {} ({})",
+        report.publisher_name, report.publisher_identity
+    );
+    println!("signature key: {}", report.key_id);
+    println!("signed subjects: {}", report.subject_count);
 }
 
 fn required_path_arg(args: &[String], command: &str) -> Result<PathBuf, String> {
@@ -154,6 +233,8 @@ fn print_usage() {
     eprintln!("  rootglass validate <path-to.glass>");
     eprintln!("  rootglass plan <path-to.glass>");
     eprintln!("  rootglass boot <path-to.glass>");
+    eprintln!("  rootglass sign <glass-directory> --key <secret-file> [--created-at <RFC3339>]");
+    eprintln!("  rootglass package <glass-directory> <output.glass> --key <secret-file> [--created-at <RFC3339>]");
 }
 
 #[cfg(test)]

@@ -181,3 +181,38 @@ Initial Rust implementation should prefer:
 - No shelling out to external verification tools.
 - Deterministic lexicographic file-path ordering when generating statements.
 - Clear user-facing errors for unsafe archive paths, unsigned files, tampering, unknown publisher, and unsupported signature cases.
+
+
+## CLI signing and packaging
+
+The CLI accepts a private Ed25519 seed from a file. The file may contain either the raw 32-byte
+seed or its unpadded base64url encoding. Treat this file as a secret and keep it outside the
+repository. Rootglass does not embed or generate a release key.
+
+```sh
+rootglass sign ./hello-world.glass --key /secure/path/publisher.seed
+rootglass package ./hello-world.glass ./hello-world.glass.zip --key /secure/path/publisher.seed
+```
+
+Both commands use the publisher name, identity, and signature path in `rootglass.toml`. Signing
+updates the DSSE envelope in the directory. Packaging writes a ZIP archive with stable path order,
+fixed ZIP timestamps and permissions, signs every regular file except the envelope (including
+generated image assets), and verifies the completed archive with Rootglass's archive verifier
+before publishing it. The output path must not already exist.
+
+The default `createdAt` value is the current UTC time. For repeatable output, supply an explicit
+RFC 3339 timestamp:
+
+```sh
+rootglass package ./hello-world.glass ./hello-world.glass.zip \
+  --key /secure/path/publisher.seed --created-at 2026-11-06T00:00:00Z
+```
+
+With identical source files, key, and timestamp, signing and packaging produce deterministic
+statements and signatures. Directory-form development verification may have fixture-specific
+generated-image exclusions; the signing and production archive paths include all regular files and
+do not apply those exclusions.
+
+The archive verifier currently reads the full archive and file contents into memory. The CLI
+therefore provides integrity verification, but it does not yet satisfy the bounded-memory and ZIP
+resource-limit requirements for untrusted large archives described in the application spec.

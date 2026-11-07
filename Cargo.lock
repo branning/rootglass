@@ -320,6 +320,7 @@ dependencies = [
  "rootglass-core",
  "rootglass-manifest",
  "rootglass-qemu",
+ "rootglass-signature",
 ]
 
 [[package]]
@@ -354,6 +355,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "ed25519-dalek",
+ "rootglass-manifest",
  "serde",
  "serde_json",
  "sha2",
