@@ -10,6 +10,7 @@ name = "rootglass"
 path = "src/main.rs"
 
 [dependencies]
+rootglass-app.workspace = true
 rootglass-core.workspace = true
 rootglass-manifest.workspace = true
 rootglass-qemu.workspace = true

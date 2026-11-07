@@ -1,12 +1,11 @@
-use rootglass_core::{HostCapabilities, LaunchRequest, RootglassRuntime};
+use rootglass_app::{AppService, GlassSummary};
 use rootglass_manifest::Glass;
-use rootglass_qemu::QemuLaunchPlan;
 use rootglass_signature::{
     load_signing_key, package_glass_directory, package_glass_directory_at, sign_glass_directory,
     sign_glass_directory_at, SigningReport,
 };
 use std::env;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -154,78 +153,39 @@ fn validate_glass(glass_root: PathBuf) -> Result<(), String> {
 }
 
 fn print_launch_plan(glass_root: PathBuf) -> Result<(), String> {
-    let request = prepare_launch(&glass_root)?;
-    print_verification(&request);
-
-    let plan = QemuLaunchPlan::for_launch_request(&request);
-    println!("{}", plan.command_line());
+    let (summary, command) = AppService::new()
+        .launch_plan(&glass_root)
+        .map_err(|error| error.to_string())?;
+    print_verification(&summary);
+    println!("{command}");
     Ok(())
 }
 
 fn boot_glass(glass_root: PathBuf) -> Result<(), String> {
-    let request = prepare_launch(&glass_root)?;
-    validate_boot_assets(&request)?;
-    print_verification(&request);
-
-    let plan = QemuLaunchPlan::for_launch_request(&request);
-    eprintln!("launching: {}", plan.command_line());
-    let mut child = plan
-        .spawn_interactive()
+    let mut service = AppService::new();
+    let report = service
+        .preflight(&glass_root)
         .map_err(|error| error.to_string())?;
-    let status = child.wait().map_err(|error| error.to_string())?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("QEMU exited with status {status}"))
-    }
+    print_verification(&report.summary);
+    eprintln!(
+        "launching: {}",
+        service
+            .launch_plan(&glass_root)
+            .map_err(|error| error.to_string())?
+            .1
+    );
+    service
+        .boot_interactive(&glass_root)
+        .map_err(|error| error.to_string())
 }
 
-fn prepare_launch(glass_root: &Path) -> Result<LaunchRequest, String> {
-    let mut runtime = RootglassRuntime::new();
-    let capabilities = HostCapabilities::detect_current();
-    runtime
-        .prepare_launch_with_host(glass_root, &capabilities)
-        .map_err(|error| {
-            runtime
-                .status()
-                .last_error
-                .as_ref()
-                .map(|user_error| format!("{}\n{}", user_error.summary, user_error.detail))
-                .unwrap_or_else(|| error.to_string())
-        })
-}
-
-fn validate_boot_assets(request: &LaunchRequest) -> Result<(), String> {
-    require_file("kernel", &request.kernel)?;
-    if let Some(initrd) = &request.initrd {
-        require_file("initrd", initrd)?;
-    }
-    if let Some(device_tree) = &request.device_tree {
-        require_file("device tree", device_tree)?;
-    }
-    require_file("rootfs", &request.rootfs)?;
-    if let Some(writable_overlay) = &request.writable_overlay {
-        require_file("writable overlay", writable_overlay)?;
-    }
-    Ok(())
-}
-
-fn require_file(label: &str, path: &Path) -> Result<(), String> {
-    if path.is_file() {
-        Ok(())
-    } else {
-        Err(format!("missing {label} asset: {}", path.display()))
-    }
-}
-
-fn print_verification(request: &LaunchRequest) {
+fn print_verification(summary: &GlassSummary) {
     println!(
         "verified publisher: {} ({})",
-        request.signature.publisher_name, request.signature.publisher_identity
+        summary.publisher_name, summary.publisher_identity
     );
-    println!("signature key: {}", request.signature.key_id);
-    println!("signed subjects: {}", request.signature.subject_count);
+    println!("signature key: {}", summary.key_id);
+    println!("signed subjects: {}", summary.signed_subject_count);
 }
 
 fn print_usage() {

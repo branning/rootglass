@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/rootglass-app",
     "crates/rootglass-cli",
     "crates/rootglass-core",
     "crates/rootglass-manifest",
@@ -14,6 +15,7 @@ license = "MIT"
 repository = "https://github.com/branning/rootglass"
 
 [workspace.dependencies]
+rootglass-app = { path = "crates/rootglass-app" }
 rootglass-manifest = { path = "crates/rootglass-manifest" }
 rootglass-core = { path = "crates/rootglass-core" }
 rootglass-qemu = { path = "crates/rootglass-qemu" }
