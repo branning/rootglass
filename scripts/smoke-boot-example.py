@@ -25,12 +25,34 @@ STOP_TIMEOUT = int(os.environ.get("STOP_TIMEOUT_SECONDS", "20"))
 EXPECTED_ACCEL = os.environ.get("EXPECT_QEMU_ACCEL", "")
 FIXTURE_PASSWORD = "rootglass-ci"
 STATE_FILE = "/state/rootglass-persistence.txt"
+CSI_SEQUENCE = re.compile(rb"\x1b\[[0-?]*[ -/]*[@-~]")
+CURSOR_POSITION_QUERY = b"\x1b[6n"
+CURSOR_POSITION_RESPONSE = b"\x1b[1;80R"
 
 
 class SmokeFailure(RuntimeError):
     def __init__(self, message: str, serial_log: bytes = b"") -> None:
         super().__init__(message)
         self.serial_log = serial_log
+
+
+class SerialTerminal:
+    """Answer basic terminal queries from an interactive guest shell."""
+
+    def __init__(self) -> None:
+        self._scan_offset = 0
+
+    def respond_to_queries(self, fd: int, log: bytearray) -> None:
+        while True:
+            query_at = log.find(CURSOR_POSITION_QUERY, self._scan_offset)
+            if query_at < 0:
+                # Keep enough overlap for a query split across PTY reads.
+                self._scan_offset = max(
+                    self._scan_offset, len(log) - len(CURSOR_POSITION_QUERY) + 1
+                )
+                return
+            os.write(fd, CURSOR_POSITION_RESPONSE)
+            self._scan_offset = query_at + len(CURSOR_POSITION_QUERY)
 
 
 def serial_tail(log: bytearray, limit: int = 8192) -> str:
@@ -52,11 +74,20 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def wait_for(fd: int, child: int, pattern: bytes, timeout: int, log: bytearray) -> None:
+def wait_for(
+    fd: int,
+    child: int,
+    pattern: bytes,
+    timeout: int,
+    log: bytearray,
+    terminal: SerialTerminal | None = None,
+) -> None:
     expression = re.compile(pattern)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if expression.search(log):
+        if terminal is not None:
+            terminal.respond_to_queries(fd, log)
+        if expression.search(CSI_SEQUENCE.sub(b"", log)):
             return
         exited, status = os.waitpid(child, os.WNOHANG)
         if exited:
@@ -100,12 +131,20 @@ def wait_for(fd: int, child: int, pattern: bytes, timeout: int, log: bytearray) 
     )
 
 
-def drain_until_exit(fd: int, child: int, timeout: int, log: bytearray) -> int:
+def drain_until_exit(
+    fd: int,
+    child: int,
+    timeout: int,
+    log: bytearray,
+    terminal: SerialTerminal | None = None,
+) -> int:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         exited, status = os.waitpid(child, os.WNOHANG)
         if exited:
             return os.waitstatus_to_exitcode(status)
+        if terminal is not None:
+            terminal.respond_to_queries(fd, log)
         ready, _, _ = select.select([fd], [], [], min(0.25, deadline - time.monotonic()))
         if ready:
             try:
@@ -160,13 +199,14 @@ def run_state_session(nonce: str, write_state: bool) -> bytearray:
         os.execvp(command[0], command)
 
     log = bytearray()
+    terminal = SerialTerminal()
     try:
-        wait_for(fd, child, rb"rootglass-hello login:\s*$", BOOT_TIMEOUT, log)
-        wait_for(fd, child, rb"ROOTGLASS_STATE_MOUNTED /state", 10, log)
+        wait_for(fd, child, rb"rootglass-hello login:\s*$", BOOT_TIMEOUT, log, terminal)
+        wait_for(fd, child, rb"ROOTGLASS_STATE_MOUNTED /state", 10, log, terminal)
         os.write(fd, b"root\n")
-        wait_for(fd, child, rb"(?i)password:\s*$", 10, log)
+        wait_for(fd, child, rb"(?i)password:\s*$", 10, log, terminal)
         os.write(fd, (FIXTURE_PASSWORD + "\n").encode("ascii"))
-        wait_for(fd, child, rb"(?m)#\s*$", 10, log)
+        wait_for(fd, child, rb"(?m)#\s*$", 10, log, terminal)
 
         if write_state:
             command = (
@@ -184,8 +224,8 @@ def run_state_session(nonce: str, write_state: bool) -> bytearray:
             )
             sentinel = rb"ROOTGLASS_STATE_READ_DONE(?:\r\n|\n|\r)"
         os.write(fd, command.encode("ascii"))
-        wait_for(fd, child, sentinel, 20, log)
-        exit_code = drain_until_exit(fd, child, STOP_TIMEOUT, log)
+        wait_for(fd, child, sentinel, 20, log, terminal)
+        exit_code = drain_until_exit(fd, child, STOP_TIMEOUT, log, terminal)
         if exit_code != 0:
             raise SmokeFailure(f"boot command exited with status {exit_code} after guest shutdown")
         ensure_process_group_exited(child)

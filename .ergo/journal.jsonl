@@ -101,3 +101,5 @@
 {"version":1,"task_id":"6623ZQ","kind":"result","at":"2026-11-07T15:48:14.434305496Z","agent":"codex@worker-1","text":"State-template SHA-256 unchanged after A-05: c704fa202947d1284b40240de1492517cf47a27ba94aadfe0080fc3955d85704."}
 {"version":1,"task_id":"WS57HI","kind":"result","at":"2026-11-07T15:48:14.441059033Z","agent":"codex@worker-1","text":"CI 282 passed fmt, CLI, workspace tests, clippy, Linux desktop, and x64/arm64 boot smokes."}
 {"version":1,"task_id":"WS57HI","kind":"result","at":"2026-11-07T15:48:14.447539832Z","agent":"codex@worker-1","text":"CI uploads a bounded boot transcript on failure; telemetry is disabled and retention is 7 days."}
+{"version":1,"task_id":"WS57HI","kind":"result","at":"2026-11-07T15:59:12.062536124Z","agent":"codex@worker-1","text":"CI x64 timed out at BusyBox shell prompt; guest requested cursor position with ESC[6n over serial."}
+{"version":1,"task_id":"WS57HI","kind":"result","at":"2026-11-07T15:59:12.069232231Z","agent":"codex@worker-1","text":"Added DSR reply; split-query/raw-mode PTY checks, Python compile, and shell syntax pass; CI rerun pending."}
