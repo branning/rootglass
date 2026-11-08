@@ -78,8 +78,8 @@ def main() -> int:
         atoms["XdndEnter"],
         [source.id, 5 << 24, uri_type, 0, 0],
     )
-    coords = target.translate_coords(root, 320, 120)
-    packed_coords = ((coords.dst_x & 0xFFFF) << 16) | (coords.dst_y & 0xFFFF)
+    coords = root.translate_coords(target, 320, 120)
+    packed_coords = ((coords.x & 0xFFFF) << 16) | (coords.y & 0xFFFF)
     send_client_message(
         connection,
         target,
