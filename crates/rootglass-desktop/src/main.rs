@@ -333,8 +333,10 @@ impl RootglassWindow {
 
     fn open_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         if !self.model.actions().open {
+            desktop_smoke_event("ROOTGLASS_DESKTOP_OPEN_PATH_REJECTED");
             return;
         }
+        desktop_smoke_event("ROOTGLASS_DESKTOP_OPEN_PATH_ACCEPTED");
         let background_executor = cx.background_executor().clone();
         cx.spawn(async move |view, cx| {
             let type_check_path = path.clone();
@@ -347,6 +349,11 @@ impl RootglassWindow {
                             .is_some_and(|extension| extension.eq_ignore_ascii_case("glass"))
                 })
                 .await;
+            desktop_smoke_event(if is_archive {
+                "ROOTGLASS_DESKTOP_OPEN_PATH_ARCHIVE"
+            } else {
+                "ROOTGLASS_DESKTOP_OPEN_PATH_DIRECTORY"
+            });
             let ticket = match view.update(cx, |view, cx| {
                 if !view.model.actions().open {
                     return None;
@@ -361,7 +368,10 @@ impl RootglassWindow {
             }) {
                 Ok(Some(ticket)) => ticket,
                 Err(_) => return,
-                Ok(None) => return,
+                Ok(None) => {
+                    desktop_smoke_event("ROOTGLASS_DESKTOP_OPEN_PATH_NOT_STARTED");
+                    return;
+                }
             };
             let service = view.update(cx, |view, _| view.model.shared_service());
             let Ok(service) = service else { return };
@@ -410,6 +420,7 @@ impl RootglassWindow {
                     cx.notify();
                 });
             } else {
+                desktop_smoke_event("ROOTGLASS_DESKTOP_INSPECT_SERVICE_START");
                 let service_for_inspect = service.clone();
                 let source = path.clone();
                 let result = background_executor
@@ -427,6 +438,7 @@ impl RootglassWindow {
                         }
                     })
                     .await;
+                desktop_smoke_event("ROOTGLASS_DESKTOP_INSPECT_SERVICE_DONE");
                 let state_result = match &result {
                     rootglass_desktop::ui_model::InspectionOutcome::Ready(preview) => {
                         let path = preview.path.clone();
@@ -443,7 +455,13 @@ impl RootglassWindow {
                     _ => None,
                 };
                 let _ = view.update(cx, |view, cx| {
-                    if view.model.finish_inspection(&ticket, result) {
+                    let inspection_applied = view.model.finish_inspection(&ticket, result);
+                    desktop_smoke_event(if inspection_applied {
+                        "ROOTGLASS_DESKTOP_INSPECTION_APPLIED"
+                    } else {
+                        "ROOTGLASS_DESKTOP_INSPECTION_STALE"
+                    });
+                    if inspection_applied {
                         view.log_desktop_smoke_inspection();
                         if let Some(state_result) = state_result {
                             let state_loaded = state_result.is_ok();
