@@ -157,15 +157,18 @@ jobs:
 
       - name: Install build tools (Windows)
         if: runner.os == 'Windows'
-        shell: cmd
+        shell: pwsh
         run: |
-          @rem Retry the GitHub release download when the Windows runner gets a transient 504.
-          @for /L %%i in (1,1,5) do (
-            choco install minisign --yes
-            if not errorlevel 1 exit /b 0
-            if %%i LSS 5 timeout /t 15 /nobreak >NUL
-          )
-          exit /b 1
+          $ErrorActionPreference = "Continue"
+          $PSNativeCommandUseErrorActionPreference = $false
+          for ($attempt = 1; $attempt -le 5; $attempt++) {
+            & choco install minisign --yes
+            $exitCode = $LASTEXITCODE
+            if ($exitCode -eq 0) { exit 0 }
+            if ($attempt -eq 5) { exit $exitCode }
+            Write-Host "Retrying minisign download after attempt $attempt of 5."
+            Start-Sleep -Seconds 15
+          }
 
       - name: Restore native libghostty-vt build
         id: libghostty-cache
