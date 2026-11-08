@@ -157,3 +157,4 @@
 {"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-08T01:37:18.288672789Z","agent":"codex@worker-1","text":"Windows Crossterm emits ConPTY text as keys, not Paste events; smoke now checks text input there."}
 {"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-08T01:44:59.491910382Z","agent":"codex@worker-1","text":"Native prefixes cache per host; manual dispatch selects all or one OS; Windows cache-fill smoke pending."}
 {"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-08T02:01:26.517543612Z","agent":"codex@worker-1","text":"Native PTY matrix passes on 3 hosts; native prefixes and OS selection verified; Rust target and ccache support added."}
+{"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-08T02:09:01.835337005Z","agent":"codex@worker-1","text":"Cargo and ccache CI pass; native PTY matrix and Windows cached dispatch pass; GPUI smoke pending."}
