@@ -161,3 +161,5 @@
 {"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-08T02:39:22.801623112Z","agent":"codex@worker-1","text":"GPUI PTY prototype and cached Linux CI build added; format/YAML pass; graphical host validation remains."}
 {"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-08T02:44:52.788670054Z","agent":"codex@worker-1","text":"Corrected Rust cache target paths; ccache and prefix caches wired; YAML parses; CI and graphical validation remain."}
 {"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-08T03:04:33.837444855Z","agent":"codex@worker-1","text":"Moved GPUI smoke to native workflow; Xvfb screenshot and Rust caches configured; validation pending."}
+{"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-08T03:18:10.083065384Z","agent":"codex@worker-1","text":"CI 42441188770 passed 7/7 in 9.48 runner-min; Cargo target path and ccache verified."}
+{"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-08T03:18:10.089836237Z","agent":"codex@worker-1","text":"Linux run 42441203743 passed GPUI Xvfb smoke; uploaded 1280x800 PNG artifact 13601847822."}
