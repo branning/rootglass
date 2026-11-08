@@ -232,3 +232,4 @@
 {"version":1,"task_id":"EPHVRF","kind":"claim","at":"2026-11-08T20:55:43.085709469Z","agent":"codex@worker-1"}
 {"version":1,"task_id":"LISUZ7","kind":"open","at":"2026-11-08T20:56:18.558456295Z","text":"Maintainer authorized the next patch release v0.0.2; publish after EPHVRF attaches the draft assets."}
 {"version":1,"task_id":"EPHVRF","kind":"result","at":"2026-11-08T21:04:08.565525257Z","agent":"codex@worker-1","text":"Set package version to 0.0.2; TOML, lockfile, Ergo graph, and diff checks pass."}
+{"version":1,"task_id":"EPHVRF","kind":"result","at":"2026-11-08T21:09:03.292999725Z","agent":"codex@worker-1","text":"PR #90 CI passed 7/7; native PTY smoke passed on Linux, macOS, and Windows."}
