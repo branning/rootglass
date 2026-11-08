@@ -110,7 +110,16 @@ if [[ -n "$process_state" && "$process_state" != Z ]]; then
   echo "Rootglass desktop did not shut down within 45 seconds" >&2
   exit 1
 fi
-wait "$app_pid"
+if wait "$app_pid"; then
+  app_exit_status=0
+else
+  app_exit_status=$?
+fi
 app_pid=""
 cat "$log_file"
+echo "ROOTGLASS_GPUI_APP_EXIT_STATUS $app_exit_status"
+if [[ "$app_exit_status" -ne 0 ]]; then
+  echo "Rootglass desktop exited with status $app_exit_status after the quit shortcut" >&2
+  exit 1
+fi
 grep -Fq ROOTGLASS_EMBEDDED_TUI_CLEANED "$log_file"
