@@ -1,7 +1,9 @@
 use std::io::{self, Stdout};
 use std::time::Duration;
 
-use crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode};
+use crossterm::event::{
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind,
+};
 use crossterm::execute;
 use ratatui::backend::CrosstermBackend;
 use ratatui::style::{Color, Style};
@@ -9,11 +11,14 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Terminal;
 
+#[cfg(feature = "gpui")]
+mod gpui_host;
+
 #[derive(Default)]
 struct FixtureState {
     left_presses: u8,
     size: (u16, u16),
-    pasted: String,
+    input: String,
 }
 
 fn draw(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &FixtureState) -> io::Result<()> {
@@ -25,7 +30,7 @@ fn draw(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &FixtureState)
             )),
             Line::from(format!("LEFT:{}", state.left_presses)),
             Line::from(format!("SIZE:{}x{}", state.size.0, state.size.1)),
-            Line::from(format!("PASTE:{}", state.pasted)),
+            Line::from(format!("INPUT:{}", state.input)),
             Line::from("Press q to quit"),
         ];
         frame.render_widget(Paragraph::new(lines), frame.area());
@@ -47,19 +52,31 @@ fn fixture_child() -> io::Result<()> {
     loop {
         if event::poll(Duration::from_millis(250))? {
             match event::read()? {
-                Event::Key(key) if key.code == KeyCode::Left => {
+                Event::Key(key) if key.kind == KeyEventKind::Press && key.code == KeyCode::Left => {
                     state.left_presses = state.left_presses.saturating_add(1);
                     draw(&mut terminal, &state)?;
                 }
                 Event::Paste(text) => {
-                    state.pasted = text;
+                    state.input = text;
                     draw(&mut terminal, &state)?;
                 }
                 Event::Resize(cols, rows) => {
                     state.size = (cols, rows);
                     draw(&mut terminal, &state)?;
                 }
-                Event::Key(key) if key.code == KeyCode::Char('q') => break,
+                Event::Key(key)
+                    if key.kind == KeyEventKind::Press && key.code == KeyCode::Char('q') =>
+                {
+                    break;
+                }
+                Event::Key(key)
+                    if key.kind == KeyEventKind::Press && matches!(key.code, KeyCode::Char(_)) =>
+                {
+                    if let KeyCode::Char(character) = key.code {
+                        state.input.push(character);
+                        draw(&mut terminal, &state)?;
+                    }
+                }
                 _ => {}
             }
         }
@@ -74,6 +91,12 @@ fn fixture_child() -> io::Result<()> {
 fn main() -> io::Result<()> {
     if std::env::args().any(|arg| arg == "--fixture-child") {
         fixture_child()?;
+    } else {
+        #[cfg(feature = "gpui")]
+        gpui_host::run();
+
+        #[cfg(not(feature = "gpui"))]
+        eprintln!("Run this prototype with --features gpui to open its GPUI terminal host.");
     }
     Ok(())
 }

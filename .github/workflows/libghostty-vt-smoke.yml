@@ -2,18 +2,33 @@ name: libghostty-vt smoke
 
 on:
   pull_request:
+    # Avoid rebuilding libghostty-vt and the native PTY smoke on every push.
+    types: [opened, reopened, ready_for_review]
     paths:
       - .github/workflows/libghostty-vt-smoke.yml
       - prototypes/libghostty-vt-ratatui/**
-      - scripts/smoke-libghostty-vt-pty.sh
+      - scripts/smoke-gpui-host-xvfb.sh
+      - scripts/smoke-libghostty-vt-pty.py
   push:
     branches:
       - main
     paths:
       - .github/workflows/libghostty-vt-smoke.yml
       - prototypes/libghostty-vt-ratatui/**
-      - scripts/smoke-libghostty-vt-pty.sh
+      - scripts/smoke-gpui-host-xvfb.sh
+      - scripts/smoke-libghostty-vt-pty.py
   workflow_dispatch:
+    inputs:
+      platform:
+        description: Native OS to qualify
+        required: true
+        type: choice
+        default: all
+        options:
+          - all
+          - linux
+          - macos
+          - windows
 
 permissions:
   contents: read
@@ -23,9 +38,44 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  pty-smoke:
-    name: PTY smoke (Linux x86_64)
+  select_platforms:
     runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - name: Select requested platforms
+        id: select
+        env:
+          REQUESTED_PLATFORM: ${{ inputs.platform || 'all' }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+
+          platforms = [
+              {"platform": "linux", "name": "Linux x86_64", "runner": "ubuntu-24.04"},
+              {"platform": "macos", "name": "macOS arm64", "runner": "macos-15"},
+              {"platform": "windows", "name": "Windows x86_64", "runner": "windows-2025"},
+          ]
+          requested = os.environ["REQUESTED_PLATFORM"]
+          selected = platforms if requested == "all" else [
+              platform for platform in platforms if platform["platform"] == requested
+          ]
+          if not selected:
+              raise SystemExit(f"unsupported platform selection: {requested}")
+          matrix = json.dumps({"include": selected}, separators=(",", ":"))
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print(f"matrix={matrix}", file=output)
+          PY
+
+  pty-smoke:
+    name: PTY smoke (${{ matrix.name }})
+    needs: select_platforms
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.select_platforms.outputs.matrix) }}
 
     steps:
       - name: Checkout
@@ -33,11 +83,108 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
 
-      - name: Install build tools
+      - name: Check prototype formatting
+        run: cargo fmt --manifest-path prototypes/libghostty-vt-ratatui/Cargo.toml --check
+
+      - name: Cache Cargo registry and build outputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: prototypes/libghostty-vt-ratatui -> target
+
+      - name: Cache C compiler outputs (Linux and macOS)
+        if: runner.os != 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/rootglass-ccache
+          key: ccache-libghostty-vt-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('prototypes/libghostty-vt-ratatui/build.rs', 'prototypes/libghostty-vt-ratatui/src/ghostty_shim.c') }}
+          restore-keys: |
+            ccache-libghostty-vt-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Install Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install build tools (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential minisign
+          sudo apt-get install -y \
+            build-essential ccache minisign \
+            libasound2-dev libfontconfig-dev libssl-dev libvulkan1 \
+            libgl1-mesa-dri libwayland-dev libwebkit2gtk-4.1-dev \
+            libx11-xcb-dev libxkbcommon-x11-dev libzstd-dev \
+            imagemagick mesa-vulkan-drivers vulkan-validationlayers \
+            xauth xclip xdotool xvfb
+          echo "CC=ccache gcc" >> "$GITHUB_ENV"
+          echo "CXX=ccache g++" >> "$GITHUB_ENV"
+          echo "CCACHE_DIR=${{ runner.temp }}/rootglass-ccache" >> "$GITHUB_ENV"
+          echo "CCACHE_MAXSIZE=512M" >> "$GITHUB_ENV"
+          echo "CCACHE_COMPILERCHECK=content" >> "$GITHUB_ENV"
 
-      - name: Run signed libghostty-vt PTY smoke
-        run: bash scripts/smoke-libghostty-vt-pty.sh
+      - name: Install build tools (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install ccache minisign
+          echo "CC=ccache clang" >> "$GITHUB_ENV"
+          echo "CXX=ccache clang++" >> "$GITHUB_ENV"
+          echo "CCACHE_DIR=${{ runner.temp }}/rootglass-ccache" >> "$GITHUB_ENV"
+          echo "CCACHE_MAXSIZE=512M" >> "$GITHUB_ENV"
+          echo "CCACHE_COMPILERCHECK=content" >> "$GITHUB_ENV"
+
+      - name: Install build tools (Windows)
+        if: runner.os == 'Windows'
+        run: choco install minisign --yes
+
+      - name: Restore native libghostty-vt build
+        id: libghostty-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/rootglass-libghostty-vt-prefix
+          key: libghostty-vt-${{ runner.os }}-${{ runner.arch }}-ghostty-v1.0.0-zig-0.17.0-${{ hashFiles('scripts/smoke-libghostty-vt-pty.py', 'prototypes/libghostty-vt-ratatui/build.rs', 'prototypes/libghostty-vt-ratatui/src/ghostty_shim.c') }}
+
+      - name: Run signed native libghostty-vt PTY smoke
+        id: native-smoke
+        env:
+          GHOSTTY_VT_PREFIX: ${{ runner.temp }}/rootglass-libghostty-vt-prefix
+        run: python scripts/smoke-libghostty-vt-pty.py
+
+      - name: Save native libghostty-vt build
+        if: always() && steps.native-smoke.outputs.cache_ready == 'true' && steps.libghostty-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/rootglass-libghostty-vt-prefix
+          key: libghostty-vt-${{ runner.os }}-${{ runner.arch }}-ghostty-v1.0.0-zig-0.17.0-${{ hashFiles('scripts/smoke-libghostty-vt-pty.py', 'prototypes/libghostty-vt-ratatui/build.rs', 'prototypes/libghostty-vt-ratatui/src/ghostty_shim.c') }}
+
+      - name: Build GPUI libghostty-vt host
+        if: runner.os == 'Linux'
+        env:
+          CC: ccache gcc
+          CXX: ccache g++
+          CCACHE_DIR: ${{ runner.temp }}/rootglass-ccache
+          CCACHE_MAXSIZE: 512M
+          CCACHE_COMPILERCHECK: content
+          GHOSTTY_VT_PREFIX: ${{ runner.temp }}/rootglass-libghostty-vt-prefix
+        run: cargo build --locked --manifest-path prototypes/libghostty-vt-ratatui/Cargo.toml --features gpui
+
+      - name: Capture GPUI host in Xvfb
+        if: runner.os == 'Linux'
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24 +extension GLX +render -noreset" \
+            bash scripts/smoke-gpui-host-xvfb.sh \
+            prototypes/libghostty-vt-ratatui/target/debug/libghostty-vt-ratatui-spike \
+            prototypes/libghostty-vt-ratatui/artifacts/gpui-xvfb.png
+
+      - name: Upload GPUI Xvfb screenshot
+        if: always() && runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpui-libghostty-vt-xvfb-screenshot
+          path: prototypes/libghostty-vt-ratatui/artifacts/gpui-xvfb.png
+          if-no-files-found: warn
+          retention-days: 14

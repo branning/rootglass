@@ -42,6 +42,12 @@ queue of new work.
 - User/data security: production imports must be authenticated and bounded; run no untrusted host code; immutable package/rootfs must never be mutated by a guest or state reset.
 - Do not change policies by assumption. Put tradeoffs into a small ADR/issue and notify the integration owner.
 
+## GitHub Actions budget
+
+- Keep automated work triggered by one pull-request `synchronize` event to **15 aggregate runner-minutes or less** across workflows. Count each job's runner time and add parallel jobs together; wall-clock duration is not the budget. Keep routine format, lint, unit, and targeted smoke checks within this cap.
+- Do not run full native-platform or packaging matrices on every `synchronize`. Trigger those on PR open/reopen/ready-for-review, after applicable changes settle with `workflow_dispatch`, and/or on `main` after merge. For platform evidence required before merge, dispatch the matrix against the latest PR head after the relevant code changes.
+- Before adding or widening a matrix, estimate its aggregate runner-minutes per event and adjust the trigger/cadence to stay within budget. Prefer caches and path filters where they reduce repeated work without weakening required evidence.
+
 ## Fast path
 
 1. Follow the local Ergo skill: inspect and claim one authorized ready task. For new user-requested work, create a focused task if none already covers it; retain its Sxx/A-xx references where applicable.

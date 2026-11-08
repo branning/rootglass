@@ -78,16 +78,35 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache Cargo registry and build outputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/rootglass-desktop -> target
+
+      - name: Cache C/C++ compiler outputs
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/rootglass-ccache
+          key: ccache-desktop-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/rootglass-desktop/Cargo.lock') }}
+          restore-keys: |
+            ccache-desktop-${{ runner.os }}-${{ runner.arch }}-
+
       - name: Install GPUI Kit system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            clang g++ gcc \
+            ccache clang g++ gcc \
             libasound2-dev libfontconfig-dev libssl-dev libvulkan1 \
             libwayland-dev libwebkit2gtk-4.1-dev libx11-xcb-dev \
             libxkbcommon-x11-dev libzstd-dev vulkan-validationlayers
 
       - name: Check desktop application
+        env:
+          CC: ccache gcc
+          CXX: ccache g++
+          CCACHE_DIR: ${{ runner.temp }}/rootglass-ccache
+          CCACHE_MAXSIZE: 512M
+          CCACHE_COMPILERCHECK: content
         run: cargo check --manifest-path crates/rootglass-desktop/Cargo.toml
 
   cli-smoke:
