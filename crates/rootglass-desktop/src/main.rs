@@ -2,6 +2,7 @@
 mod embedded_terminal;
 
 use gpui_kit::actions;
+use gpui_kit::base::StyledExt;
 use gpui_kit::component::button::*;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::*;
@@ -132,28 +133,39 @@ impl Render for RootglassWindow {
         root.child(
             div()
                 .h_flex()
-                .size_full()
+                .flex_1()
                 .gap_2()
-                .child(library_view(
-                    &self.model.state,
-                    &self.model.installed_glasses,
-                    self.model.library_error.as_deref(),
-                    actions.open,
-                    self.file_drop_active,
-                    cx,
-                ))
-                .child(details_view(&self.model.state)),
+                .child(
+                    library_view(
+                        &self.model.state,
+                        &self.model.installed_glasses,
+                        self.model.library_error.as_deref(),
+                        actions.open,
+                        self.file_drop_active,
+                        cx,
+                    )
+                    .w(px(320.0))
+                    .flex_shrink_0()
+                    .overflow_scroll(),
+                )
+                .child(details_view(&self.model.state).flex_1().overflow_scroll()),
         )
-        .child(status_view(&self.model.state))
+        .child(status_view(&self.model.state).flex_shrink_0())
         .child(
             div()
                 .v_flex()
+                .h(px(144.0))
+                .flex_shrink_0()
+                .overflow_y_scroll()
                 .child("Serial console")
                 .child(self.model.console.clone()),
         )
         .child(
             div()
                 .h_flex()
+                .flex_shrink_0()
+                .items_center()
+                .gap_2()
                 .child(Input::new(&self.input).disabled(!actions.console_input))
                 .child("Press Enter to send"),
         )
@@ -735,33 +747,27 @@ fn details_view(state: &UiState) -> Div {
     match state {
         UiState::Empty => div()
             .v_flex()
-            .size_full()
             .child("No bundle selected")
             .child("Publisher, verification, and preflight details appear after inspection.")
             .child("Boot is unavailable until a bundle passes verification and preflight."),
         UiState::Opening(path) => div()
             .v_flex()
-            .size_full()
             .child("Opening bundle in the background…")
             .child(path.display().to_string()),
         UiState::Loading => div()
             .v_flex()
-            .size_full()
             .child("Inspecting bundle…")
             .child("Verification and preflight are pending."),
         UiState::Importing(_) => div()
             .v_flex()
-            .size_full()
             .child("Verifying archive and importing package…"),
         UiState::Validating => div()
             .v_flex()
-            .size_full()
             .child("Checking manifest fields only…")
             .child("Signature and publisher trust are not checked by Validate."),
         UiState::ManifestValidated(report) => manifest_validation_view(report),
         UiState::Planning => div()
             .v_flex()
-            .size_full()
             .child("Building verified launch plan…")
             .child("Checking signature, publisher trust, and runtime preflight."),
         UiState::Planned(plan) => {
@@ -770,7 +776,6 @@ fn details_view(state: &UiState) -> Div {
         UiState::Removing(details) => removal_details_view(details),
         UiState::Imported(glass) => div()
             .v_flex()
-            .size_full()
             .child(format!("{} {} installed", glass.name, glass.version))
             .child(format!("Trusted publisher: {}", glass.publisher))
             .child("The archive was verified and copied into the local package store."),
@@ -778,7 +783,6 @@ fn details_view(state: &UiState) -> Div {
         UiState::Blocked(blocked) => {
             let mut view = div()
                 .v_flex()
-                .size_full()
                 .child("Launch blocked")
                 .child(blocked.reason.clone());
             if let Some(path) = &blocked.path {
@@ -803,23 +807,19 @@ fn details_view(state: &UiState) -> Div {
         }
         UiState::Failed(failure) => div()
             .v_flex()
-            .size_full()
             .child(format!("{} failed", failure.phase))
             .child(failure.summary.clone())
             .child(failure.detail.clone()),
         UiState::Booting(run) => div()
             .v_flex()
-            .size_full()
             .child("Booting")
             .child(format!("Status: {}", run.status)),
         UiState::Stopping(run) => div()
             .v_flex()
-            .size_full()
             .child("Stopping")
             .child(format!("Status: {}", run.status)),
         UiState::Running(run) => div()
             .v_flex()
-            .size_full()
             .child(format!("Running: {}", run.name))
             .child(format!("Status: {}", run.status))
             .child(format!("Elapsed: {}", run.elapsed)),
@@ -853,7 +853,6 @@ fn status_view(state: &UiState) -> Div {
 fn manifest_validation_view(report: &ManifestValidationReport) -> Div {
     let mut view = div()
         .v_flex()
-        .size_full()
         .child("Manifest valid · Signature and publisher trust are not checked.")
         .child(format!("Name: {}", report.name))
         .child(format!("Identifier: {}", report.identifier))
@@ -888,7 +887,6 @@ fn preview_details_view(title: &str, glass: &GlassPreview, command: Option<&str>
     };
     let mut view = div()
         .v_flex()
-        .size_full()
         .child(title.to_string())
         .child(format!("{}  {}", glass.name, glass.version))
         .child(format!("Identifier: {}", glass.identifier))
@@ -922,7 +920,6 @@ fn preview_details_view(title: &str, glass: &GlassPreview, command: Option<&str>
 fn removal_details_view(details: &RemovalDetails) -> Div {
     div()
         .v_flex()
-        .size_full()
         .child("Removing installed release…")
         .child(format!("Release: {} {}", details.name, details.version))
         .child(format!("SHA-256: {}", details.content_sha256))
