@@ -275,6 +275,8 @@ window_height="$(sed -n 's/^HEIGHT=//p' <<<"$window_geometry")"
 input_y="$((window_height - 16))"
 xdotool mousemove --window "$window_id" 180 "$input_y" click 1
 xdotool type --clearmodifiers --delay 20 "$serial_username"
+sleep 0.25
+import -window "$window_id" "${artifact_dir}/04-guest-username-input.png"
 xdotool key Return
 wait_for_marker ROOTGLASS_DESKTOP_SERIAL_INPUT_SENT
 wait_for_marker ROOTGLASS_DESKTOP_SERIAL_ECHO 45
@@ -282,7 +284,7 @@ echo "ROOTGLASS_DESKTOP_SMOKE_SERIAL_RESPONSE"
 xdotool mousemove --window "$window_id" 900 "$((window_height - 100))"
 xdotool click --repeat 20 --delay 25 5
 sleep 0.5
-import -window "$window_id" "${artifact_dir}/04-guest-password-prompt.png"
+import -window "$window_id" "${artifact_dir}/05-guest-password-prompt.png"
 
 # Restart, wait for a second guest-ready event, then stop through the UI.
 xdotool mousemove --window "$window_id" 365 26 click 1
@@ -294,7 +296,7 @@ wait_for_marker ROOTGLASS_DESKTOP_STOPPED 120
 echo "ROOTGLASS_DESKTOP_SMOKE_STOPPED"
 xdotool windowsize --sync "$window_id" 1000 650
 sleep 1
-import -window "$window_id" "${artifact_dir}/05-guest-stopped-resized.png"
+import -window "$window_id" "${artifact_dir}/06-guest-stopped-resized.png"
 
 xdotool windowclose "$window_id"
 for _ in $(seq 1 300); do
