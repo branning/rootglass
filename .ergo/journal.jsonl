@@ -195,3 +195,4 @@
 {"version":1,"task_id":"N565MG","kind":"claim","at":"2026-11-08T18:13:09.214655353Z","agent":"codex@worker-1"}
 {"version":1,"task_id":"N565MG","kind":"result","at":"2026-11-08T18:32:19.732592047Z","agent":"codex@worker-1","text":"Static validation passes for TOML/lockfile, workflow YAML, scripts and diff whitespace; Cargo is unavailable locally."}
 {"version":1,"task_id":"N565MG","kind":"result","at":"2026-11-08T18:34:10.57592077Z","agent":"codex@worker-1","text":"PR #83 opened at 63af5ce; Actions CI and platform smoke are pending."}
+{"version":1,"task_id":"N565MG","kind":"done","at":"2026-11-08T18:42:24.67173151Z","agent":"codex@worker-1","text":"Merged PR #83 at b4bc3501c0d6a41885a3aa2b37a500a5716a9d2d.\n\nCI 42510758472 passed; native Linux/macOS/Windows workflow 42510765499 passed.\n\nScreenshot artifacts are linked from PR #83; embedded TUI flow includes selection, paste, resize, and cleanup."}
