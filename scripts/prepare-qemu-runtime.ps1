@@ -41,16 +41,29 @@ $qemuRoot = $qemuExe.Directory
 if ($qemuRoot.Name -eq "bin") { $qemuRoot = $qemuRoot.Parent }
 $sourceShare = Join-Path $qemuRoot "share/qemu"
 if (-not (Test-Path -LiteralPath $sourceShare -PathType Container)) {
-    throw "QEMU share data was not found at $sourceShare"
+    # Some Windows QEMU builds install their data files directly in `share`;
+    # others omit external share data because the packaged direct-kernel boot
+    # path does not need firmware images.
+    $flatShare = Join-Path $qemuRoot "share"
+    if (Test-Path -LiteralPath $flatShare -PathType Container) {
+        $sourceShare = $flatShare
+    }
+    else {
+        $sourceShare = $null
+        Write-Warning "QEMU has no external share data; the runtime will use QEMU's built-in data search path"
+    }
 }
 $sourceModules = Join-Path $qemuRoot "lib/qemu"
 
 if (Test-Path -LiteralPath $runtimeRoot) {
     Remove-Item -LiteralPath $runtimeRoot -Recurse -Force
 }
-New-Item -ItemType Directory -Force -Path $binDir, $libDir, $shareDir, (Join-Path $runtimeRoot "boot"), $licenseDir | Out-Null
+New-Item -ItemType Directory -Force -Path $binDir, $libDir, (Join-Path $runtimeRoot "boot"), $licenseDir | Out-Null
 Get-ChildItem -Path $qemuExe.Directory.FullName -File | Copy-Item -Destination $binDir -Force
-Copy-Item -Path (Join-Path $sourceShare "*") -Destination $shareDir -Recurse -Force
+if ($sourceShare) {
+    New-Item -ItemType Directory -Force -Path $shareDir | Out-Null
+    Copy-Item -Path (Join-Path $sourceShare "*") -Destination $shareDir -Recurse -Force
+}
 if (Test-Path -LiteralPath $sourceModules -PathType Container) {
     New-Item -ItemType Directory -Force -Path (Join-Path $libDir "qemu") | Out-Null
     Copy-Item -Path (Join-Path $sourceModules "*") -Destination (Join-Path $libDir "qemu") -Recurse -Force
@@ -84,7 +97,11 @@ $manifestAssets = @(
 foreach ($asset in $manifestAssets) {
     $asset.sha256 = (Get-FileHash -LiteralPath (Join-Path $runtimeRoot $asset.path) -Algorithm SHA256).Hash.ToLowerInvariant()
 }
-$supportAssets = Get-ChildItem -Path $binDir, $libDir, $shareDir -File -Recurse |
+$supportPaths = @($binDir, $libDir)
+if (Test-Path -LiteralPath $shareDir -PathType Container) {
+    $supportPaths += $shareDir
+}
+$supportAssets = Get-ChildItem -Path $supportPaths -File -Recurse |
     Where-Object { $_.FullName -ne $targetQemu } |
     Sort-Object FullName |
     ForEach-Object {
