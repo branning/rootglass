@@ -101,6 +101,7 @@ jobs:
       - name: Cache Cargo registry and build outputs
         uses: Swatinem/rust-cache@v2
         with:
+          cache-on-failure: "true"
           workspaces: |
             prototypes/libghostty-vt-ratatui -> target
             crates/rootglass-desktop -> target
