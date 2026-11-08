@@ -18,7 +18,7 @@ use rootglass_desktop::ui_model::{
 use std::path::PathBuf;
 use std::time::Duration;
 
-actions!(rootglass, [OpenBundle, StopGlass]);
+actions!(rootglass, [OpenBundle, StopGlass, Quit]);
 const ROOTGLASS_CONTEXT: &str = "RootglassWindow";
 
 struct RootglassWindow {
@@ -124,6 +124,7 @@ impl Render for RootglassWindow {
             }))
             .on_action(cx.listener(Self::on_open_bundle))
             .on_action(cx.listener(Self::on_stop_shortcut))
+            .on_action(cx.listener(Self::on_quit))
             .child(toolbar);
 
         #[cfg(feature = "embedded-terminal")]
@@ -307,6 +308,10 @@ impl RootglassWindow {
 
     fn on_stop_shortcut(&mut self, _: &StopGlass, _: &mut Window, cx: &mut Context<Self>) {
         self.stop_guest(cx);
+    }
+
+    fn on_quit(&mut self, _: &Quit, window: &mut Window, _: &mut Context<Self>) {
+        window.remove_window();
     }
 
     #[cfg(feature = "embedded-terminal")]
@@ -947,12 +952,16 @@ fn main() {
     }
 
     gpui_kit::application()
+        .with_quit_mode(QuitMode::LastWindowClosed)
         .with_assets(gpui_kit::assets::Assets)
         .run(|cx| {
             gpui_kit::init(cx);
             cx.bind_keys([
                 KeyBinding::new("cmd-o", OpenBundle, Some(ROOTGLASS_CONTEXT)),
                 KeyBinding::new("cmd-.", StopGlass, Some(ROOTGLASS_CONTEXT)),
+                KeyBinding::new("cmd-q", Quit, Some(ROOTGLASS_CONTEXT)),
+                KeyBinding::new("cmd-w", Quit, Some(ROOTGLASS_CONTEXT)),
+                KeyBinding::new("alt-f4", Quit, Some(ROOTGLASS_CONTEXT)),
             ]);
             gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
                 cx.new(|cx| RootglassWindow::new(window, cx))
