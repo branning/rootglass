@@ -280,12 +280,27 @@ impl TrustStore {
     }
 
     pub fn example_fixture() -> Self {
-        Self::new([TrustedPublisher {
-            name: "Rootglass Examples".to_string(),
-            identity: "rootglass.dev/examples".to_string(),
-            key_id: "ed25519:rootglass-example-fixture".to_string(),
-            public_key_base64url: "2To2Sg0jWnaNlkRA4GCUa3qbqmZkaw5IMCHh0vRnRpw".to_string(),
-        }])
+        // Keep the legacy ID used by the checked-in directory envelope and
+        // the canonical ID generated for packaged archives. Both IDs point
+        // to this public development-only fixture key.
+        const LEGACY_KEY_ID: &str = "ed25519:rootglass-example-fixture";
+        const CANONICAL_KEY_ID: &str =
+            "ed25519:4a079f6f512c9e1a24f83b08e84fb8508996c91e0d54a19512fabfafc82b62d0";
+        const PUBLIC_KEY: &str = "2To2Sg0jWnaNlkRA4GCUa3qbqmZkaw5IMCHh0vRnRpw";
+        Self::new([
+            TrustedPublisher {
+                name: "Rootglass Examples".to_string(),
+                identity: "rootglass.dev/examples".to_string(),
+                key_id: LEGACY_KEY_ID.to_string(),
+                public_key_base64url: PUBLIC_KEY.to_string(),
+            },
+            TrustedPublisher {
+                name: "Rootglass Examples".to_string(),
+                identity: "rootglass.dev/examples".to_string(),
+                key_id: CANONICAL_KEY_ID.to_string(),
+                public_key_base64url: PUBLIC_KEY.to_string(),
+            },
+        ])
     }
 
     /// The public publisher metadata held by this verifier.

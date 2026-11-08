@@ -99,6 +99,29 @@ With `-nographic -serial mon:stdio`, exit QEMU with:
 Ctrl-a x
 ```
 
+## Release example bundle
+
+The desktop release workflow materializes and packages this fixture as
+`rootglass-hello-world-0.1.0.glass`, then includes it and
+`SHA256SUMS-example.txt` in the draft prerelease asset set. Because the
+published `v0.0.1` release is immutable, the example will first appear on a
+later draft prerelease.
+
+After installing Rootglass and downloading both files, verify and inspect the
+bundle from the command line:
+
+```bash
+sha256sum --check SHA256SUMS-example.txt
+rootglass plan rootglass-hello-world-0.1.0.glass
+```
+
+To boot it interactively, run `rootglass boot rootglass-hello-world-0.1.0.glass`
+and log in as `root` with the disposable `rootglass-ci` password. The package's
+public signing key and guest credential are demonstration-only. Do not use the
+fixture for sensitive data or as a production trust example. See [desktop
+package builds](desktop-packages.md) for the draft-release process and artifact
+limits.
+
 ## Expected preflight failure before materialization
 
 If generated assets are missing, `boot` should fail before starting QEMU. For example:
