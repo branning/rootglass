@@ -16,6 +16,17 @@ on:
       - prototypes/libghostty-vt-ratatui/**
       - scripts/smoke-libghostty-vt-pty.py
   workflow_dispatch:
+    inputs:
+      platform:
+        description: Native OS to qualify
+        required: true
+        type: choice
+        default: all
+        options:
+          - all
+          - linux
+          - macos
+          - windows
 
 permissions:
   contents: read
@@ -25,20 +36,44 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  select_platforms:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - name: Select requested platforms
+        id: select
+        env:
+          REQUESTED_PLATFORM: ${{ inputs.platform || 'all' }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+
+          platforms = [
+              {"platform": "linux", "name": "Linux x86_64", "runner": "ubuntu-24.04"},
+              {"platform": "macos", "name": "macOS arm64", "runner": "macos-15"},
+              {"platform": "windows", "name": "Windows x86_64", "runner": "windows-2025"},
+          ]
+          requested = os.environ["REQUESTED_PLATFORM"]
+          selected = platforms if requested == "all" else [
+              platform for platform in platforms if platform["platform"] == requested
+          ]
+          if not selected:
+              raise SystemExit(f"unsupported platform selection: {requested}")
+          matrix = json.dumps({"include": selected}, separators=(",", ":"))
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print(f"matrix={matrix}", file=output)
+          PY
+
   pty-smoke:
     name: PTY smoke (${{ matrix.name }})
+    needs: select_platforms
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - name: Linux x86_64
-            runner: ubuntu-24.04
-          - name: macOS arm64
-            runner: macos-15
-          - name: Windows x86_64
-            runner: windows-2025
+      matrix: ${{ fromJSON(needs.select_platforms.outputs.matrix) }}
 
     steps:
       - name: Checkout
