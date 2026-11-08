@@ -182,6 +182,21 @@ xdotool windowfocus --sync "$window_id"
 # platform-specific modifier for the app's cmd-o shortcut.
 xdotool mousemove --window "$window_id" 170 26 click 1
 wait_for_marker ROOTGLASS_DESKTOP_PICKER_OPEN
+dialog_window=""
+for _ in $(seq 1 100); do
+  dialog_window="$(xdotool search --onlyvisible --name '.*' 2>/dev/null \
+    | grep -Fvx "$window_id" | tail -n 1 || true)"
+  if [[ -n "$dialog_window" ]]; then
+    break
+  fi
+  sleep 0.1
+done
+if [[ -z "$dialog_window" ]]; then
+  xdotool search --onlyvisible --name '.*' 2>/dev/null || true
+  echo "The native file chooser did not create a visible window" >&2
+  exit 1
+fi
+xdotool windowfocus --sync "$dialog_window"
 xdotool key Escape
 wait_for_marker ROOTGLASS_DESKTOP_PICKER_CANCELLED
 xdotool windowfocus --sync "$window_id"
