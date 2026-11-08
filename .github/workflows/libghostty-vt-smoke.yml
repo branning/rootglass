@@ -87,6 +87,15 @@ jobs:
         with:
           workspaces: prototypes/libghostty-vt-ratatui -> prototypes/libghostty-vt-ratatui/target
 
+      - name: Cache C compiler outputs (Linux and macOS)
+        if: runner.os != 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/rootglass-ccache
+          key: ccache-libghostty-vt-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('prototypes/libghostty-vt-ratatui/build.rs', 'prototypes/libghostty-vt-ratatui/src/ghostty_shim.c') }}
+          restore-keys: |
+            ccache-libghostty-vt-${{ runner.os }}-${{ runner.arch }}-
+
       - name: Install Python
         uses: actions/setup-python@v6
         with:
@@ -96,11 +105,22 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential minisign
+          sudo apt-get install -y build-essential ccache minisign
+          echo "CC=ccache gcc" >> "$GITHUB_ENV"
+          echo "CXX=ccache g++" >> "$GITHUB_ENV"
+          echo "CCACHE_DIR=${{ runner.temp }}/rootglass-ccache" >> "$GITHUB_ENV"
+          echo "CCACHE_MAXSIZE=512M" >> "$GITHUB_ENV"
+          echo "CCACHE_COMPILERCHECK=content" >> "$GITHUB_ENV"
 
       - name: Install build tools (macOS)
         if: runner.os == 'macOS'
-        run: brew install minisign
+        run: |
+          brew install ccache minisign
+          echo "CC=ccache clang" >> "$GITHUB_ENV"
+          echo "CXX=ccache clang++" >> "$GITHUB_ENV"
+          echo "CCACHE_DIR=${{ runner.temp }}/rootglass-ccache" >> "$GITHUB_ENV"
+          echo "CCACHE_MAXSIZE=512M" >> "$GITHUB_ENV"
+          echo "CCACHE_COMPILERCHECK=content" >> "$GITHUB_ENV"
 
       - name: Install build tools (Windows)
         if: runner.os == 'Windows'

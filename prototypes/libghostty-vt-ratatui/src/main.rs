@@ -11,6 +11,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Terminal;
 
+#[cfg(feature = "gpui")]
+mod gpui_host;
+
 #[derive(Default)]
 struct FixtureState {
     left_presses: u8,
@@ -88,6 +91,12 @@ fn fixture_child() -> io::Result<()> {
 fn main() -> io::Result<()> {
     if std::env::args().any(|arg| arg == "--fixture-child") {
         fixture_child()?;
+    } else {
+        #[cfg(feature = "gpui")]
+        gpui_host::run();
+
+        #[cfg(not(feature = "gpui"))]
+        eprintln!("Run this prototype with --features gpui to open its GPUI terminal host.");
     }
     Ok(())
 }
