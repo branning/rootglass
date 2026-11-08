@@ -151,6 +151,27 @@ If assets are missing, boot fails before QEMU starts, for example:
 error: missing kernel asset: runtime-assets/alpine-aarch64/vmlinuz-virt
 ```
 
+### Try the release example bundle
+
+Upcoming desktop releases include a materialized, signed Hello World `.glass`
+and a SHA-256 checksum. After installing Rootglass and downloading both assets:
+
+```sh
+sha256sum --check SHA256SUMS-example.txt
+rootglass plan rootglass-hello-world-0.1.0.glass
+rootglass boot rootglass-hello-world-0.1.0.glass
+```
+
+The plan command verifies the bundle signature and reports preflight details.
+When `plan` or `boot` receives a ZIP `.glass` archive, it verifies and imports
+the package into the local content-addressed library first. A directory-form
+`.glass` is planned or booted in place.
+To log in to the disposable sample guest, use `root` and password
+`rootglass-ci`. The fixture key and password are public demo credentials; do
+not use the guest for sensitive data. The current `v0.0.1` release is
+immutable, so the materialized example will appear with a later draft
+prerelease. See [release asset details](docs/desktop-packages.md).
+
 ## What is a `.glass`?
 
 A **glass** is a signed bundle describing a small runnable world.

@@ -1,5 +1,15 @@
 # Rootglass release notes
 
+## Unreleased
+
+### Release example
+
+The draft prerelease workflow now materializes, signs, verifies, and attaches a
+Hello World `.glass` together with its SHA-256 checksum. The sample uses a
+public development key and the disposable `rootglass-ci` guest password; it is
+for verification only. Published `v0.0.1` is immutable and cannot accept these
+assets, so they will be available with a later draft prerelease.
+
 ## v0.0.1 preview
 
 ### macOS first launch

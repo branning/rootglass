@@ -1,8 +1,6 @@
 name: Desktop packages
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       platform:
@@ -20,7 +18,7 @@ on:
         type: string
         required: false
       release_tag:
-        description: Existing prerelease tag to receive artifacts when artifact_run_id is set
+        description: Existing mutable draft prerelease to receive all-platform assets before publication
         type: string
         required: false
 
@@ -38,15 +36,48 @@ jobs:
     outputs:
       matrix: ${{ steps.select.outputs.matrix }}
     steps:
-      - name: Select platform matrix
-        id: select
+      - name: Validate release build selection
         env:
-          PLATFORM: ${{ github.event_name == 'release' && 'all' || inputs.platform }}
+          PLATFORM: ${{ inputs.platform }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           case "$PLATFORM" in
             all|linux|macos|windows) ;;
             *) echo "Unsupported platform: $PLATFORM" >&2; exit 1 ;;
           esac
+          if [[ -n "$RELEASE_TAG" && "$PLATFORM" != all ]]; then
+            echo "Release attachment requires platform=all" >&2
+            exit 1
+          fi
+          if [[ -n "$ARTIFACT_RUN_ID" && -z "$RELEASE_TAG" ]]; then
+            echo "release_tag is required with artifact_run_id" >&2
+            exit 1
+          fi
+          if [[ -n "$ARTIFACT_RUN_ID" && ! "$ARTIFACT_RUN_ID" =~ ^[0-9]+$ ]]; then
+            echo "artifact_run_id must be numeric" >&2
+            exit 1
+          fi
+          if [[ -n "$RELEASE_TAG" && -z "$ARTIFACT_RUN_ID" && ( "$GITHUB_REF_TYPE" != tag || "$GITHUB_REF_NAME" != "$RELEASE_TAG" ) ]]; then
+            echo "Build against the same tag named by release_tag" >&2
+            exit 1
+          fi
+          if [[ -n "$RELEASE_TAG" ]]; then
+            release_api="repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG"
+            release_draft=$(gh api "$release_api" --jq '.draft')
+            release_immutable=$(gh api "$release_api" --jq '.immutable')
+            release_prerelease=$(gh api "$release_api" --jq '.prerelease')
+            [[ "$release_draft" == true ]] || { echo "Release $RELEASE_TAG must be a draft" >&2; exit 1; }
+            [[ "$release_immutable" == false ]] || { echo "Release $RELEASE_TAG is immutable" >&2; exit 1; }
+            [[ "$release_prerelease" == true ]] || { echo "Release $RELEASE_TAG must be a prerelease" >&2; exit 1; }
+          fi
+
+      - name: Select platform matrix
+        id: select
+        env:
+          PLATFORM: ${{ inputs.platform }}
+        run: |
           matrix=$(jq -cn --arg platform "$PLATFORM" '
             {include: ([
               {config: "linux", name: "Linux x64", runner: "ubuntu-24.04", format: "deb", extension: "deb"},
@@ -57,6 +88,7 @@ jobs:
 
   runtime_assets:
     name: Materialize pinned guest boot assets
+    needs: [select-platforms]
     if: github.event_name != 'workflow_dispatch' || inputs.artifact_run_id == ''
     runs-on: ubuntu-24.04
     outputs:
@@ -67,10 +99,14 @@ jobs:
 
       - name: Resolve runtime version
         id: version
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           version=$(python3 -c 'import tomllib; print(tomllib.load(open("crates/rootglass-desktop/Cargo.toml", "rb"))["package"]["version"])')
-          if [[ "$GITHUB_EVENT_NAME" == release && "${GITHUB_REF_NAME#v}" != "$version" ]]; then
-            echo "Release tag $GITHUB_REF_NAME does not match desktop version $version" >&2
+          tag="$RELEASE_TAG"
+          if [[ -z "$tag" && "$GITHUB_REF_TYPE" == tag ]]; then tag="$GITHUB_REF_NAME"; fi
+          if [[ -n "$tag" && "${tag#v}" != "$version" ]]; then
+            echo "Release tag $tag does not match desktop version $version" >&2
             exit 1
           fi
           echo "runtime_version=$version" >> "$GITHUB_OUTPUT"
@@ -80,8 +116,24 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cpio e2fsprogs squashfs-tools
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies for sample bundle verification
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            crates/rootglass-desktop -> target
+
       - name: Materialize Alpine guest assets
+        env:
+          ROOTFS_SIZE_MB: "128"
+          STATE_SIZE_MB: "32"
         run: bash scripts/materialize-example-assets.sh
+
+      - name: Package and verify the signed example glass
+        run: bash scripts/package-release-example.sh "$RUNNER_TEMP/rootglass-example"
 
       - name: Upload offline guest boot assets
         uses: actions/upload-artifact@v4
@@ -93,6 +145,17 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
+
+      - name: Upload materialized example glass
+        uses: actions/upload-artifact@v4
+        with:
+          name: rootglass-example-glass
+          path: |
+            ${{ runner.temp }}/rootglass-example/rootglass-hello-world-0.1.0.glass
+            ${{ runner.temp }}/rootglass-example/SHA256SUMS-example.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
 
   package:
     name: ${{ matrix.name }} package
@@ -252,37 +315,34 @@ jobs:
           compression-level: 0
           retention-days: 14
 
-  publish-release-assets:
-    name: Attach packages and runtimes to release
-    if: github.event_name == 'release'
-    needs: package
+  attach-current-release-assets:
+    name: Attach current build artifacts to a draft prerelease
+    if: github.event_name == 'workflow_dispatch' && inputs.release_tag != '' && inputs.artifact_run_id == ''
+    needs: [package, runtime_assets]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
-      - name: Download package artifacts
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download artifacts from this run
         uses: actions/download-artifact@v4
         with:
           pattern: rootglass-*
-          path: release-assets
+          path: release-artifacts
           merge-multiple: false
 
-      - name: Attach all package and runtime assets
+      - name: Verify and attach complete release assets
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-        run: |
-          mapfile -t assets < <(find release-assets -type f -print | sort)
-          if [[ "${#assets[@]}" -ne 12 ]]; then
-            printf 'Expected 12 release assets, found %s\n' "${#assets[@]}" >&2
-            printf '%s\n' "${assets[@]}" >&2
-            exit 1
-          fi
-          gh release upload "$RELEASE_TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: bash scripts/assemble-release-artifacts.sh release-artifacts "$RUNNER_TEMP/release-assets-ready" "$RELEASE_TAG"
 
   attach-existing-release-assets:
     name: Attach artifacts from an existing package run
     if: github.event_name == 'workflow_dispatch' && inputs.artifact_run_id != ''
+    needs: [select-platforms]
     runs-on: ubuntu-24.04
     permissions:
       actions: read
@@ -298,7 +358,10 @@ jobs:
           run-id: ${{ inputs.artifact_run_id }}
           github-token: ${{ github.token }}
 
-      - name: Verify and attach package and runtime assets
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Verify source run and attach release assets
         env:
           GH_TOKEN: ${{ github.token }}
           ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
@@ -313,7 +376,21 @@ jobs:
             echo "Artifact run $ARTIFACT_RUN_ID must be complete (found $run_status)" >&2
             exit 1
           }
-          mapfile -t source_jobs < <(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ARTIFACT_RUN_ID/jobs" --paginate --jq '.jobs[] | select(.name == "Materialize pinned guest boot assets" or .name == "Linux x64 package" or .name == "macOS arm64 package" or .name == "Windows x64 package") | [.name, .conclusion] | @tsv')
+          run_head_sha=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ARTIFACT_RUN_ID" --jq '.head_sha')
+          tag_type=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.type')
+          tag_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.sha')
+          while [[ "$tag_type" == "tag" ]]; do
+            tag_object=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_sha")
+            tag_type=$(jq -r '.object.type' <<< "$tag_object")
+            tag_sha=$(jq -r '.object.sha' <<< "$tag_object")
+          done
+          [[ "$run_head_sha" == "$tag_sha" ]] || {
+            echo "Artifact run $ARTIFACT_RUN_ID was not built from release tag $RELEASE_TAG" >&2
+            exit 1
+          }
+
+          source_jobs_text=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ARTIFACT_RUN_ID/jobs" --paginate --jq '.jobs[] | select(.name == "Materialize pinned guest boot assets" or .name == "Linux x64 package" or .name == "macOS arm64 package" or .name == "Windows x64 package") | [.name, .conclusion] | @tsv')
+          mapfile -t source_jobs <<< "$source_jobs_text"
           if [[ "${#source_jobs[@]}" -ne 4 ]]; then
             printf 'Expected four completed runtime/package jobs in run %s, found %s\n' "$ARTIFACT_RUN_ID" "${#source_jobs[@]}" >&2
             printf '%s\n' "${source_jobs[@]}" >&2
@@ -330,58 +407,5 @@ jobs:
               exit 1
             fi
           done
-          is_prerelease=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.prerelease')
-          [[ "$is_prerelease" == "true" ]] || {
-            echo "Release $RELEASE_TAG must exist and be marked as a prerelease" >&2
-            exit 1
-          }
 
-          expected_dirs=(
-            rootglass-deb-Linux-X64
-            rootglass-dmg-macOS-ARM64
-            rootglass-nsis-Windows-X64
-          )
-          mapfile -t found_dirs < <(find downloaded-artifacts -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
-          mapfile -t expected_sorted < <(printf '%s\n' "${expected_dirs[@]}" | sort)
-          if [[ "${found_dirs[*]}" != "${expected_sorted[*]}" ]]; then
-            printf 'Expected package artifacts %s; found %s\n' "${expected_sorted[*]}" "${found_dirs[*]}" >&2
-            exit 1
-          fi
-
-          mkdir -p release-assets-ready
-          declare -a assets=()
-          for platform in linux macos windows; do
-            case "$platform" in
-              linux) artifact_dir=downloaded-artifacts/rootglass-deb-Linux-X64; package_glob='*.deb'; runtime_glob='*.tar.gz' ;;
-              macos) artifact_dir=downloaded-artifacts/rootglass-dmg-macOS-ARM64; package_glob='*.dmg'; runtime_glob='*.tar.gz' ;;
-              windows) artifact_dir=downloaded-artifacts/rootglass-nsis-Windows-X64; package_glob='*-setup.exe'; runtime_glob='*.zip' ;;
-            esac
-            mapfile -t packages < <(find "$artifact_dir" -type f -name "$package_glob" -print)
-            mapfile -t runtimes < <(find "$artifact_dir" -type f -name "$runtime_glob" -print)
-            mapfile -t runtime_checksums < <(find "$artifact_dir" -type f -name '*.sha256' -print)
-            if [[ "${#packages[@]}" -ne 1 || "${#runtimes[@]}" -ne 1 || "${#runtime_checksums[@]}" -ne 1 ]]; then
-              echo "Expected one installer, runtime archive, and runtime checksum for $platform" >&2
-              find "$artifact_dir" -type f -print >&2
-              exit 1
-            fi
-
-            destination="release-assets-ready/$platform"
-            mkdir -p "$destination"
-            cp "${packages[0]}" "${runtimes[0]}" "${runtime_checksums[0]}" "$destination/"
-            runtime_checksum_name=$(basename "${runtime_checksums[0]}")
-            manifest="SHA256SUMS-$platform.txt"
-            (
-              cd "$destination"
-              sha256sum --check "$runtime_checksum_name"
-              sha256sum "$(basename "${packages[0]}")" "$(basename "${runtimes[0]}")" > "$manifest"
-              sha256sum --check "$manifest"
-            )
-            assets+=("$destination/$(basename "${packages[0]}")" "$destination/$manifest" "$destination/$(basename "${runtimes[0]}")" "$destination/$runtime_checksum_name")
-          done
-
-          if [[ "${#assets[@]}" -ne 12 ]]; then
-            printf 'Expected 12 release assets, found %s\n' "${#assets[@]}" >&2
-            printf '%s\n' "${assets[@]}" >&2
-            exit 1
-          fi
-          gh release upload "$RELEASE_TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+          bash scripts/assemble-release-artifacts.sh downloaded-artifacts "$RUNNER_TEMP/release-assets-ready" "$RELEASE_TAG"
