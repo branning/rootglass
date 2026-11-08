@@ -220,27 +220,21 @@ impl RootglassWindow {
                         }
                         RuntimeEvent::SerialChunk { bytes, .. } => {
                             if !serial_sentinel.is_empty() {
-                                let mut scan = Vec::with_capacity(
-                                    serial_sentinel_tail.len() + bytes.len(),
-                                );
+                                let mut scan =
+                                    Vec::with_capacity(serial_sentinel_tail.len() + bytes.len());
                                 scan.extend_from_slice(&serial_sentinel_tail);
                                 scan.extend_from_slice(bytes);
                                 if scan.windows(serial_sentinel.len()).any(|window| {
-                                    window.iter().zip(&serial_sentinel).all(
-                                        |(byte, expected)| {
-                                            byte.to_ascii_lowercase()
-                                                == expected.to_ascii_lowercase()
-                                        },
-                                    )
+                                    window.iter().zip(&serial_sentinel).all(|(byte, expected)| {
+                                        byte.to_ascii_lowercase() == expected.to_ascii_lowercase()
+                                    })
                                 }) {
                                     desktop_smoke_event("ROOTGLASS_DESKTOP_SERIAL_ECHO");
                                 }
-                                let tail_len = serial_sentinel
-                                    .len()
-                                    .saturating_sub(1)
-                                    .min(scan.len());
-                                serial_sentinel_tail = scan[scan.len().saturating_sub(tail_len)..]
-                                    .to_vec();
+                                let tail_len =
+                                    serial_sentinel.len().saturating_sub(1).min(scan.len());
+                                serial_sentinel_tail =
+                                    scan[scan.len().saturating_sub(tail_len)..].to_vec();
                             }
                         }
                         _ => {}
