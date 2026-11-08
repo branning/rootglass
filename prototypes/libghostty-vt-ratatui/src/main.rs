@@ -1,7 +1,9 @@
 use std::io::{self, Stdout};
 use std::time::Duration;
 
-use crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode};
+use crossterm::event::{
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind,
+};
 use crossterm::execute;
 use ratatui::backend::CrosstermBackend;
 use ratatui::style::{Color, Style};
@@ -47,7 +49,7 @@ fn fixture_child() -> io::Result<()> {
     loop {
         if event::poll(Duration::from_millis(250))? {
             match event::read()? {
-                Event::Key(key) if key.code == KeyCode::Left => {
+                Event::Key(key) if key.kind == KeyEventKind::Press && key.code == KeyCode::Left => {
                     state.left_presses = state.left_presses.saturating_add(1);
                     draw(&mut terminal, &state)?;
                 }
@@ -59,7 +61,11 @@ fn fixture_child() -> io::Result<()> {
                     state.size = (cols, rows);
                     draw(&mut terminal, &state)?;
                 }
-                Event::Key(key) if key.code == KeyCode::Char('q') => break,
+                Event::Key(key)
+                    if key.kind == KeyEventKind::Press && key.code == KeyCode::Char('q') =>
+                {
+                    break;
+                }
                 _ => {}
             }
         }
