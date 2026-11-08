@@ -278,6 +278,7 @@ xdotool type --clearmodifiers --delay 20 "$serial_username"
 xdotool key Return
 wait_for_marker ROOTGLASS_DESKTOP_SERIAL_INPUT_SENT
 wait_for_marker ROOTGLASS_DESKTOP_SERIAL_ECHO 45
+echo "ROOTGLASS_DESKTOP_SMOKE_SERIAL_RESPONSE"
 xdotool mousemove --window "$window_id" 900 "$((window_height - 100))"
 xdotool click --repeat 20 --delay 25 5
 sleep 0.5
@@ -287,15 +288,29 @@ import -window "$window_id" "${artifact_dir}/04-guest-password-prompt.png"
 xdotool mousemove --window "$window_id" 365 26 click 1
 wait_for_marker ROOTGLASS_DESKTOP_RESTART_STARTED 120
 wait_for_count ROOTGLASS_DESKTOP_GUEST_READY 2 120
+echo "ROOTGLASS_DESKTOP_SMOKE_RESTART_READY"
 xdotool mousemove --window "$window_id" 425 26 click 1
 wait_for_marker ROOTGLASS_DESKTOP_STOPPED 120
+echo "ROOTGLASS_DESKTOP_SMOKE_STOPPED"
 xdotool windowsize --sync "$window_id" 1000 650
 sleep 1
 import -window "$window_id" "${artifact_dir}/05-guest-stopped-resized.png"
 
 xdotool windowclose "$window_id"
+for _ in $(seq 1 300); do
+  app_state="$(ps -o stat= -p "$app_pid" 2>/dev/null | tr -d ' ' || true)"
+  if [[ -z "$app_state" || "$app_state" == Z* ]]; then
+    break
+  fi
+  sleep 0.1
+done
+if [[ -n "$app_state" && "$app_state" != Z* ]]; then
+  echo "Rootglass desktop did not exit within 30s after its window was closed" >&2
+  exit 1
+fi
 wait "$app_pid"
 app_pid=""
+echo "ROOTGLASS_DESKTOP_SMOKE_WINDOW_EXITED"
 if pgrep -af qemu-system-aarch64 | grep -F "$work_dir"; then
   echo "A QEMU child remained after the desktop closed" >&2
   exit 1
