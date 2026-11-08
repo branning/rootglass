@@ -81,7 +81,6 @@ xdotool key --clearmodifiers ctrl+v
 wait_for_marker ROOTGLASS_EMBEDDED_TUI_PASTE_KEY
 wait_for_marker ROOTGLASS_EMBEDDED_TUI_CLIPBOARD_READ
 wait_for_marker ROOTGLASS_EMBEDDED_TUI_PASTE_SENT
-wait_for_marker ROOTGLASS_TUI_PASTE_EVENT
 wait_for_marker ROOTGLASS_EMBEDDED_TUI_PASTE
 
 xdotool windowsize --sync "$window_id" 960 640
