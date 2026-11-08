@@ -230,11 +230,11 @@ impl TerminalWindow {
                 self.pasted_reported = true;
                 eprintln!("ROOTGLASS_GPUI_PASTE_READY");
             }
-            if let Some(size) = self.screen.lines().find_map(|line| {
-                line.trim_start()
-                    .strip_prefix("SIZE:")
-                    .map(str::to_owned)
-            }) {
+            if let Some(size) = self
+                .screen
+                .lines()
+                .find_map(|line| line.trim_start().strip_prefix("SIZE:").map(str::to_owned))
+            {
                 if self
                     .last_fixture_size
                     .as_deref()
