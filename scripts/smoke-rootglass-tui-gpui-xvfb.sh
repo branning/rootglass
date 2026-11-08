@@ -98,13 +98,17 @@ identify -format 'Captured embedded Rootglass TUI: %wx%h %m\n' "$screenshot"
 xdotool key ctrl+q || true
 wait_for_marker ROOTGLASS_EMBEDDED_TUI_APP_QUIT
 for _ in $(seq 1 450); do
-  process_state="$(ps -o stat= -p "$app_pid" 2>/dev/null | tr -d '[:space:]' | cut -c1)"
+  process_state="$(ps -o stat= -p "$app_pid" 2>/dev/null || true)"
+  process_state="${process_state//[[:space:]]/}"
+  process_state="${process_state:0:1}"
   if [[ -z "$process_state" || "$process_state" == Z ]]; then
     break
   fi
   sleep 0.1
 done
-process_state="$(ps -o stat= -p "$app_pid" 2>/dev/null | tr -d '[:space:]' | cut -c1)"
+process_state="$(ps -o stat= -p "$app_pid" 2>/dev/null || true)"
+process_state="${process_state//[[:space:]]/}"
+process_state="${process_state:0:1}"
 if [[ -n "$process_state" && "$process_state" != Z ]]; then
   cat "$log_file"
   echo "Rootglass desktop did not shut down within 45 seconds" >&2
