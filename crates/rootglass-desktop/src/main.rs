@@ -200,6 +200,10 @@ impl RootglassWindow {
 
         let service = model.shared_service();
         let background_executor = cx.background_executor().clone();
+        let serial_sentinel = std::env::var_os("ROOTGLASS_DESKTOP_SMOKE_SERIAL_SENTINEL")
+            .map(|value| value.to_string_lossy().into_owned().into_bytes())
+            .unwrap_or_default();
+        let mut serial_sentinel_tail = Vec::new();
         let _poll_task = cx.spawn(async move |view, cx| loop {
             background_executor.timer(Duration::from_millis(100)).await;
             let service_for_poll = service.clone();
@@ -215,22 +219,28 @@ impl RootglassWindow {
                             desktop_smoke_event("ROOTGLASS_DESKTOP_GUEST_READY");
                         }
                         RuntimeEvent::SerialChunk { bytes, .. } => {
-                            if let Some(sentinel) =
-                                std::env::var_os("ROOTGLASS_DESKTOP_SMOKE_SERIAL_SENTINEL")
-                            {
-                                let sentinel = sentinel.to_string_lossy();
-                                if !sentinel.is_empty()
-                                    && bytes.windows(sentinel.len()).any(|window| {
-                                        window.iter().zip(sentinel.as_bytes()).all(
-                                            |(byte, expected)| {
-                                                byte.to_ascii_lowercase()
-                                                    == expected.to_ascii_lowercase()
-                                            },
-                                        )
-                                    })
-                                {
+                            if !serial_sentinel.is_empty() {
+                                let mut scan = Vec::with_capacity(
+                                    serial_sentinel_tail.len() + bytes.len(),
+                                );
+                                scan.extend_from_slice(&serial_sentinel_tail);
+                                scan.extend_from_slice(bytes);
+                                if scan.windows(serial_sentinel.len()).any(|window| {
+                                    window.iter().zip(&serial_sentinel).all(
+                                        |(byte, expected)| {
+                                            byte.to_ascii_lowercase()
+                                                == expected.to_ascii_lowercase()
+                                        },
+                                    )
+                                }) {
                                     desktop_smoke_event("ROOTGLASS_DESKTOP_SERIAL_ECHO");
                                 }
+                                let tail_len = serial_sentinel
+                                    .len()
+                                    .saturating_sub(1)
+                                    .min(scan.len());
+                                serial_sentinel_tail = scan[scan.len().saturating_sub(tail_len)..]
+                                    .to_vec();
                             }
                         }
                         _ => {}
