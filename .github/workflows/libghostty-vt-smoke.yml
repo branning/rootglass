@@ -83,6 +83,11 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check prototype formatting
+        run: cargo fmt --manifest-path prototypes/libghostty-vt-ratatui/Cargo.toml --check
 
       - name: Cache Cargo registry and build outputs
         uses: Swatinem/rust-cache@v2
@@ -113,7 +118,7 @@ jobs:
             libgl1-mesa-dri libwayland-dev libwebkit2gtk-4.1-dev \
             libx11-xcb-dev libxkbcommon-x11-dev libzstd-dev \
             imagemagick mesa-vulkan-drivers vulkan-validationlayers \
-            xauth xvfb
+            xauth xclip xdotool xvfb
           echo "CC=ccache gcc" >> "$GITHUB_ENV"
           echo "CXX=ccache g++" >> "$GITHUB_ENV"
           echo "CCACHE_DIR=${{ runner.temp }}/rootglass-ccache" >> "$GITHUB_ENV"

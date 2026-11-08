@@ -123,12 +123,21 @@ impl Drop for TerminalPty {
         self.output.take();
         self.writer.take();
         self.master.take();
+        let mut reaped = false;
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
-            let _ = child.wait();
+            reaped = child.wait().is_ok();
         }
+        let mut reader_joined = false;
         if let Some(reader) = self.reader.take() {
-            let _ = reader.join();
+            reader_joined = reader.join().is_ok();
+        }
+        if std::env::var_os("ROOTGLASS_GPUI_SMOKE").is_some() {
+            if reaped && reader_joined {
+                eprintln!("ROOTGLASS_GPUI_PTY_CLEANED");
+            } else {
+                eprintln!("ROOTGLASS_GPUI_PTY_CLEANUP_FAILED");
+            }
         }
     }
 }
@@ -138,6 +147,9 @@ struct TerminalWindow {
     pty: TerminalPty,
     screen: String,
     ready_reported: bool,
+    typed_reported: bool,
+    pasted_reported: bool,
+    last_fixture_size: Option<String>,
     focus: FocusHandle,
     _bounds_subscription: Subscription,
     _poll_task: Task<()>,
@@ -158,7 +170,7 @@ impl TerminalWindow {
             }
         });
         let smoke_mode = std::env::var_os("ROOTGLASS_GPUI_SMOKE").is_some();
-        let smoke_deadline = Instant::now() + Duration::from_secs(12);
+        let smoke_deadline = Instant::now() + Duration::from_secs(30);
         let background_executor = cx.background_executor().clone();
         let _poll_task = cx.spawn(async move |view, cx| loop {
             background_executor.timer(Duration::from_millis(16)).await;
@@ -179,6 +191,9 @@ impl TerminalWindow {
             pty,
             screen: String::new(),
             ready_reported: false,
+            typed_reported: false,
+            pasted_reported: false,
+            last_fixture_size: None,
             focus,
             _bounds_subscription,
             _poll_task,
@@ -206,6 +221,30 @@ impl TerminalWindow {
                 eprintln!("ROOTGLASS_GPUI_HOST_READY");
             }
         }
+        if std::env::var_os("ROOTGLASS_GPUI_SMOKE").is_some() {
+            if !self.typed_reported && self.screen.contains("INPUT:headless-key") {
+                self.typed_reported = true;
+                eprintln!("ROOTGLASS_GPUI_TYPED_READY");
+            }
+            if !self.pasted_reported && self.screen.contains("INPUT:headless paste") {
+                self.pasted_reported = true;
+                eprintln!("ROOTGLASS_GPUI_PASTE_READY");
+            }
+            if let Some(size) = self.screen.lines().find_map(|line| {
+                line.trim_start()
+                    .strip_prefix("SIZE:")
+                    .map(str::to_owned)
+            }) {
+                if self
+                    .last_fixture_size
+                    .as_deref()
+                    .is_some_and(|last_size| last_size != size.as_str())
+                {
+                    eprintln!("ROOTGLASS_GPUI_RESIZE_READY {size}");
+                }
+                self.last_fixture_size = Some(size);
+            }
+        }
         Ok(())
     }
 
@@ -222,14 +261,17 @@ impl TerminalWindow {
         let key = event.keystroke.key.as_str();
         let modifiers = &event.keystroke.modifiers;
 
-        if (modifiers.control || modifiers.platform) && modifiers.shift && key == "c" {
+        if (modifiers.control || modifiers.platform)
+            && modifiers.shift
+            && key.eq_ignore_ascii_case("c")
+        {
             if let Ok(text) = self.parser.screen() {
                 cx.write_to_clipboard(ClipboardItem::new_string(text));
             }
             return;
         }
 
-        if (modifiers.control || modifiers.platform) && key == "v" {
+        if (modifiers.control || modifiers.platform) && key.eq_ignore_ascii_case("v") {
             if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
                 if let Ok(encoded) = encode_bracketed_paste(&text) {
                     let _ = self.pty.write(&encoded);
