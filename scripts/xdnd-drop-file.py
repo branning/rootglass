@@ -69,7 +69,7 @@ def main() -> int:
     }
     uri_type = atoms["text/uri-list"]
     source.change_property(atoms["XdndTypeList"], Xatom.ATOM, 32, [uri_type])
-    connection.set_selection_owner(source, atoms["XdndSelection"], X.CurrentTime)
+    source.set_selection_owner(atoms["XdndSelection"], X.CurrentTime)
     connection.flush()
 
     send_client_message(
