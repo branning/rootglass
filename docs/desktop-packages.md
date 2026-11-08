@@ -20,6 +20,21 @@ For example, build only the Windows app from `main` with GitHub CLI:
 gh workflow run desktop-packages.yml --repo branning/rootglass --ref main -f platform=windows
 ```
 
+To attach artifacts from a successful package run without rebuilding, set
+`artifact_run_id` and `release_tag` in **Run workflow**. For example, attach run
+`42502155197` to prerelease `v0.0.1`:
+
+```sh
+gh workflow run desktop-packages.yml --repo branning/rootglass --ref main \
+  -f platform=all -f artifact_run_id=42502155197 -f release_tag=v0.0.1
+```
+
+This path downloads the three package artifacts from that completed successful
+run, verifies each runtime archive checksum, creates package/runtime checksum
+manifests, and uploads the 12 installer, manifest, runtime archive, and runtime
+checksum assets. On Windows it selects the NSIS `*-setup.exe` installer and
+omits the unpackaged desktop executable.
+
 Different platform selections can run independently. A newer run for the same
 ref, event, and selection cancels the superseded run. Routine CI still runs
 formatting, Clippy, tests, the Linux desktop compile check, and CLI/boot smoke checks.
