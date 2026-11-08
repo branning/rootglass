@@ -190,24 +190,41 @@ for _ in $(seq 1 100); do
     [[ "$candidate" != "$window_id" ]] || continue
     candidate_name="$(xdotool getwindowname "$candidate" 2>/dev/null || true)"
     candidate_pid="$(xdotool getwindowpid "$candidate" 2>/dev/null || true)"
-    printf 'ROOTGLASS_DESKTOP_VISIBLE_WINDOW id=%s pid=%s name=%s\n' \
-      "$candidate" "$candidate_pid" "$candidate_name"
-    dialog_window="$candidate"
-    if [[ "$candidate_name" == *Rootglass* ]]; then
+    candidate_geometry="$(xdotool getwindowgeometry --shell "$candidate" 2>/dev/null || true)"
+    candidate_width="$(sed -n 's/^WIDTH=//p' <<<"$candidate_geometry")"
+    candidate_height="$(sed -n 's/^HEIGHT=//p' <<<"$candidate_geometry")"
+    printf 'ROOTGLASS_DESKTOP_VISIBLE_WINDOW id=%s pid=%s name=%s geometry=%s %s\n' \
+      "$candidate" "$candidate_pid" "$candidate_name" "$candidate_width" "$candidate_height"
+    if [[ "$candidate_name" == *"Open Folder"* || "$candidate_name" == *"Open File"* ]]; then
+      dialog_window="$candidate"
       break
     fi
+    if [[ "$candidate_width" =~ ^[0-9]+$ && "$candidate_height" =~ ^[0-9]+$ ]] \
+      && ((candidate_width >= 320 && candidate_height >= 240)); then
+      dialog_window="$candidate"
+    fi
   done <<< "$visible_windows"
-  if [[ -n "$dialog_window" ]]; then
+  if [[ -n "$dialog_window" ]] \
+    && { [[ "$(xdotool getwindowname "$dialog_window" 2>/dev/null || true)" == *"Open Folder"* ]] \
+      || [[ "$(xdotool getwindowname "$dialog_window" 2>/dev/null || true)" == *"Open File"* ]]; }; then
     break
   fi
   sleep 0.1
 done
 if [[ -z "$dialog_window" ]]; then
+  xwininfo -root -tree || true
   xdotool search --onlyvisible --name '.*' 2>/dev/null || true
   echo "The native file chooser did not create a visible window" >&2
   exit 1
 fi
+printf 'ROOTGLASS_DESKTOP_DIALOG_WINDOW id=%s name=%s\n' \
+  "$dialog_window" "$(xdotool getwindowname "$dialog_window" 2>/dev/null || true)"
+xprop -id "$dialog_window" WM_NAME _NET_WM_NAME WM_CLASS _NET_WM_PID _NET_WM_WINDOW_TYPE WM_TRANSIENT_FOR || true
+xwininfo -id "$dialog_window" || true
+import -window "$dialog_window" "${artifact_dir}/00-native-file-chooser-window.png"
 import -window root "${artifact_dir}/00-native-file-chooser.png"
+xdotool windowraise "$dialog_window"
+xdotool windowactivate --sync "$dialog_window" 2>/dev/null || xdotool windowfocus --sync "$dialog_window"
 xdotool windowfocus --sync "$dialog_window"
 printf 'ROOTGLASS_DESKTOP_DIALOG_FOCUS id=%s focused=%s\n' \
   "$dialog_window" "$(xdotool getwindowfocus 2>/dev/null || true)"

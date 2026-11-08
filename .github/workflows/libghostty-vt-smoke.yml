@@ -275,7 +275,7 @@ jobs:
             libvulkan1 libwayland-dev libwebkit2gtk-4.1-dev libx11-xcb-dev \
             libxkbcommon-x11-dev libzstd-dev mesa-vulkan-drivers \
             python3 python3-xlib qemu-system-arm squashfs-tools \
-            xauth xdg-desktop-portal xdg-desktop-portal-gtk xdotool xvfb
+            x11-utils xauth xdg-desktop-portal xdg-desktop-portal-gtk xdotool xvfb
 
       - name: Build Rootglass desktop and CLI
         run: |
