@@ -219,3 +219,4 @@
 {"version":1,"task_id":"LYPCKP","kind":"created","at":"2026-11-08T19:28:11.364820691Z"}
 {"version":1,"task_id":"74J665","kind":"created","at":"2026-11-08T19:28:11.431169357Z"}
 {"version":1,"task_id":"MEN3B7","kind":"created","at":"2026-11-08T19:28:11.492660577Z"}
+{"version":1,"task_id":"EPHVRF","kind":"result","at":"2026-11-08T19:46:28.763828329Z","agent":"codex@worker-1","text":"PR #87 implements draft-first sample packaging; static checks pass. End-to-end build awaits a future mutable draft tag."}
