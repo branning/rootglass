@@ -1,3 +1,4 @@
+use gpui_kit::base::StyledExt;
 use gpui_kit::*;
 use portable_pty::{native_pty_system, Child, MasterPty, PtySize};
 use rootglass_terminal_vt::{encode_bracketed_paste, GhosttyTerminal};
@@ -611,7 +612,8 @@ fn parse_vt_screen(input: &[u8], cols: u16, rows: u16) -> Vec<Vec<TerminalCell>>
     let (mut x, mut y) = (0usize, 0usize);
     let (width, height) = (grid[0].len(), grid.len());
     let mut style = CellStyle::default();
-    let mut characters = String::from_utf8_lossy(input).chars().peekable();
+    let screen = String::from_utf8_lossy(input);
+    let mut characters = screen.chars().peekable();
 
     while let Some(character) = characters.next() {
         match character {
