@@ -2,6 +2,8 @@ name: libghostty-vt smoke
 
 on:
   pull_request:
+    # Avoid rebuilding libghostty-vt and the native PTY smoke on every push.
+    types: [opened, reopened, ready_for_review]
     paths:
       - .github/workflows/libghostty-vt-smoke.yml
       - prototypes/libghostty-vt-ratatui/**
@@ -25,6 +27,7 @@ concurrency:
 jobs:
   pty-smoke:
     name: PTY smoke (${{ matrix.name }})
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
