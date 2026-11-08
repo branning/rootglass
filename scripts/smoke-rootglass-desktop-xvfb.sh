@@ -184,8 +184,19 @@ xdotool mousemove --window "$window_id" 170 26 click 1
 wait_for_marker ROOTGLASS_DESKTOP_PICKER_OPEN
 dialog_window=""
 for _ in $(seq 1 100); do
-  dialog_window="$(xdotool search --onlyvisible --name '.*' 2>/dev/null \
-    | grep -Fvx "$window_id" | tail -n 1 || true)"
+  visible_windows="$(xdotool search --onlyvisible --name '.*' 2>/dev/null || true)"
+  while IFS= read -r candidate; do
+    [[ -n "$candidate" ]] || continue
+    [[ "$candidate" != "$window_id" ]] || continue
+    candidate_name="$(xdotool getwindowname "$candidate" 2>/dev/null || true)"
+    candidate_pid="$(xdotool getwindowpid "$candidate" 2>/dev/null || true)"
+    printf 'ROOTGLASS_DESKTOP_VISIBLE_WINDOW id=%s pid=%s name=%s\n' \
+      "$candidate" "$candidate_pid" "$candidate_name"
+    dialog_window="$candidate"
+    if [[ "$candidate_name" == *Rootglass* ]]; then
+      break
+    fi
+  done <<< "$visible_windows"
   if [[ -n "$dialog_window" ]]; then
     break
   fi
@@ -196,8 +207,20 @@ if [[ -z "$dialog_window" ]]; then
   echo "The native file chooser did not create a visible window" >&2
   exit 1
 fi
+import -window root "${artifact_dir}/00-native-file-chooser.png"
 xdotool windowfocus --sync "$dialog_window"
-xdotool key Escape
+printf 'ROOTGLASS_DESKTOP_DIALOG_FOCUS id=%s focused=%s\n' \
+  "$dialog_window" "$(xdotool getwindowfocus 2>/dev/null || true)"
+xdotool key --clearmodifiers --delay 100 Escape
+for _ in $(seq 1 30); do
+  if grep -Fq ROOTGLASS_DESKTOP_PICKER_CANCELLED "$log_file"; then
+    break
+  fi
+  sleep 0.1
+done
+if ! grep -Fq ROOTGLASS_DESKTOP_PICKER_CANCELLED "$log_file"; then
+  xdotool windowclose "$dialog_window" 2>/dev/null || true
+fi
 wait_for_marker ROOTGLASS_DESKTOP_PICKER_CANCELLED
 xdotool windowfocus --sync "$window_id"
 

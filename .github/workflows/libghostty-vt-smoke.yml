@@ -264,6 +264,7 @@ jobs:
           workspaces: |
             . -> target
             crates/rootglass-desktop -> target
+          cache-on-failure: "true"
 
       - name: Install GUI, QEMU, and fixture tools
         run: |
