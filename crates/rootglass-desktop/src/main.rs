@@ -5,6 +5,7 @@ use gpui_kit::actions;
 use gpui_kit::base::StyledExt;
 use gpui_kit::component::button::*;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::*;
 use gpui_kit::*;
 use rootglass_app::registry::InstalledGlass;
@@ -146,9 +147,13 @@ impl Render for RootglassWindow {
                     )
                     .w(px(320.0))
                     .flex_shrink_0()
-                    .overflow_scroll(),
+                    .overflow_scrollbar(),
                 )
-                .child(details_view(&self.model.state).flex_1().overflow_scroll()),
+                .child(
+                    details_view(&self.model.state)
+                        .flex_1()
+                        .overflow_scrollbar(),
+                ),
         )
         .child(status_view(&self.model.state).flex_shrink_0())
         .child(
@@ -156,9 +161,9 @@ impl Render for RootglassWindow {
                 .v_flex()
                 .h(px(144.0))
                 .flex_shrink_0()
-                .overflow_y_scroll()
                 .child("Serial console")
-                .child(self.model.console.clone()),
+                .child(self.model.console.clone())
+                .overflow_y_scrollbar(),
         )
         .child(
             div()
