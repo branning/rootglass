@@ -507,43 +507,21 @@ fn verify_installed_matches_archive(
         let mut archived_buffer = [0u8; 64 * 1024];
         let mut installed_buffer = [0u8; 64 * 1024];
         let mut compared = 0u64;
-        loop {
-            let archived_count = entry
-                .read(&mut archived_buffer)
+        while compared < size {
+            // ZIP decompression and file reads can return different short reads.
+            let count = (size - compared).min(archived_buffer.len() as u64) as usize;
+            entry
+                .read_exact(&mut archived_buffer[..count])
                 .map_err(|source| io_at(archive_path, source))?;
-            let installed_count = installed
-                .read(&mut installed_buffer)
+            installed
+                .read_exact(&mut installed_buffer[..count])
                 .map_err(|source| io_at(&installed_path, source))?;
-            if archived_count != installed_count
-                || archived_buffer[..archived_count] != installed_buffer[..installed_count]
-            {
+            if archived_buffer[..count] != installed_buffer[..count] {
                 return Err(ImportError::ArchiveChanged {
                     detail: format!("installed member '{normalized}' differs from archive bytes"),
                 });
             }
-            if archived_count == 0 {
-                break;
-            }
-            compared =
-                compared
-                    .checked_add(archived_count as u64)
-                    .ok_or(ImportError::MemberTooLarge {
-                        path: normalized.clone(),
-                        limit: limits.max_member_bytes,
-                    })?;
-            if compared > limits.max_member_bytes {
-                return Err(ImportError::MemberTooLarge {
-                    path: normalized,
-                    limit: limits.max_member_bytes,
-                });
-            }
-        }
-        if compared != size {
-            return Err(ImportError::ArchiveChanged {
-                detail: format!(
-                    "installed member '{normalized}' yielded {compared} bytes, archive records {size}"
-                ),
-            });
+            compared += count as u64;
         }
     }
 
