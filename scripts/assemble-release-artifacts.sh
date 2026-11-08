@@ -12,10 +12,9 @@ release_tag="$3"
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 : "${GH_TOKEN:?GH_TOKEN is required}"
 
-release_api="repos/$GITHUB_REPOSITORY/releases/tags/$release_tag"
-release_draft="$(gh api "$release_api" --jq '.draft')"
-release_immutable="$(gh api "$release_api" --jq '.immutable')"
-release_prerelease="$(gh api "$release_api" --jq '.prerelease')"
+release_record="$(bash scripts/find-release-by-tag.sh "$release_tag")"
+IFS=$'\t' read -r release_id release_draft release_immutable release_prerelease <<< "$release_record"
+echo "Preparing assets for draft release $release_tag (release ID $release_id)"
 [[ "$release_draft" == true ]] || {
   echo "Release $release_tag must remain a draft while assets are attached" >&2
   exit 1
