@@ -89,21 +89,23 @@ impl Render for RootglassWindow {
             .v_flex()
             .size_full()
             .key_context(ROOTGLASS_CONTEXT)
-            .on_drag_move(cx.listener(|this, event: &DragMoveEvent<ExternalPaths>, _, cx| {
-                let path = event
-                    .dragged_item()
-                    .downcast_ref::<ExternalPaths>()
-                    .and_then(|paths| paths.paths().first())
-                    .cloned();
-                if let Some(path) = path {
-                    if this.pending_file_drop.as_ref() != Some(&path) {
-                        this.pending_file_drop = Some(path);
-                        this.file_drop_active = true;
-                        desktop_smoke_event("ROOTGLASS_DESKTOP_DROP_ENTER");
-                        cx.notify();
+            .on_drag_move(
+                cx.listener(|this, event: &DragMoveEvent<ExternalPaths>, _, cx| {
+                    let path = event
+                        .dragged_item()
+                        .downcast_ref::<ExternalPaths>()
+                        .and_then(|paths| paths.paths().first())
+                        .cloned();
+                    if let Some(path) = path {
+                        if this.pending_file_drop.as_ref() != Some(&path) {
+                            this.pending_file_drop = Some(path);
+                            this.file_drop_active = true;
+                            desktop_smoke_event("ROOTGLASS_DESKTOP_DROP_ENTER");
+                            cx.notify();
+                        }
                     }
-                }
-            }))
+                }),
+            )
             .on_file_drop_exit(cx.listener(|this, _, _, cx| {
                 this.pending_file_drop = None;
                 this.file_drop_active = false;
