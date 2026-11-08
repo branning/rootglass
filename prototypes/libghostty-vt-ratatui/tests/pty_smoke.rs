@@ -4,7 +4,9 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use libghostty_vt_ratatui_spike::{encode_bracketed_paste, GhosttyTerminal};
+#[cfg(not(windows))]
+use libghostty_vt_ratatui_spike::encode_bracketed_paste;
+use libghostty_vt_ratatui_spike::GhosttyTerminal;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
@@ -230,10 +232,15 @@ fn libghostty_vt_round_trips_ratatui_over_pty_headlessly() -> io::Result<()> {
     let screen = child.wait_for(&mut ghostty, "SIZE:90x30")?;
     assert!(screen.contains("SIZE:90x30"));
 
+    // Crossterm 0.28's Windows backend exposes ConPTY text as key events, not
+    // Event::Paste; Unix-like hosts exercise the bracketed-paste event path.
+    #[cfg(windows)]
+    let pasted = b"headless paste".to_vec();
+    #[cfg(not(windows))]
     let pasted = encode_bracketed_paste("headless paste")?;
     child.write_all(&pasted)?;
-    let screen = child.wait_for(&mut ghostty, "PASTE:headless paste")?;
-    assert!(screen.contains("PASTE:headless paste"));
+    let screen = child.wait_for(&mut ghostty, "INPUT:headless paste")?;
+    assert!(screen.contains("INPUT:headless paste"));
 
     // A key event encoded from terminal modes exits the fixture; wait proves PTY cleanup.
     child.write_all(&ghostty.encode_left()?)?;

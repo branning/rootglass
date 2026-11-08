@@ -66,5 +66,22 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install minisign --yes
 
+      - name: Restore native libghostty-vt build
+        id: libghostty-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/rootglass-libghostty-vt-prefix
+          key: libghostty-vt-${{ runner.os }}-${{ runner.arch }}-ghostty-v1.0.0-zig-0.17.0-${{ hashFiles('scripts/smoke-libghostty-vt-pty.py', 'prototypes/libghostty-vt-ratatui/build.rs', 'prototypes/libghostty-vt-ratatui/src/ghostty_shim.c') }}
+
       - name: Run signed native libghostty-vt PTY smoke
+        id: native-smoke
+        env:
+          GHOSTTY_VT_PREFIX: ${{ runner.temp }}/rootglass-libghostty-vt-prefix
         run: python scripts/smoke-libghostty-vt-pty.py
+
+      - name: Save native libghostty-vt build
+        if: always() && steps.native-smoke.outputs.cache_ready == 'true' && steps.libghostty-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/rootglass-libghostty-vt-prefix
+          key: libghostty-vt-${{ runner.os }}-${{ runner.arch }}-ghostty-v1.0.0-zig-0.17.0-${{ hashFiles('scripts/smoke-libghostty-vt-pty.py', 'prototypes/libghostty-vt-ratatui/build.rs', 'prototypes/libghostty-vt-ratatui/src/ghostty_shim.c') }}

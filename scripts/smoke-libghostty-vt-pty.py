@@ -114,52 +114,8 @@ def main() -> None:
         verify_manifest_entry(manifest, source_archive)
         verify_manifest_entry(manifest, deps_archive)
 
-        zig_archive = work / zig_archive_name
-        download(f"https://ziglang.org/download/{ZIG_VERSION}/{zig_archive_name}", zig_archive)
-        actual_zig_checksum = sha256(zig_archive)
-        if actual_zig_checksum != zig_checksum:
-            raise RuntimeError(
-                f"SHA256 mismatch for {zig_archive.name}: expected {zig_checksum}, got {actual_zig_checksum}"
-            )
-
-        if zig_format == "zip":
-            with zipfile.ZipFile(zig_archive) as archive:
-                archive.extractall(work)
-            zig_binary = work / f"zig-x86_64-windows-{ZIG_VERSION}" / "zig.exe"
-        else:
-            with tarfile.open(zig_archive, "r:xz") as archive:
-                archive.extractall(work, filter="data")
-            zig_dir = "zig-x86_64-linux" if host[0] == "Linux" else "zig-aarch64-macos"
-            zig_binary = work / f"{zig_dir}-{ZIG_VERSION}" / "zig"
-
-        source_dir = work / f"libghostty-vt-{GHOSTTY_VT_VERSION}"
-        deps_dir = work / f"libghostty-vt-{GHOSTTY_VT_VERSION}-deps"
-        with tarfile.open(source_archive, "r:gz") as archive:
-            archive.extractall(work, filter="data")
-        with tarfile.open(deps_archive, "r:gz") as archive:
-            archive.extractall(work, filter="data")
-
-        prefix = work / "prefix"
-        zig_cache = work / "zig-global-cache"
-        prefix.mkdir()
-        zig_cache.mkdir()
-        build_env = os.environ.copy()
-        build_env["ZIG_GLOBAL_CACHE_DIR"] = str(zig_cache)
-        system(
-            [
-                str(zig_binary),
-                "build",
-                "--prefix",
-                str(prefix),
-                "--system",
-                str(deps_dir),
-                "-Doptimize=ReleaseFast",
-                "-Dcpu=baseline",
-            ],
-            cwd=source_dir,
-            env=build_env,
-        )
-
+        prefix = Path(os.environ.get("GHOSTTY_VT_PREFIX", work / "prefix")).resolve()
+        prefix.mkdir(parents=True, exist_ok=True)
         library = prefix / "lib"
         if host[0] == "Linux":
             expected_library = library / "libghostty-vt.so"
@@ -167,8 +123,71 @@ def main() -> None:
             expected_library = library / "libghostty-vt.dylib"
         else:
             expected_library = library / "ghostty-vt.lib"
-        if not expected_library.is_file():
-            raise RuntimeError(f"native libghostty-vt build did not install {expected_library}")
+
+        expected_header = prefix / "include/ghostty/vt.h"
+        expected_runtime = prefix / "bin/ghostty-vt.dll"
+        prefix_ready = (
+            expected_library.is_file()
+            and expected_header.is_file()
+            and (host[0] != "Windows" or expected_runtime.is_file())
+        )
+        if not prefix_ready:
+            zig_archive = work / zig_archive_name
+            download(f"https://ziglang.org/download/{ZIG_VERSION}/{zig_archive_name}", zig_archive)
+            actual_zig_checksum = sha256(zig_archive)
+            if actual_zig_checksum != zig_checksum:
+                raise RuntimeError(
+                    f"SHA256 mismatch for {zig_archive.name}: expected {zig_checksum}, got {actual_zig_checksum}"
+                )
+
+            if zig_format == "zip":
+                with zipfile.ZipFile(zig_archive) as archive:
+                    archive.extractall(work)
+                zig_binary = work / f"zig-x86_64-windows-{ZIG_VERSION}" / "zig.exe"
+            else:
+                with tarfile.open(zig_archive, "r:xz") as archive:
+                    archive.extractall(work, filter="data")
+                zig_dir = "zig-x86_64-linux" if host[0] == "Linux" else "zig-aarch64-macos"
+                zig_binary = work / f"{zig_dir}-{ZIG_VERSION}" / "zig"
+
+            source_dir = work / f"libghostty-vt-{GHOSTTY_VT_VERSION}"
+            deps_dir = work / f"libghostty-vt-{GHOSTTY_VT_VERSION}-deps"
+            with tarfile.open(source_archive, "r:gz") as archive:
+                archive.extractall(work, filter="data")
+            with tarfile.open(deps_archive, "r:gz") as archive:
+                archive.extractall(work, filter="data")
+
+            zig_cache = work / "zig-global-cache"
+            zig_cache.mkdir()
+            build_env = os.environ.copy()
+            build_env["ZIG_GLOBAL_CACHE_DIR"] = str(zig_cache)
+            system(
+                [
+                    str(zig_binary),
+                    "build",
+                    "--prefix",
+                    str(prefix),
+                    "--system",
+                    str(deps_dir),
+                    "-Doptimize=ReleaseFast",
+                    "-Dcpu=baseline",
+                ],
+                cwd=source_dir,
+                env=build_env,
+            )
+        else:
+            print(f"Using cached native libghostty-vt library at {prefix}", flush=True)
+
+        if not expected_library.is_file() or not expected_header.is_file():
+            raise RuntimeError(f"native libghostty-vt build is incomplete under {prefix}")
+
+        if host[0] == "Windows" and not expected_runtime.is_file():
+            raise RuntimeError(f"native libghostty-vt runtime DLL is missing under {prefix / 'bin'}")
+
+        github_output = os.environ.get("GITHUB_OUTPUT")
+        if github_output:
+            with open(github_output, "a", encoding="utf-8") as output:
+                output.write("cache_ready=true\n")
 
         test_env = os.environ.copy()
         test_env["GHOSTTY_VT_PREFIX"] = str(prefix)

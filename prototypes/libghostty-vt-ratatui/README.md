@@ -2,7 +2,7 @@
 
 This is a disposable S16.6 prototype, not the production Rootglass TUI or GPUI bridge. It pins the public `libghostty-vt` API to Ghostty tag `v1.0.0`, commit `0fa3d577a5614150ff8e2c152de5fb9d5c6d2dec`.
 
-The fixture runs a small Ratatui program in the host's native PTY (ConPTY on Windows). Its parent parses PTY output with `GhosttyTerminal` and forwards public libghostty-vt terminal replies back through the PTY. It reads render state, encodes a key and bracketed paste, resizes the PTY and terminal grid, copies a selected range with the public formatter, then renders the parsed screen through Ratatui's `TestBackend`. The test also waits for the child to exit before dropping its PTY and terminal handles.
+The fixture runs a small Ratatui program in the host's native PTY (ConPTY on Windows). Its parent parses PTY output with `GhosttyTerminal` and forwards public libghostty-vt terminal replies back through the PTY. It reads render state, encodes a key, resizes the PTY and terminal grid, copies a selected range with the public formatter, then renders the parsed screen through Ratatui's `TestBackend`. Linux and macOS send bracketed paste and exercise Crossterm's `Event::Paste`; Crossterm 0.28's Windows event backend reports ConPTY text as key events, so Windows exercises that text-input path instead. The test also waits for the child to exit before dropping its PTY and terminal handles.
 
 ## Result and boundary
 
@@ -16,7 +16,7 @@ render-state first cell: styled
 encoded left key: LEFT:1
 selected-text copy: LEFT:1
 PTY resize: SIZE:90x30
-bracketed paste: PASTE:headless paste
+bracketed paste: INPUT:headless paste
 shutdown: child exits with status 0
 ```
 
@@ -26,7 +26,7 @@ The full `libghostty` C header at [`include/ghostty.h`](https://github.com/ghost
 
 ## Reproduce
 
-The upstream v1.0.0 packaging guide requires Zig 0.17.0. This run used Zig 0.17.1. Obtain the v1.0.0 source and dependency archives from the Ghostty release, verify the signed `SHA256SUMS` manifest with Ghostty's published minisign key, and follow [the v1.0.0 packaging guide](https://github.com/ghostty-org/ghostty/blob/vt-1.0.0/PACKAGING-LIBGHOSTTY.md). From the extracted library source directory, build the shared library; then run the fixture from the Rootglass checkout:
+The upstream v1.0.0 packaging guide requires Zig 0.17.0, which the smoke workflow pins. Obtain the v1.0.0 source and dependency archives from the Ghostty release, verify the signed `SHA256SUMS` manifest with Ghostty's published minisign key, and follow [the v1.0.0 packaging guide](https://github.com/ghostty-org/ghostty/blob/vt-1.0.0/PACKAGING-LIBGHOSTTY.md). From the extracted library source directory, build the shared library; then run the fixture from the Rootglass checkout:
 
 ```sh
 zig build --prefix "$PWD/out" --system "/path/to/libghostty-vt-deps" \
@@ -42,7 +42,7 @@ The prototype build needs a C compiler and a host-native `libghostty-vt` build i
 - The public library version is `1.0.0`; the C ABI is stable within major version 1 and the Linux shared library uses SONAME `libghostty-vt.so.1`. The build and CI should pin a specific upstream tag and consume the signed source/dependency artifacts.
 - The v1.0.0 packaging guide lists Tier 1 targets including Linux x86_64, macOS 13+, and Windows x86_64 GNU. The maintainer approved Linux x86_64, macOS arm64, and Windows x86_64 as Rootglass qualification targets. The CI matrix exercises those targets, but upstream library support and a headless PTY pass do not qualify Rootglass's GPUI host.
 - Ghostty is MIT. The packaged dependencies and notices listed by the upstream guide include Highway (`Apache-2.0 OR BSD-3-Clause`), simdutf (`Apache-2.0 OR MIT`), translate_c (`MIT`), uucode (`MIT AND Unicode-3.0`), and Wuffs (`Apache-2.0 OR MIT`). ARO is build-only (`MIT AND Unicode-3.0`). Preserve the upstream license files and notices in any shipped package.
-- The focused [`libghostty-vt smoke` workflow](../../.github/workflows/libghostty-vt-smoke.yml) builds the library from signed v1.0.0 source and dependency tarballs, verifies the Zig 0.17.0 archive checksum, then runs the PTY fixture on native Linux x86_64, macOS arm64, and Windows x86_64 runners. It runs when the prototype, build script, or workflow changes and can also be dispatched manually. The standard workspace CI does not build Zig or this isolated prototype.
+- The focused [`libghostty-vt smoke` workflow](../../.github/workflows/libghostty-vt-smoke.yml) builds the library from signed v1.0.0 source and dependency tarballs, verifies the Zig 0.17.0 archive checksum, then runs the PTY fixture on native Linux x86_64, macOS arm64, and Windows x86_64 runners. It caches the installed native prefix per OS, architecture, upstream version, Zig version and build recipe; it still verifies the signed source archives on each run. It runs on PR open/reopen/ready-for-review, on `main`, or by manual dispatch, but not on each PR `synchronize`. The standard workspace CI does not build Zig or this isolated prototype.
 - These native PTY builds do not qualify the GPUI surface, native clipboard, focus/accessibility, or any graphical host. Ghostty's packaging guide notes that its Windows library uses the GNU ABI and provides an import library for MSVC applications.
 
 The spike leaves S16.6 open for the native matrix to pass and for graphical-host validation on the approved target set.

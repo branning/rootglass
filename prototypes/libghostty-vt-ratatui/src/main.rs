@@ -15,7 +15,7 @@ use ratatui::Terminal;
 struct FixtureState {
     left_presses: u8,
     size: (u16, u16),
-    pasted: String,
+    input: String,
 }
 
 fn draw(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &FixtureState) -> io::Result<()> {
@@ -27,7 +27,7 @@ fn draw(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &FixtureState)
             )),
             Line::from(format!("LEFT:{}", state.left_presses)),
             Line::from(format!("SIZE:{}x{}", state.size.0, state.size.1)),
-            Line::from(format!("PASTE:{}", state.pasted)),
+            Line::from(format!("INPUT:{}", state.input)),
             Line::from("Press q to quit"),
         ];
         frame.render_widget(Paragraph::new(lines), frame.area());
@@ -54,7 +54,7 @@ fn fixture_child() -> io::Result<()> {
                     draw(&mut terminal, &state)?;
                 }
                 Event::Paste(text) => {
-                    state.pasted = text;
+                    state.input = text;
                     draw(&mut terminal, &state)?;
                 }
                 Event::Resize(cols, rows) => {
@@ -65,6 +65,14 @@ fn fixture_child() -> io::Result<()> {
                     if key.kind == KeyEventKind::Press && key.code == KeyCode::Char('q') =>
                 {
                     break;
+                }
+                Event::Key(key)
+                    if key.kind == KeyEventKind::Press && matches!(key.code, KeyCode::Char(_)) =>
+                {
+                    if let KeyCode::Char(character) = key.code {
+                        state.input.push(character);
+                        draw(&mut terminal, &state)?;
+                    }
                 }
                 _ => {}
             }
