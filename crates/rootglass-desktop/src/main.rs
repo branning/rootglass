@@ -520,7 +520,7 @@ impl RootglassWindow {
                     "ROOTGLASS_DESKTOP_INSPECT_FAILURE phase={} summary={} detail={}",
                     details.phase, details.summary, details.detail
                 );
-            },
+            }
             _ => desktop_smoke_event("ROOTGLASS_DESKTOP_INSPECT_UNEXPECTED_STATE"),
         }
     }
