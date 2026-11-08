@@ -3,6 +3,7 @@ set -euo pipefail
 
 binary="${1:?usage: smoke-rootglass-tui-gpui-xvfb.sh BINARY OUTPUT.png}"
 screenshot="${2:?usage: smoke-rootglass-tui-gpui-xvfb.sh BINARY OUTPUT.png}"
+work_dir="$(mktemp -d)"
 log_file="$(mktemp)"
 app_pid=""
 
@@ -32,10 +33,22 @@ cleanup() {
     wait "$app_pid" 2>/dev/null || true
   fi
   rm -f "$log_file"
+  rm -rf "$work_dir"
 }
 trap cleanup EXIT
 
 mkdir -p "$(dirname "$screenshot")"
+mkdir -p "$work_dir/home" "$work_dir/config/rootglass" "$work_dir/data"
+cat >"$work_dir/config/rootglass/trust.json" <<'JSON'
+{
+  "schemaVersion": 1,
+  "trustedPublishers": [],
+  "revokedKeyIds": []
+}
+JSON
+export HOME="$work_dir/home"
+export XDG_CONFIG_HOME="$work_dir/config"
+export XDG_DATA_HOME="$work_dir/data"
 setsid env ROOTGLASS_GPUI_SMOKE=1 "$binary" >"$log_file" 2>&1 &
 app_pid=$!
 wait_for_marker ROOTGLASS_EMBEDDED_TUI_READY
@@ -60,7 +73,8 @@ for _ in $(seq 1 5); do
 done
 wait_for_marker ROOTGLASS_EMBEDDED_TUI_SELECTION
 xdotool key --clearmodifiers ctrl+shift+c
-copied_text="$(timeout 5 xclip -selection clipboard -out)"
+wait_for_marker ROOTGLASS_EMBEDDED_TUI_COPIED
+copied_text="$(timeout 5 xclip -selection clipboard -target UTF8_STRING -out)"
 if [[ -z "$copied_text" ]]; then
   echo "Terminal selection copy left the clipboard empty" >&2
   exit 1
@@ -72,7 +86,7 @@ wait_for_marker ROOTGLASS_EMBEDDED_TUI_TYPED
 xdotool key --clearmodifiers --repeat 12 BackSpace
 printf 'headless paste' | xclip -selection clipboard -in
 sleep 0.2
-clipboard_text="$(timeout 5 xclip -selection clipboard -out)"
+clipboard_text="$(timeout 5 xclip -selection clipboard -target UTF8_STRING -out)"
 if [[ "$clipboard_text" != "headless paste" ]]; then
   echo "Clipboard did not retain the expected paste text: $clipboard_text" >&2
   exit 1

@@ -78,8 +78,8 @@ pub enum ImportError {
     DuplicatePath(String),
     #[error("archive contains a link or non-regular special file: {0}")]
     UnsupportedFileType(String),
-    #[error("archive changed while it was being imported")]
-    ArchiveChanged,
+    #[error("archive changed while it was being imported: {detail}")]
+    ArchiveChanged { detail: String },
     #[error("archive is missing required manifest '{0}'")]
     MissingManifest(&'static str),
 }
@@ -249,7 +249,10 @@ fn import_snapshot(
     if installed_verification.publisher_identity != verification.publisher_identity
         || installed_verification.key_id != verification.key_id
     {
-        return Err(ImportError::ArchiveChanged);
+        return Err(ImportError::ArchiveChanged {
+            detail: "installed publisher identity or key ID differs from the verified archive"
+                .to_string(),
+        });
     }
     verify_installed_matches_archive(snapshot, &final_path, limits)?;
     let glass = Glass::load(&final_path)?;
@@ -432,7 +435,9 @@ fn extract_archive(
                 .map_err(|source| io_at(&output, source))?;
         }
         if member != entry.size() {
-            return Err(ImportError::ArchiveChanged);
+            return Err(ImportError::ArchiveChanged {
+                detail: format!("extracted member '{name}' size differs from its ZIP record"),
+            });
         }
         file.sync_all().map_err(|source| io_at(&output, source))?;
     }
@@ -490,51 +495,42 @@ fn verify_installed_matches_archive(
             ));
         }
         if metadata.len() != size {
-            return Err(ImportError::ArchiveChanged);
+            return Err(ImportError::ArchiveChanged {
+                detail: format!(
+                    "installed member '{normalized}' has size {}, archive records {size}",
+                    metadata.len()
+                ),
+            });
         }
         let mut installed =
             File::open(&installed_path).map_err(|source| io_at(&installed_path, source))?;
         let mut archived_buffer = [0u8; 64 * 1024];
         let mut installed_buffer = [0u8; 64 * 1024];
         let mut compared = 0u64;
-        loop {
-            let archived_count = entry
-                .read(&mut archived_buffer)
+        while compared < size {
+            // ZIP decompression and file reads can return different short reads.
+            let count = (size - compared).min(archived_buffer.len() as u64) as usize;
+            entry
+                .read_exact(&mut archived_buffer[..count])
                 .map_err(|source| io_at(archive_path, source))?;
-            let installed_count = installed
-                .read(&mut installed_buffer)
+            installed
+                .read_exact(&mut installed_buffer[..count])
                 .map_err(|source| io_at(&installed_path, source))?;
-            if archived_count != installed_count
-                || archived_buffer[..archived_count] != installed_buffer[..installed_count]
-            {
-                return Err(ImportError::ArchiveChanged);
-            }
-            if archived_count == 0 {
-                break;
-            }
-            compared =
-                compared
-                    .checked_add(archived_count as u64)
-                    .ok_or(ImportError::MemberTooLarge {
-                        path: normalized.clone(),
-                        limit: limits.max_member_bytes,
-                    })?;
-            if compared > limits.max_member_bytes {
-                return Err(ImportError::MemberTooLarge {
-                    path: normalized,
-                    limit: limits.max_member_bytes,
+            if archived_buffer[..count] != installed_buffer[..count] {
+                return Err(ImportError::ArchiveChanged {
+                    detail: format!("installed member '{normalized}' differs from archive bytes"),
                 });
             }
-        }
-        if compared != size {
-            return Err(ImportError::ArchiveChanged);
+            compared += count as u64;
         }
     }
 
     let mut installed_files = BTreeSet::new();
     collect_installed_files(installed_root, installed_root, &mut installed_files)?;
     if installed_files != archive_files {
-        return Err(ImportError::ArchiveChanged);
+        return Err(ImportError::ArchiveChanged {
+            detail: "installed file list differs from archive contents".to_string(),
+        });
     }
     Ok(())
 }
