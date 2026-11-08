@@ -208,3 +208,14 @@
 {"version":1,"task_id":"7Q7CFF","kind":"created","at":"2026-11-08T19:07:23.034480794Z"}
 {"version":1,"task_id":"7Q7CFF","kind":"claim","at":"2026-11-08T19:07:26.128906268Z","agent":"codex@worker-1"}
 {"version":1,"task_id":"7Q7CFF","kind":"result","at":"2026-11-08T19:09:10.889448197Z","agent":"codex@worker-1","text":"README and v0.0.1 release notes document the user-reported workaround; issue closure waits for merge."}
+{"version":1,"task_id":"EPHVRF","kind":"created","at":"2026-11-08T19:11:52.926732819Z"}
+{"version":1,"task_id":"EPHVRF","kind":"claim","at":"2026-11-08T19:11:55.174705794Z","agent":"codex@worker-1"}
+{"version":1,"task_id":"7Q7CFF","kind":"done","at":"2026-11-08T19:18:30.623541393Z","agent":"codex@worker-1","text":"Merged PR #85 at d6fd59d; all required checks passed and issue #43 closed with the tested workaround."}
+{"version":1,"task_id":"3VBAOP","kind":"created","at":"2026-11-08T19:27:17.038135306Z"}
+{"version":1,"task_id":"3VBAOP","kind":"open","at":"2026-11-08T19:28:11.152492863Z"}
+{"version":1,"task_id":"QBRU2U","kind":"created","at":"2026-11-08T19:28:11.184070921Z"}
+{"version":1,"task_id":"OBEQDD","kind":"created","at":"2026-11-08T19:28:11.244136659Z"}
+{"version":1,"task_id":"UFR3CC","kind":"created","at":"2026-11-08T19:28:11.307527502Z"}
+{"version":1,"task_id":"LYPCKP","kind":"created","at":"2026-11-08T19:28:11.364820691Z"}
+{"version":1,"task_id":"74J665","kind":"created","at":"2026-11-08T19:28:11.431169357Z"}
+{"version":1,"task_id":"MEN3B7","kind":"created","at":"2026-11-08T19:28:11.492660577Z"}
