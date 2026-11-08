@@ -161,8 +161,21 @@ fn validate_glass(glass_root: PathBuf) -> Result<(), String> {
     Ok(())
 }
 
-fn print_launch_plan(glass_root: PathBuf) -> Result<(), String> {
-    let (summary, command) = AppService::new()
+fn resolve_glass_root(service: &AppService, glass_path: PathBuf) -> Result<PathBuf, String> {
+    if glass_path.is_file() {
+        service
+            .import_archive(&glass_path)
+            .map(|installed| installed.package_path)
+            .map_err(|error| error.to_string())
+    } else {
+        Ok(glass_path)
+    }
+}
+
+fn print_launch_plan(glass_path: PathBuf) -> Result<(), String> {
+    let mut service = AppService::new();
+    let glass_root = resolve_glass_root(&service, glass_path)?;
+    let (summary, command) = service
         .launch_plan(&glass_root)
         .map_err(|error| error.to_string())?;
     print_verification(&summary);
@@ -170,8 +183,9 @@ fn print_launch_plan(glass_root: PathBuf) -> Result<(), String> {
     Ok(())
 }
 
-fn boot_glass(glass_root: PathBuf) -> Result<(), String> {
+fn boot_glass(glass_path: PathBuf) -> Result<(), String> {
     let mut service = AppService::new();
+    let glass_root = resolve_glass_root(&service, glass_path)?;
     let report = service
         .preflight(&glass_root)
         .map_err(|error| error.to_string())?;

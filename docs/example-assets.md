@@ -115,6 +115,10 @@ sha256sum --check SHA256SUMS-example.txt
 rootglass plan rootglass-hello-world-0.1.0.glass
 ```
 
+Planning or booting a ZIP archive verifies and imports it into Rootglass's local
+content-addressed package library first. Directory-form `.glass` bundles are
+planned or booted in place.
+
 To boot it interactively, run `rootglass boot rootglass-hello-world-0.1.0.glass`
 and log in as `root` with the disposable `rootglass-ci` password. The package's
 public signing key and guest credential are demonstration-only. Do not use the

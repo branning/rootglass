@@ -52,8 +52,9 @@ cargo run --locked --manifest-path crates/rootglass-desktop/Cargo.toml --no-defa
   package examples/hello-world.glass "$package" --key "$seed_file" \
   --created-at 2026-11-08T00:00:00Z
 
-# Verify the serialized archive through the same Rootglass preflight path users
-# can run. This checks the generated signature and example-fixture trust alias.
+# Exercise the serialized archive through the same bounded import and planning
+# path users run. Planning an archive imports it into Rootglass's local package
+# library before printing a launch plan.
 cargo run --locked --manifest-path crates/rootglass-desktop/Cargo.toml --no-default-features -- \
   plan "$package"
 

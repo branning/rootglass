@@ -163,6 +163,9 @@ rootglass boot rootglass-hello-world-0.1.0.glass
 ```
 
 The plan command verifies the bundle signature and reports preflight details.
+When `plan` or `boot` receives a ZIP `.glass` archive, it verifies and imports
+the package into the local content-addressed library first. A directory-form
+`.glass` is planned or booted in place.
 To log in to the disposable sample guest, use `root` and password
 `rootglass-ci`. The fixture key and password are public demo credentials; do
 not use the guest for sensitive data. The current `v0.0.1` release is

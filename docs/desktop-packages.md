@@ -64,7 +64,10 @@ On Windows, compare the SHA-256 value in `SHA256SUMS-example.txt` with:
 ```
 
 The plan command verifies the sample signature and reports preflight details.
-The Rootglass package supplies the matching QEMU runtime and guest boot assets.
+When `plan` or `boot` receives a ZIP `.glass` archive, it verifies and imports
+it into the local content-addressed library first. Directory-form `.glass`
+bundles are planned or booted in place. The Rootglass package supplies the
+matching QEMU runtime and guest boot assets.
 
 Different platform selections can run independently. A newer run for the same
 ref, event, and selection cancels the superseded run. Routine CI still runs
