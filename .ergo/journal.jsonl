@@ -238,3 +238,11 @@
 {"version":1,"task_id":"EPHVRF","kind":"result","at":"2026-11-08T21:21:28.300337495Z","agent":"codex@worker-1","text":"PR #91; CI passed 7/7; draft lookup verified against live v0.0.2 release."}
 {"version":1,"task_id":"EPHVRF","kind":"result","at":"2026-11-08T21:27:15.693892122Z","agent":"codex@worker-1","text":"Dispatch 42525084652 still hid the draft from contents:read; no package jobs started."}
 {"version":1,"task_id":"EPHVRF","kind":"result","at":"2026-11-08T21:31:34.535006972Z","agent":"codex@worker-1","text":"Checks: workflow YAML, Bash syntax, and diff checks pass; draft lookup uses scoped contents:write."}
+{"version":1,"task_id":"EPHVRF","kind":"result","at":"2026-11-08T21:31:53.361684134Z","agent":"codex@worker-1","text":"PR: https://github.com/branning/rootglass/pull/92; wait for CI, then retag v0.0.2 and dispatch."}
+{"version":1,"task_id":"EPHVRF","kind":"result","at":"2026-11-08T21:35:43.721499046Z","agent":"codex@worker-1","text":"PR #92 merged as 2b96af8; all 7 checks passed; retarget v0.0.2 and retry packaging."}
+{"version":1,"task_id":"EPHVRF","kind":"result","at":"2026-11-08T21:38:36.844587032Z","agent":"codex@worker-1","text":"Run 42526032699 validated v0.0.2; sample assets built/uploaded; three package jobs now run."}
+{"version":1,"task_id":"EPHVRF","kind":"result","at":"2026-11-08T22:14:56.930472623Z","agent":"codex@worker-1","text":"Run 42526032699 passed; attached 14 assets; downloaded example checksum verifies."}
+{"version":1,"task_id":"EPHVRF","kind":"done","at":"2026-11-08T22:14:56.940503584Z","agent":"codex@worker-1","text":"PRs #87, #90-#92 merged; run 42526032699 attached all 14 assets; published example checksum verifies."}
+{"version":1,"task_id":"LISUZ7","kind":"claim","at":"2026-11-08T22:15:08.963719036Z","agent":"codex@worker-1"}
+{"version":1,"task_id":"LISUZ7","kind":"result","at":"2026-11-08T22:15:46.488296852Z","agent":"codex@worker-1","text":"Published v0.0.2 prerelease with 14 assets; tag/version match; package and runtime checks passed."}
+{"version":1,"task_id":"LISUZ7","kind":"done","at":"2026-11-08T22:15:46.498882171Z","agent":"codex@worker-1","text":"Published https://github.com/branning/rootglass/releases/tag/v0.0.2; all platform builds passed; v0.0.1 unchanged."}
