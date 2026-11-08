@@ -246,3 +246,7 @@
 {"version":1,"task_id":"LISUZ7","kind":"claim","at":"2026-11-08T22:15:08.963719036Z","agent":"codex@worker-1"}
 {"version":1,"task_id":"LISUZ7","kind":"result","at":"2026-11-08T22:15:46.488296852Z","agent":"codex@worker-1","text":"Published v0.0.2 prerelease with 14 assets; tag/version match; package and runtime checks passed."}
 {"version":1,"task_id":"LISUZ7","kind":"done","at":"2026-11-08T22:15:46.498882171Z","agent":"codex@worker-1","text":"Published https://github.com/branning/rootglass/releases/tag/v0.0.2; all platform builds passed; v0.0.1 unchanged."}
+{"version":1,"task_id":"GOMUP3","kind":"result","at":"2026-11-08T23:29:38.358725658Z","text":"User reports v0.0.2 GUI rejects the signed sample as unknown demo key after launch."}
+{"version":1,"task_id":"RN2PXH","kind":"created","at":"2026-11-08T23:29:38.369300792Z"}
+{"version":1,"task_id":"RN2PXH","kind":"claim","at":"2026-11-08T23:29:50.835698521Z","agent":"codex@worker-1"}
+{"version":1,"task_id":"RN2PXH","kind":"result","at":"2026-11-08T23:32:08.101861197Z","agent":"codex@worker-1","text":"Checks: trust JSON parses, key fingerprint matches, doc links exist, and diff check passes."}

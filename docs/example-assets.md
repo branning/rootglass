@@ -119,6 +119,50 @@ Planning or booting a ZIP archive verifies and imports it into Rootglass's local
 content-addressed package library first. Directory-form `.glass` bundles are
 planned or booted in place.
 
+### Trusting the release example in the desktop app
+
+The installed desktop app uses the per-user production trust file and fails
+closed for publishers that are not listed there. It does not automatically
+trust the example fixture key. The `rootglass plan` and `rootglass boot`
+development CLI paths use the fixture trust store, so CLI success does not mean
+the installed GUI trusts that key.
+
+To open the release example in the desktop app, explicitly add its public demo
+key to the local trust file, then fully quit and restart Rootglass. The paths
+are:
+
+| Platform | Trust file |
+| --- | --- |
+| macOS | `$HOME/Library/Application Support/Rootglass/trust.json` |
+| Linux and other Unix | `$XDG_CONFIG_HOME/rootglass/trust.json` when `XDG_CONFIG_HOME` is absolute; otherwise `$HOME/.config/rootglass/trust.json` |
+| Windows | `%APPDATA%\Rootglass\trust.json` |
+
+For a new trust file containing only the sample key, use:
+
+```json
+{
+  "schemaVersion": 1,
+  "trustedPublishers": [
+    {
+      "name": "Rootglass Examples",
+      "identity": "rootglass.dev/examples",
+      "keyId": "ed25519:4a079f6f512c9e1a24f83b08e84fb8508996c91e0d54a19512fabfafc82b62d0",
+      "publicKeyBase64url": "2To2Sg0jWnaNlkRA4GCUa3qbqmZkaw5IMCHh0vRnRpw"
+    }
+  ],
+  "revokedKeyIds": []
+}
+```
+
+If a trust file already exists, back it up and merge only the `Rootglass
+Examples` entry into `trustedPublishers`; preserve its other publishers and
+`revokedKeyIds`. Do not remove this key from `revokedKeyIds` if it is listed
+there. The sample signing seed is public, so anyone can create a bundle that
+verifies under this demo key. Trust it only for the disposable example, never
+for production, and remove the entry after testing. This does not change
+Rootglass's default-deny policy or add the fixture key to the packaged app's
+production trust store.
+
 To boot it interactively, run `rootglass boot rootglass-hello-world-0.1.0.glass`
 and log in as `root` with the disposable `rootglass-ci` password. The package's
 public signing key and guest credential are demonstration-only. Do not use the

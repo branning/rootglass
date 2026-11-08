@@ -48,6 +48,9 @@ attaching the assets.
 The materialized example is signed with the public development fixture key and
 contains the disposable `rootglass-ci` guest password. It is for verifying
 Rootglass and the preview workflow only; it is not a production appliance.
+The installed desktop app does not trust the sample key by default; add it
+explicitly to the per-user trust file to open the bundle in the GUI. See the
+[sample trust instructions](example-assets.md#trusting-the-release-example-in-the-desktop-app).
 Download the `.glass` and checksum next to the installer, verify the checksum,
 then use the installed `rootglass` CLI:
 

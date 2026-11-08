@@ -168,9 +168,13 @@ the package into the local content-addressed library first. A directory-form
 `.glass` is planned or booted in place.
 To log in to the disposable sample guest, use `root` and password
 `rootglass-ci`. The fixture key and password are public demo credentials; do
-not use the guest for sensitive data. The published `v0.0.1` release remains
-immutable and unchanged. The materialized example is included with the `v0.0.2`
-preview release. See [release asset details](docs/desktop-packages.md).
+not use the guest for sensitive data. The installed desktop app does not trust
+the sample signing key by default; explicitly add the demo publisher to the
+local trust file before opening the sample in the GUI. See [the trust setup and
+release asset details](docs/example-assets.md#trusting-the-release-example-in-the-desktop-app)
+and [desktop package notes](docs/desktop-packages.md). The published `v0.0.1`
+release remains immutable and unchanged. The materialized example is included
+with the `v0.0.2` preview release.
 
 ## What is a `.glass`?
 
