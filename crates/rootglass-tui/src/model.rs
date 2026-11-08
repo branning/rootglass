@@ -652,7 +652,11 @@ impl UiModel {
             open: !has_run && !booting && !stopping && !removing && !self.state_busy,
             validate: !busy && !has_run && has_path,
             plan: !busy && !has_run && has_path,
-            boot: (ready || bootable_plan) && !has_run && self.state_loaded && !self.state_locked,
+            boot: (ready || bootable_plan)
+                && !has_run
+                && self.state_loaded
+                && !self.state_locked
+                && self.state_error.is_none(),
             stop: !stopping && (has_run || booting),
             restart: running && has_run,
             remove: !busy && !has_run && has_installed_selection,

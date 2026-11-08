@@ -8,6 +8,7 @@ use gpui_kit::component::*;
 use gpui_kit::*;
 use rootglass_app::registry::InstalledGlass;
 use rootglass_app::ManifestValidationReport;
+use rootglass_app::RuntimeEvent;
 use rootglass_desktop::ui_model::{
     lock_service, GlassPreview, RemovalDetails, SignatureStatus, StartEffect, StopRequest, UiModel,
     UiState,
@@ -21,6 +22,8 @@ const ROOTGLASS_CONTEXT: &str = "RootglassWindow";
 struct RootglassWindow {
     model: UiModel,
     input: Entity<InputState>,
+    pending_file_drop: Option<PathBuf>,
+    file_drop_active: bool,
     #[cfg(feature = "embedded-terminal")]
     embedded_tui: Option<Entity<embedded_terminal::EmbeddedTerminal>>,
     _library_task: Task<()>,
@@ -29,7 +32,38 @@ struct RootglassWindow {
 }
 
 impl Render for RootglassWindow {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let file_drop_listener = cx.listener(|this, event: &FileDropEvent, _, cx| match event {
+            FileDropEvent::Entered { paths, .. } => {
+                this.pending_file_drop = paths.paths().first().cloned();
+                this.file_drop_active = this.pending_file_drop.is_some();
+                desktop_smoke_event("ROOTGLASS_DESKTOP_DROP_ENTER");
+                cx.notify();
+            }
+            FileDropEvent::Pending { .. } => {
+                this.file_drop_active = true;
+                cx.notify();
+            }
+            FileDropEvent::Submit { .. } => {
+                this.file_drop_active = false;
+                if let Some(path) = this.pending_file_drop.take() {
+                    desktop_smoke_event("ROOTGLASS_DESKTOP_DROP_SUBMIT");
+                    this.open_path(path, cx);
+                }
+                cx.notify();
+            }
+            FileDropEvent::Exited | FileDropEvent::Ended => {
+                this.pending_file_drop = None;
+                this.file_drop_active = false;
+                cx.notify();
+            }
+        });
+        window.on_mouse_event(move |event: &FileDropEvent, phase, window, cx| {
+            if phase == DispatchPhase::Bubble {
+                file_drop_listener(event, window, cx);
+            }
+        });
+
         let actions = self.model.actions();
         let mut toolbar = div()
             .h_flex()
@@ -105,6 +139,7 @@ impl Render for RootglassWindow {
                     &self.model.installed_glasses,
                     self.model.library_error.as_deref(),
                     actions.open,
+                    self.file_drop_active,
                     cx,
                 ))
                 .child(details_view(&self.model.state)),
@@ -155,6 +190,30 @@ impl RootglassWindow {
                     lock_service(&service_for_poll).and_then(|mut service| service.poll_events())
                 })
                 .await;
+            if let Ok(events) = &result {
+                for event in events {
+                    match event {
+                        RuntimeEvent::GuestReady { .. } => {
+                            desktop_smoke_event("ROOTGLASS_DESKTOP_GUEST_READY");
+                        }
+                        RuntimeEvent::SerialChunk { bytes, .. } => {
+                            if let Some(sentinel) =
+                                std::env::var_os("ROOTGLASS_DESKTOP_SMOKE_SERIAL_SENTINEL")
+                            {
+                                let sentinel = sentinel.to_string_lossy();
+                                if !sentinel.is_empty()
+                                    && bytes
+                                        .windows(sentinel.len())
+                                        .any(|window| window == sentinel.as_bytes())
+                                {
+                                    desktop_smoke_event("ROOTGLASS_DESKTOP_SERIAL_ECHO");
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
             if view
                 .update(cx, |view, cx| {
                     view.model.apply_poll_result(result);
@@ -171,6 +230,7 @@ impl RootglassWindow {
                 if let InputEvent::PressEnter { .. } = event {
                     let text = state.read(cx).value().to_string();
                     if let Some((run, bytes)) = view.model.input_request(&text) {
+                        desktop_smoke_event("ROOTGLASS_DESKTOP_SERIAL_INPUT_REQUEST");
                         let service = view.model.shared_service();
                         let background_executor = cx.background_executor().clone();
                         cx.spawn(async move |view, cx| {
@@ -184,6 +244,11 @@ impl RootglassWindow {
                                 })
                                 .await;
                             let _ = view.update(cx, |view, cx| {
+                                desktop_smoke_event(if result.is_ok() {
+                                    "ROOTGLASS_DESKTOP_SERIAL_INPUT_SENT"
+                                } else {
+                                    "ROOTGLASS_DESKTOP_SERIAL_INPUT_FAILED"
+                                });
                                 view.model.finish_input(&run, result);
                                 cx.notify();
                             });
@@ -195,6 +260,7 @@ impl RootglassWindow {
                 }
             });
 
+        desktop_smoke_event("ROOTGLASS_DESKTOP_WINDOW_READY");
         #[cfg(feature = "embedded-terminal")]
         let embedded_tui = std::env::var_os("ROOTGLASS_GPUI_SMOKE")
             .is_some()
@@ -203,6 +269,8 @@ impl RootglassWindow {
         Self {
             model,
             input,
+            pending_file_drop: None,
+            file_drop_active: false,
             #[cfg(feature = "embedded-terminal")]
             embedded_tui,
             _library_task,
@@ -244,15 +312,31 @@ impl RootglassWindow {
             multiple: false,
             prompt: Some("Select a Rootglass .glass archive or directory".into()),
         });
+        desktop_smoke_event("ROOTGLASS_DESKTOP_PICKER_OPEN");
+        cx.spawn(async move |view, cx| {
+            let selected = match selection.await {
+                Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                Ok(Ok(None)) => {
+                    desktop_smoke_event("ROOTGLASS_DESKTOP_PICKER_CANCELLED");
+                    None
+                }
+                Ok(Err(_)) | Err(_) => {
+                    desktop_smoke_event("ROOTGLASS_DESKTOP_PICKER_FAILED");
+                    None
+                }
+            };
+            let Some(path) = selected else { return };
+            let _ = view.update(cx, |view, cx| view.open_path(path, cx));
+        })
+        .detach();
+    }
+
+    fn open_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if !self.model.actions().open {
+            return;
+        }
         let background_executor = cx.background_executor().clone();
         cx.spawn(async move |view, cx| {
-            let selected = selection
-                .await
-                .ok()
-                .and_then(Result::ok)
-                .flatten()
-                .and_then(|paths| paths.into_iter().next());
-            let Some(path) = selected else { return };
             let type_check_path = path.clone();
             let is_archive = background_executor
                 .spawn(async move {
@@ -290,8 +374,39 @@ impl RootglassWindow {
                             .and_then(|mut service| service.import_and_inspect(&source))
                     })
                     .await;
+                let state_path = result.as_ref().ok().and_then(|completion| {
+                    matches!(
+                        &completion.inspection,
+                        rootglass_desktop::ui_model::InspectionOutcome::Ready(_)
+                    )
+                    .then(|| completion.installed.package_path.clone())
+                });
+                let state_result = if let Some(path) = state_path {
+                    let service_for_state = service.clone();
+                    Some(
+                        background_executor
+                            .spawn(async move {
+                                lock_service(&service_for_state)
+                                    .and_then(|mut service| service.list_states(&path))
+                            })
+                            .await,
+                    )
+                } else {
+                    None
+                };
                 let _ = view.update(cx, |view, cx| {
-                    view.model.finish_import(&ticket, result);
+                    if view.model.finish_import(&ticket, result) {
+                        view.log_desktop_smoke_inspection();
+                        if let Some(state_result) = state_result {
+                            let state_loaded = state_result.is_ok();
+                            view.model.finish_state_operation(state_result);
+                            desktop_smoke_event(if state_loaded {
+                                "ROOTGLASS_DESKTOP_STATE_READY"
+                            } else {
+                                "ROOTGLASS_DESKTOP_STATE_FAILED"
+                            });
+                        }
+                    }
                     cx.notify();
                 });
             } else {
@@ -312,8 +427,34 @@ impl RootglassWindow {
                         }
                     })
                     .await;
+                let state_result = match &result {
+                    rootglass_desktop::ui_model::InspectionOutcome::Ready(preview) => {
+                        let path = preview.path.clone();
+                        let service_for_state = service.clone();
+                        Some(
+                            background_executor
+                                .spawn(async move {
+                                    lock_service(&service_for_state)
+                                        .and_then(|mut service| service.list_states(&path))
+                                })
+                                .await,
+                        )
+                    }
+                    _ => None,
+                };
                 let _ = view.update(cx, |view, cx| {
-                    view.model.finish_inspection(&ticket, result);
+                    if view.model.finish_inspection(&ticket, result) {
+                        view.log_desktop_smoke_inspection();
+                        if let Some(state_result) = state_result {
+                            let state_loaded = state_result.is_ok();
+                            view.model.finish_state_operation(state_result);
+                            desktop_smoke_event(if state_loaded {
+                                "ROOTGLASS_DESKTOP_STATE_READY"
+                            } else {
+                                "ROOTGLASS_DESKTOP_STATE_FAILED"
+                            });
+                        }
+                    }
                     cx.notify();
                 });
             }
@@ -321,46 +462,54 @@ impl RootglassWindow {
         .detach();
     }
 
-    fn select_bundle(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        if !self.model.actions().open {
+    fn log_desktop_smoke_inspection(&self) {
+        if std::env::var_os("ROOTGLASS_DESKTOP_SMOKE").is_none() {
             return;
         }
-        let Some(ticket) = self.model.begin_inspection(path.clone()) else {
-            return;
-        };
-        let service = self.model.shared_service();
-        let background_executor = cx.background_executor().clone();
-        cx.notify();
-        cx.spawn(async move |view, cx| {
-            let service_for_inspect = service.clone();
-            let source = path.clone();
-            let result = background_executor
-                .spawn(async move {
-                    match lock_service(&service_for_inspect) {
-                        Ok(mut service) => service.inspect_bundle(&source),
-                        Err(error) => rootglass_desktop::ui_model::InspectionOutcome::Failed(
-                            rootglass_desktop::ui_model::FailureDetails {
-                                path: Some(source),
-                                phase: format!("{:?}", error.phase),
-                                summary: error.summary,
-                                detail: error.detail,
-                            },
-                        ),
-                    }
-                })
-                .await;
-            let _ = view.update(cx, |view, cx| {
-                view.model.finish_inspection(&ticket, result);
-                cx.notify();
-            });
-        })
-        .detach();
+        match &self.model.state {
+            UiState::Ready(preview) => match &preview.signature {
+                SignatureStatus::Verified(_) => {
+                    desktop_smoke_event("ROOTGLASS_DESKTOP_INSPECT_VERIFIED");
+                    desktop_smoke_event(if preview.preflight.blockers.is_empty() {
+                        "ROOTGLASS_DESKTOP_PREFLIGHT_READY"
+                    } else {
+                        "ROOTGLASS_DESKTOP_PREFLIGHT_BLOCKED"
+                    });
+                }
+                SignatureStatus::Untrusted(_) => {
+                    desktop_smoke_event("ROOTGLASS_DESKTOP_INSPECT_UNTRUSTED")
+                }
+                SignatureStatus::Tampered(_) => {
+                    desktop_smoke_event("ROOTGLASS_DESKTOP_INSPECT_TAMPERED")
+                }
+                SignatureStatus::Invalid(_) => {
+                    desktop_smoke_event("ROOTGLASS_DESKTOP_INSPECT_INVALID")
+                }
+            },
+            UiState::Blocked(_) => desktop_smoke_event("ROOTGLASS_DESKTOP_INSPECT_BLOCKED"),
+            UiState::Failed(details) if details.detail.contains("unknown signing key") => {
+                desktop_smoke_event("ROOTGLASS_DESKTOP_INSPECT_UNTRUSTED");
+            }
+            UiState::Failed(details)
+                if details.detail.contains("subject digest mismatch")
+                    || details.detail.contains("signature verification failed") =>
+            {
+                desktop_smoke_event("ROOTGLASS_DESKTOP_INSPECT_TAMPERED");
+            }
+            UiState::Failed(_) => desktop_smoke_event("ROOTGLASS_DESKTOP_INSPECT_FAILED"),
+            _ => desktop_smoke_event("ROOTGLASS_DESKTOP_INSPECT_UNEXPECTED_STATE"),
+        }
+    }
+
+    fn select_bundle(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.open_path(path, cx);
     }
 
     fn start_guest(&mut self, cx: &mut Context<Self>) {
         let Some((ticket, path)) = self.model.begin_start() else {
             return;
         };
+        desktop_smoke_event("ROOTGLASS_DESKTOP_BOOT_REQUEST");
         let service = self.model.shared_service();
         let background_executor = cx.background_executor().clone();
         cx.notify();
@@ -372,8 +521,14 @@ impl RootglassWindow {
                 })
                 .await;
             let orphan = result.as_ref().ok().cloned();
+            let boot_succeeded = result.is_ok();
             let effect = view.update(cx, |view, cx| {
                 let effect = view.model.finish_start(&ticket, result);
+                desktop_smoke_event(if boot_succeeded {
+                    "ROOTGLASS_DESKTOP_BOOT_STARTED"
+                } else {
+                    "ROOTGLASS_DESKTOP_BOOT_FAILED"
+                });
                 cx.notify();
                 effect
             });
@@ -397,8 +552,12 @@ impl RootglassWindow {
 
     fn stop_guest(&mut self, cx: &mut Context<Self>) {
         match self.model.begin_stop() {
-            Some(StopRequest::CancelStartingOperation) => cx.notify(),
+            Some(StopRequest::CancelStartingOperation) => {
+                desktop_smoke_event("ROOTGLASS_DESKTOP_BOOT_CANCELLED");
+                cx.notify();
+            }
             Some(StopRequest::StopRun { ticket, run }) => {
+                desktop_smoke_event("ROOTGLASS_DESKTOP_STOP_REQUEST");
                 let service = self.model.shared_service();
                 let background_executor = cx.background_executor().clone();
                 cx.notify();
@@ -412,6 +571,11 @@ impl RootglassWindow {
                         })
                         .await;
                     let _ = view.update(cx, |view, cx| {
+                        desktop_smoke_event(if result.is_ok() {
+                            "ROOTGLASS_DESKTOP_STOPPED"
+                        } else {
+                            "ROOTGLASS_DESKTOP_STOP_FAILED"
+                        });
                         view.model.finish_stop(&ticket, result);
                         cx.notify();
                     });
@@ -426,6 +590,7 @@ impl RootglassWindow {
         let Some((ticket, run, path)) = self.model.begin_restart() else {
             return;
         };
+        desktop_smoke_event("ROOTGLASS_DESKTOP_RESTART_REQUEST");
         let service = self.model.shared_service();
         let background_executor = cx.background_executor().clone();
         cx.notify();
@@ -438,8 +603,14 @@ impl RootglassWindow {
                 })
                 .await;
             let orphan = result.as_ref().ok().cloned();
+            let restart_succeeded = result.is_ok();
             let effect = view.update(cx, |view, cx| {
                 let effect = view.model.finish_restart(&ticket, result);
+                desktop_smoke_event(if restart_succeeded {
+                    "ROOTGLASS_DESKTOP_RESTART_STARTED"
+                } else {
+                    "ROOTGLASS_DESKTOP_RESTART_FAILED"
+                });
                 cx.notify();
                 effect
             });
@@ -462,18 +633,30 @@ impl RootglassWindow {
     }
 }
 
+fn desktop_smoke_event(marker: &str) {
+    if std::env::var_os("ROOTGLASS_DESKTOP_SMOKE").is_some() {
+        eprintln!("{marker}");
+    }
+}
+
 fn library_view(
     state: &UiState,
     installed_glasses: &[InstalledGlass],
     library_error: Option<&str>,
     can_select: bool,
+    file_drop_active: bool,
     cx: &mut Context<RootglassWindow>,
 ) -> Div {
     let mut view = div().v_flex().child("Library");
     if installed_glasses.is_empty() {
         view = view
             .child("No glasses are installed.")
-            .child("Open an existing .glass bundle to inspect it.");
+            .child("Open an existing .glass bundle to inspect it.")
+            .child(if file_drop_active {
+                "Release the .glass bundle or folder to inspect it."
+            } else {
+                "Drop a .glass bundle or folder here to inspect it."
+            });
     } else {
         for glass in installed_glasses {
             let path = glass.package_path.clone();

@@ -35,6 +35,11 @@ on:
           - linux
           - macos
           - windows
+      desktop_smoke:
+        description: Run the real-service GPUI desktop smoke on Linux only
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -53,6 +58,7 @@ jobs:
         id: select
         env:
           REQUESTED_PLATFORM: ${{ inputs.platform || 'all' }}
+          DESKTOP_SMOKE: ${{ inputs.desktop_smoke || 'false' }}
         run: |
           python - <<'PY'
           import json
@@ -64,6 +70,8 @@ jobs:
               {"platform": "windows", "name": "Windows x86_64", "runner": "windows-2025"},
           ]
           requested = os.environ["REQUESTED_PLATFORM"]
+          if os.environ["DESKTOP_SMOKE"].lower() == "true" and requested not in ("all", "linux"):
+              raise SystemExit("the real-service GPUI desktop smoke runs on Linux only")
           selected = platforms if requested == "all" else [
               platform for platform in platforms if platform["platform"] == requested
           ]
@@ -77,7 +85,7 @@ jobs:
   pty-smoke:
     name: PTY smoke (${{ matrix.name }})
     needs: select_platforms
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    if: (github.event_name != 'pull_request' || (!github.event.pull_request.draft && github.event.pull_request.base.ref == 'main')) && !(github.event_name == 'workflow_dispatch' && inputs.desktop_smoke)
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -235,5 +243,63 @@ jobs:
         with:
           name: rootglass-embedded-tui-xvfb-screenshot
           path: crates/rootglass-desktop/artifacts/embedded-tui-xvfb.png
+          if-no-files-found: warn
+          retention-days: 14
+
+  desktop-smoke:
+    name: GPUI desktop workflow smoke (Linux x86_64)
+    if: github.event_name == 'workflow_dispatch' && inputs.desktop_smoke && (inputs.platform == 'all' || inputs.platform == 'linux')
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry and build outputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            crates/rootglass-desktop -> target
+
+      - name: Install GUI, QEMU, and fixture tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cpio dbus-x11 e2fsprogs imagemagick pkg-config \
+            libasound2-dev libfontconfig-dev libgl1-mesa-dri libssl-dev \
+            libvulkan1 libwayland-dev libwebkit2gtk-4.1-dev libx11-xcb-dev \
+            libxkbcommon-x11-dev libzstd-dev mesa-vulkan-drivers \
+            python3 python3-xlib qemu-system-arm squashfs-tools \
+            xauth xdg-desktop-portal xdg-desktop-portal-gtk xdotool xvfb
+
+      - name: Build Rootglass desktop and CLI
+        run: |
+          cargo build --locked --package rootglass-cli
+          cargo build --locked --manifest-path crates/rootglass-desktop/Cargo.toml
+
+      - name: Materialize the signed guest fixture assets
+        run: bash scripts/materialize-example-assets.sh
+
+      - name: Exercise GPUI desktop workflows under Xvfb
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          dbus-run-session -- xvfb-run -a -s \
+            "-screen 0 1280x800x24 +extension GLX +render -noreset" \
+            bash scripts/smoke-rootglass-desktop-xvfb.sh \
+            crates/rootglass-desktop/target/debug/rootglass-desktop \
+            target/debug/rootglass \
+            artifacts/gpui-desktop-xvfb
+
+      - name: Upload GPUI desktop smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpui-desktop-workflow-smoke-linux-x86_64
+          path: artifacts/gpui-desktop-xvfb/
           if-no-files-found: warn
           retention-days: 14
