@@ -65,6 +65,7 @@ cleanup() {
   if [[ -f "$log_file" ]]; then
     cp "$log_file" "${artifact_dir}/desktop-smoke.log"
   fi
+  chmod -R u+w "$work_dir" 2>/dev/null || true
   rm -rf "$work_dir"
 }
 trap cleanup EXIT
@@ -270,7 +271,7 @@ import -window "$window_id" "${artifact_dir}/03-guest-running.png"
 # Serial input is sent through the UI input field and echoed by the guest getty.
 window_geometry="$(xdotool getwindowgeometry --shell "$window_id")"
 window_height="$(sed -n 's/^HEIGHT=//p' <<<"$window_geometry")"
-input_y="$((window_height - 32))"
+input_y="$((window_height - 16))"
 xdotool mousemove --window "$window_id" 180 "$input_y" click 1
 xdotool type --clearmodifiers --delay 20 "$sentinel"
 xdotool key Return
