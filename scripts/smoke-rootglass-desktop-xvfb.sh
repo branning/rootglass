@@ -82,6 +82,20 @@ untrusted_archive="${work_dir}/untrusted.glass"
 tampered_archive="${work_dir}/tampered.glass"
 
 cp -a "${repo_root}/examples/hello-world.glass" "$verified_dir"
+# Keep the generated ext4 state disk below the importer's 200:1 archive
+# compression-ratio limit. The fixture disk is mostly zero-filled, so add a
+# deterministic high-entropy guest file before signing the temporary package.
+entropy_file="${work_dir}/state-ratio-guard.bin"
+python3 - "$entropy_file" <<'PY'
+import hashlib
+import sys
+
+with open(sys.argv[1], "wb") as payload:
+    for counter in range(32768):
+        payload.write(hashlib.sha256(b"rootglass desktop smoke state" + counter.to_bytes(8, "little")).digest())
+PY
+debugfs -w -R "write ${entropy_file} /rootglass-smoke-ratio-guard.bin" \
+  "${verified_dir}/state.img" >/dev/null
 python3 - "$trusted_key" "$untrusted_key" "$trust_config" <<'PY'
 import base64
 import hashlib
