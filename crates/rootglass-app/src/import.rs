@@ -78,7 +78,7 @@ pub enum ImportError {
     DuplicatePath(String),
     #[error("archive contains a link or non-regular special file: {0}")]
     UnsupportedFileType(String),
-    #[error("archive changed while it was being imported")]
+    #[error("archive changed while it was being imported: {detail}")]
     ArchiveChanged { detail: String },
     #[error("archive is missing required manifest '{0}'")]
     MissingManifest(&'static str),
