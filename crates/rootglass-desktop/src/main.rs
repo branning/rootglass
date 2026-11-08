@@ -514,7 +514,13 @@ impl RootglassWindow {
             {
                 desktop_smoke_event("ROOTGLASS_DESKTOP_INSPECT_TAMPERED");
             }
-            UiState::Failed(_) => desktop_smoke_event("ROOTGLASS_DESKTOP_INSPECT_FAILED"),
+            UiState::Failed(details) => {
+                desktop_smoke_event("ROOTGLASS_DESKTOP_INSPECT_FAILED");
+                eprintln!(
+                    "ROOTGLASS_DESKTOP_INSPECT_FAILURE phase={} summary={} detail={}",
+                    details.phase, details.summary, details.detail
+                );
+            },
             _ => desktop_smoke_event("ROOTGLASS_DESKTOP_INSPECT_UNEXPECTED_STATE"),
         }
     }
