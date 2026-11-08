@@ -250,7 +250,8 @@ fn import_snapshot(
         || installed_verification.key_id != verification.key_id
     {
         return Err(ImportError::ArchiveChanged {
-            detail: "installed publisher identity or key ID differs from the verified archive".to_string(),
+            detail: "installed publisher identity or key ID differs from the verified archive"
+                .to_string(),
         });
     }
     verify_installed_matches_archive(snapshot, &final_path, limits)?;
