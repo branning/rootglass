@@ -1,6 +1,6 @@
 [package]
 name = "rootglass-desktop"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/branning/rootglass"
@@ -36,7 +36,11 @@ category = "Utility"
 license-file = "../../LICENSE"
 binaries = [{ path = "rootglass-desktop", main = true }]
 out-dir = "target/release"
-resources = ["../../LICENSE", "../../NOTICE.md"]
+resources = [
+  "../../LICENSE",
+  "../../NOTICE.md",
+  { src = "runtime-assets", target = "rootglass/runtime-assets" },
+]
 file-associations = [
   { extensions = ["glass"], mime-type = "application/vnd.rootglass.glass", description = "Rootglass guest package", name = "Rootglass Glass", role = "editor" }
 ]

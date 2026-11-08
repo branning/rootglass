@@ -47,9 +47,47 @@ jobs:
             ] | map(select($platform == "all" or .config == $platform)))}')
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
+  runtime_assets:
+    name: Materialize pinned guest boot assets
+    runs-on: ubuntu-24.04
+    outputs:
+      runtime_version: ${{ steps.version.outputs.runtime_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Resolve runtime version
+        id: version
+        run: |
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("crates/rootglass-desktop/Cargo.toml", "rb"))["package"]["version"])')
+          if [[ "$GITHUB_EVENT_NAME" == release && "${GITHUB_REF_NAME#v}" != "$version" ]]; then
+            echo "Release tag $GITHUB_REF_NAME does not match desktop version $version" >&2
+            exit 1
+          fi
+          echo "runtime_version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install guest asset tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cpio e2fsprogs squashfs-tools
+
+      - name: Materialize Alpine guest assets
+        run: bash scripts/materialize-example-assets.sh
+
+      - name: Upload offline guest boot assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: guest-runtime-assets
+          path: |
+            runtime-assets/alpine-aarch64/vmlinuz-virt
+            runtime-assets/alpine-aarch64/initramfs-virt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
   package:
     name: ${{ matrix.name }} package
-    needs: select-platforms
+    needs: [select-platforms, runtime_assets]
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -58,6 +96,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Download guest boot assets
+        uses: actions/download-artifact@v4
+        with:
+          name: guest-runtime-assets
+          path: ${{ runner.temp }}/rootglass-guest-assets
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -84,7 +128,35 @@ jobs:
             ccache clang g++ gcc dpkg-dev \
             libasound2-dev libfontconfig-dev libssl-dev libvulkan1 \
             libwayland-dev libwebkit2gtk-4.1-dev libx11-xcb-dev \
-            libxkbcommon-x11-dev libzstd-dev vulkan-validationlayers
+            libxkbcommon-x11-dev libzstd-dev vulkan-validationlayers \
+            qemu-system-arm pax-utils
+
+      - name: Install QEMU on macOS
+        if: runner.os == 'macOS'
+        run: brew install qemu
+
+      - name: Install QEMU on Windows
+        if: runner.os == 'Windows'
+        run: choco install qemu --yes --no-progress
+
+      - name: Prepare bundled Linux QEMU runtime
+        if: runner.os == 'Linux'
+        env:
+          RUNTIME_VERSION: ${{ needs.runtime_assets.outputs.runtime_version }}
+        run: bash scripts/prepare-qemu-runtime.sh "$RUNTIME_VERSION" linux-x86_64 "$RUNNER_TEMP/rootglass-guest-assets"
+
+      - name: Prepare bundled macOS QEMU runtime
+        if: runner.os == 'macOS'
+        env:
+          RUNTIME_VERSION: ${{ needs.runtime_assets.outputs.runtime_version }}
+        run: bash scripts/prepare-qemu-runtime.sh "$RUNTIME_VERSION" macos-arm64 "$RUNNER_TEMP/rootglass-guest-assets"
+
+      - name: Prepare bundled Windows QEMU runtime
+        if: runner.os == 'Windows'
+        env:
+          RUNTIME_VERSION: ${{ needs.runtime_assets.outputs.runtime_version }}
+        shell: pwsh
+        run: .\scripts\prepare-qemu-runtime.ps1 -RuntimeVersion $env:RUNTIME_VERSION -GuestAssetDir "$env:RUNNER_TEMP/rootglass-guest-assets"
 
       - name: Install NSIS
         if: runner.os == 'Windows'
@@ -102,35 +174,40 @@ jobs:
           CCACHE_DIR: ${{ runner.temp }}/rootglass-ccache
           CCACHE_MAXSIZE: 512M
           CCACHE_COMPILERCHECK: content
+          ROOTGLASS_RUNTIME_VERSION: ${{ needs.runtime_assets.outputs.runtime_version }}
         run: |
-          cargo build --release
+          cargo build --locked --release
           cargo-packager --release --formats ${{ matrix.format }}
 
       - name: Build and package desktop
         if: runner.os != 'Linux'
         working-directory: crates/rootglass-desktop
+        env:
+          ROOTGLASS_RUNTIME_VERSION: ${{ needs.runtime_assets.outputs.runtime_version }}
         run: |
-          cargo build --release
+          cargo build --locked --release
           cargo-packager --release --formats ${{ matrix.format }}
 
       - name: Write package checksum
         if: runner.os == 'Linux'
         working-directory: crates/rootglass-desktop
-        run: sha256sum target/release/*.${{ matrix.extension }} > target/release/SHA256SUMS.txt
+        run: sha256sum target/release/*.${{ matrix.extension }} "$RUNNER_TEMP"/rootglass-runtime-linux-x86_64-${{ needs.runtime_assets.outputs.runtime_version }}.tar.gz > target/release/SHA256SUMS-${{ matrix.config }}.txt
 
       - name: Write package checksum
         if: runner.os == 'macOS'
         working-directory: crates/rootglass-desktop
-        run: shasum -a 256 target/release/*.${{ matrix.extension }} > target/release/SHA256SUMS.txt
+        run: shasum -a 256 target/release/*.${{ matrix.extension }} "$RUNNER_TEMP"/rootglass-runtime-macos-arm64-${{ needs.runtime_assets.outputs.runtime_version }}.tar.gz > target/release/SHA256SUMS-${{ matrix.config }}.txt
 
       - name: Write package checksum
         if: runner.os == 'Windows'
         working-directory: crates/rootglass-desktop
         shell: pwsh
         run: |
-          Get-FileHash target/release/*.${{ matrix.extension }} -Algorithm SHA256 |
+          @(Get-ChildItem target/release/*.${{ matrix.extension }}) +
+          @(Get-Item "$env:RUNNER_TEMP/rootglass-runtime-windows-x86_64-${{ needs.runtime_assets.outputs.runtime_version }}.zip") |
+            Get-FileHash -Algorithm SHA256 |
             ForEach-Object { "$($_.Hash.ToLower())  $([IO.Path]::GetFileName($_.Path))" } |
-            Set-Content target/release/SHA256SUMS.txt
+            Set-Content target/release/SHA256SUMS-${{ matrix.config }}.txt
 
       - name: Upload unsigned package artifact
         uses: actions/upload-artifact@v4
@@ -138,6 +215,38 @@ jobs:
           name: rootglass-${{ matrix.format }}-${{ runner.os }}-${{ runner.arch }}
           path: |
             crates/rootglass-desktop/target/release/*.${{ matrix.extension }}
-            crates/rootglass-desktop/target/release/SHA256SUMS.txt
+            crates/rootglass-desktop/target/release/SHA256SUMS-${{ matrix.config }}.txt
+            ${{ runner.temp }}/rootglass-runtime-*.tar.gz
+            ${{ runner.temp }}/rootglass-runtime-*.zip
+            ${{ runner.temp }}/rootglass-runtime-*.sha256
           if-no-files-found: error
+          compression-level: 0
           retention-days: 14
+
+  publish-release-assets:
+    name: Attach packages and runtimes to release
+    if: github.event_name == 'release'
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rootglass-*
+          path: release-assets
+          merge-multiple: false
+
+      - name: Attach all package and runtime assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          mapfile -t assets < <(find release-assets -type f -print | sort)
+          if [[ "${#assets[@]}" -ne 12 ]]; then
+            printf 'Expected 12 release assets, found %s\n' "${#assets[@]}" >&2
+            printf '%s\n' "${assets[@]}" >&2
+            exit 1
+          fi
+          gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber

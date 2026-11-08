@@ -1,7 +1,8 @@
 //! Integrity checked discovery for versioned Rootglass runtime payloads.
 //!
 //! The resolver is deliberately independent of the process working directory: callers
-//! provide the application resource directory and the per-user data directory.
+//! provide the application resource directory and the per-user data directory. A runtime
+//! manifest hashes the kernel, initramfs, QEMU executable, and any QEMU support files.
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::fs::File;
@@ -17,6 +18,8 @@ pub enum RuntimeAssetKind {
     Kernel,
     Initramfs,
     Qemu,
+    /// Shared libraries and data files required by the bundled QEMU build.
+    Support,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -41,6 +44,7 @@ pub struct ResolvedRuntimeSet {
     pub kernel: PathBuf,
     pub initramfs: PathBuf,
     pub qemu: PathBuf,
+    pub support_assets: Vec<PathBuf>,
 }
 
 #[derive(Debug, Error)]
@@ -166,11 +170,18 @@ impl RuntimeAssetsResolver {
         let initramfs =
             self.resolve_kind(base, &manifest, RuntimeAssetKind::Initramfs, "initramfs")?;
         let qemu = self.resolve_kind(base, &manifest, RuntimeAssetKind::Qemu, "qemu")?;
+        let support_assets = manifest
+            .assets
+            .iter()
+            .filter(|asset| asset.kind == RuntimeAssetKind::Support)
+            .map(|asset| self.resolve_entry(base, asset))
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(ResolvedRuntimeSet {
             runtime_version: manifest.runtime_version,
             kernel,
             initramfs,
             qemu,
+            support_assets,
         })
     }
 
@@ -188,6 +199,14 @@ impl RuntimeAssetsResolver {
         if found.next().is_some() {
             return Err(RuntimeAssetsError::MissingOrDuplicate(name));
         }
+        self.resolve_entry(base, asset)
+    }
+
+    fn resolve_entry(
+        &self,
+        base: &Path,
+        asset: &RuntimeAssetEntry,
+    ) -> Result<PathBuf, RuntimeAssetsError> {
         validate_relative(&asset.path)?;
         if asset.sha256.len() != 64 || !asset.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(RuntimeAssetsError::InvalidDigest(asset.path.clone()));
