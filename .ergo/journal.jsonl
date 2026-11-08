@@ -190,3 +190,8 @@
 {"version":1,"task_id":"LISUZ7","kind":"result","at":"2026-11-08T17:52:01.453673045Z","agent":"codex@worker-1","text":"Workflow fix staged: attach existing successful run artifacts without rebuilding; Windows raw exe excluded."}
 {"version":1,"task_id":"LISUZ7","kind":"result","at":"2026-11-08T17:57:14.917965485Z","agent":"codex@worker-1","text":"Attach run 42507348078 exposed an over-strict source-run check; validator now checks all four build jobs."}
 {"version":1,"task_id":"LISUZ7","kind":"result","at":"2026-11-08T18:01:09.726963157Z","agent":"codex@worker-1","text":"Attach run 42507713007 confirmed artifact files are nested; staging now searches directories recursively."}
+{"version":1,"task_id":"LISUZ7","kind":"block","at":"2026-11-08T18:13:00.366048453Z","agent":"codex@worker-1","text":"GitHub marks v0.0.1 immutable; asset upload returns HTTP 422. The release currently has no assets. A maintainer decision is needed on whether to preserve it and publish a new preview tag or replace it if GitHub permits."}
+{"version":1,"task_id":"N565MG","kind":"created","at":"2026-11-08T18:13:00.375956265Z"}
+{"version":1,"task_id":"N565MG","kind":"claim","at":"2026-11-08T18:13:09.214655353Z","agent":"codex@worker-1"}
+{"version":1,"task_id":"N565MG","kind":"result","at":"2026-11-08T18:32:19.732592047Z","agent":"codex@worker-1","text":"Static validation passes for TOML/lockfile, workflow YAML, scripts and diff whitespace; Cargo is unavailable locally."}
+{"version":1,"task_id":"N565MG","kind":"result","at":"2026-11-08T18:34:10.57592077Z","agent":"codex@worker-1","text":"PR #83 opened at 63af5ce; Actions CI and platform smoke are pending."}

@@ -2,7 +2,9 @@
 
 Tiny worlds under glass.
 
-Rootglass is a cross-platform shell for running self-contained embedded Linux application environments on a regular computer. The product is a friendly desktop app backed by a Rust CLI and runtime. The merged implementation can validate, verify, import, plan, and boot signed `.glass` environments through QEMU, with a GPUI Kit desktop shell and cross-platform package builds.
+Rootglass is a cross-platform shell for running self-contained embedded Linux application environments on a regular computer. One Rust executable provides the GPUI desktop, a Ratatui TUI, and CLI commands. The implementation can validate, verify, import, plan, and boot signed `.glass` environments through QEMU, with cross-platform package builds.
+
+The `rootglass` executable opens GPUI by default. Use `rootglass gui` to request it explicitly, `rootglass tui` to open the terminal UI, or commands such as `rootglass validate` and `rootglass boot` for CLI workflows. The embedded Ghostty terminal starts the TUI session through an internal mode of the same executable.
 
 ## Complete application build specification
 
@@ -62,8 +64,8 @@ Equivalent manual commands:
 cargo fmt --all -- --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace --all-targets
-cargo run --locked -p rootglass-cli -- validate examples/hello-world.glass
-cargo run --locked -p rootglass-cli -- plan examples/hello-world.glass
+cargo run --locked --manifest-path crates/rootglass-desktop/Cargo.toml --no-default-features -- validate examples/hello-world.glass
+cargo run --locked --manifest-path crates/rootglass-desktop/Cargo.toml --no-default-features -- plan examples/hello-world.glass
 ```
 
 ### Validate the example glass
@@ -75,7 +77,7 @@ just validate
 Equivalent:
 
 ```bash
-cargo run --locked -p rootglass-cli -- validate examples/hello-world.glass
+cargo run --locked --manifest-path crates/rootglass-desktop/Cargo.toml --no-default-features -- validate examples/hello-world.glass
 ```
 
 ### Print the QEMU launch plan
@@ -87,7 +89,7 @@ just plan
 Equivalent:
 
 ```bash
-cargo run --locked -p rootglass-cli -- plan examples/hello-world.glass
+cargo run --locked --manifest-path crates/rootglass-desktop/Cargo.toml --no-default-features -- plan examples/hello-world.glass
 ```
 
 This command does not require generated rootfs images. It verifies the manifest/signature path and prints the QEMU command that would be used after assets exist.
@@ -122,7 +124,7 @@ just boot
 Equivalent:
 
 ```bash
-cargo run --locked -p rootglass-cli -- boot examples/hello-world.glass
+cargo run --locked --manifest-path crates/rootglass-desktop/Cargo.toml --no-default-features -- boot examples/hello-world.glass
 ```
 
 The boot command validates the manifest, verifies the DSSE/Ed25519 signature, checks that generated assets exist, and then starts QEMU interactively.
@@ -161,7 +163,8 @@ See:
 ```text
 rootglass/
   crates/
-    rootglass-cli/          # CLI entrypoint
+    rootglass-cli/          # CLI command library used by the rootglass binary
+    rootglass-desktop/      # GPUI library and the single rootglass executable
     rootglass-core/         # Runtime orchestration and preflight
     rootglass-manifest/     # Manifest parsing and validation
     rootglass-qemu/         # QEMU launch-plan and spawn adapter

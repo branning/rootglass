@@ -60,10 +60,19 @@ def serial_tail(log: bytearray, limit: int = 8192) -> str:
 
 
 def cli_command(*args: str) -> list[str]:
-    binary = os.environ.get("ROOTGLASS_CLI")
+    binary = os.environ.get("ROOTGLASS_BINARY")
     if binary:
         return [binary, *args]
-    return ["cargo", "run", "--locked", "-p", "rootglass-cli", "--", *args]
+    return [
+        "cargo",
+        "run",
+        "--locked",
+        "--manifest-path",
+        "crates/rootglass-desktop/Cargo.toml",
+        "--no-default-features",
+        "--",
+        *args,
+    ]
 
 
 def sha256(path: Path) -> str:

@@ -124,10 +124,13 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Smoke test CLI validate
-        run: cargo run --locked -p rootglass-cli -- validate examples/hello-world.glass
+        run: cargo run --locked --manifest-path crates/rootglass-desktop/Cargo.toml --no-default-features -- validate examples/hello-world.glass
 
       - name: Smoke test CLI plan
-        run: cargo run --locked -p rootglass-cli -- plan examples/hello-world.glass
+        run: cargo run --locked --manifest-path crates/rootglass-desktop/Cargo.toml --no-default-features -- plan examples/hello-world.glass
+
+      - name: Smoke test TUI terminal lifecycle
+        run: cargo test --locked --manifest-path crates/rootglass-desktop/Cargo.toml --no-default-features --test tui_terminal
 
   boot-smoke:
     name: Boot smoke (${{ matrix.name }})

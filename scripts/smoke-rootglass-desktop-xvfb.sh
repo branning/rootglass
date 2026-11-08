@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-desktop_binary="$(realpath "${1:?usage: smoke-rootglass-desktop-xvfb.sh DESKTOP_BINARY ROOTGLASS_CLI OUTPUT_DIR}")"
-cli_binary="$(realpath "${2:?usage: smoke-rootglass-desktop-xvfb.sh DESKTOP_BINARY ROOTGLASS_CLI OUTPUT_DIR}")"
-artifact_dir="${3:?usage: smoke-rootglass-desktop-xvfb.sh DESKTOP_BINARY ROOTGLASS_CLI OUTPUT_DIR}"
+rootglass_binary="$(realpath "${1:?usage: smoke-rootglass-desktop-xvfb.sh ROOTGLASS_BINARY OUTPUT_DIR}")"
+desktop_binary="$rootglass_binary"
+cli_binary="$rootglass_binary"
+artifact_dir="${2:?usage: smoke-rootglass-desktop-xvfb.sh ROOTGLASS_BINARY OUTPUT_DIR}"
 mkdir -p "$artifact_dir"
 artifact_dir="$(cd "$artifact_dir" && pwd)"
 repo_root="$(git rev-parse --show-toplevel)"
