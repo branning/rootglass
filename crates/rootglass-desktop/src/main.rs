@@ -1,3 +1,6 @@
+#[cfg(feature = "embedded-terminal")]
+mod embedded_terminal;
+
 use gpui_kit::actions;
 use gpui_kit::component::button::*;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -18,6 +21,8 @@ const ROOTGLASS_CONTEXT: &str = "RootglassWindow";
 struct RootglassWindow {
     model: UiModel,
     input: Entity<InputState>,
+    #[cfg(feature = "embedded-terminal")]
+    embedded_tui: Option<Entity<embedded_terminal::EmbeddedTerminal>>,
     _library_task: Task<()>,
     _poll_task: Task<()>,
     _input_subscription: Subscription,
@@ -26,71 +31,97 @@ struct RootglassWindow {
 impl Render for RootglassWindow {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let actions = self.model.actions();
-        div()
+        let mut toolbar = div()
+            .h_flex()
+            .items_center()
+            .gap_2()
+            .child("Rootglass")
+            .child(
+                Button::new("open-glass")
+                    .primary()
+                    .label("Open a .glass bundle…")
+                    .disabled(!actions.open)
+                    .on_click(cx.listener(|this, _, _, cx| this.open_bundle(cx))),
+            )
+            .child(
+                Button::new("boot-glass")
+                    .label("Boot")
+                    .disabled(!actions.boot)
+                    .on_click(cx.listener(|this, _, _, cx| this.start_guest(cx))),
+            )
+            .child(
+                Button::new("restart-glass")
+                    .label("Restart")
+                    .disabled(!actions.restart)
+                    .on_click(cx.listener(|this, _, _, cx| this.restart_guest(cx))),
+            )
+            .child(
+                Button::new("stop-glass")
+                    .label("Stop")
+                    .disabled(!actions.stop)
+                    .on_click(cx.listener(|this, _, _, cx| this.stop_guest(cx))),
+            );
+
+        #[cfg(feature = "embedded-terminal")]
+        {
+            let terminal_open = self.embedded_tui.is_some();
+            toolbar = toolbar.child(
+                Button::new("embedded-tui")
+                    .label(if terminal_open {
+                        "Close TUI"
+                    } else {
+                        "Open TUI"
+                    })
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if this.embedded_tui.is_some() {
+                            this.close_embedded_tui(cx);
+                        } else {
+                            this.open_embedded_tui(window, cx);
+                        }
+                    })),
+            );
+        }
+
+        let root = div()
             .v_flex()
             .size_full()
             .key_context(ROOTGLASS_CONTEXT)
             .on_action(cx.listener(Self::on_open_bundle))
             .on_action(cx.listener(Self::on_stop_shortcut))
-            .child(
-                div()
-                    .h_flex()
-                    .items_center()
-                    .gap_2()
-                    .child("Rootglass")
-                    .child(
-                        Button::new("open-glass")
-                            .primary()
-                            .label("Open a .glass bundle…")
-                            .disabled(!actions.open)
-                            .on_click(cx.listener(|this, _, _, cx| this.open_bundle(cx))),
-                    )
-                    .child(
-                        Button::new("boot-glass")
-                            .label("Boot")
-                            .disabled(!actions.boot)
-                            .on_click(cx.listener(|this, _, _, cx| this.start_guest(cx))),
-                    )
-                    .child(
-                        Button::new("restart-glass")
-                            .label("Restart")
-                            .disabled(!actions.restart)
-                            .on_click(cx.listener(|this, _, _, cx| this.restart_guest(cx))),
-                    )
-                    .child(
-                        Button::new("stop-glass")
-                            .label("Stop")
-                            .disabled(!actions.stop)
-                            .on_click(cx.listener(|this, _, _, cx| this.stop_guest(cx))),
-                    ),
-            )
-            .child(
-                div()
-                    .h_flex()
-                    .size_full()
-                    .gap_2()
-                    .child(library_view(
-                        &self.model.state,
-                        &self.model.installed_glasses,
-                        self.model.library_error.as_deref(),
-                        actions.open,
-                        cx,
-                    ))
-                    .child(details_view(&self.model.state)),
-            )
-            .child(status_view(&self.model.state))
-            .child(
-                div()
-                    .v_flex()
-                    .child("Serial console")
-                    .child(self.model.console.clone()),
-            )
-            .child(
-                div()
-                    .h_flex()
-                    .child(Input::new(&self.input).disabled(!actions.console_input))
-                    .child("Press Enter to send"),
-            )
+            .child(toolbar);
+
+        #[cfg(feature = "embedded-terminal")]
+        if let Some(terminal) = &self.embedded_tui {
+            return root.child(terminal.clone());
+        }
+
+        root.child(
+            div()
+                .h_flex()
+                .size_full()
+                .gap_2()
+                .child(library_view(
+                    &self.model.state,
+                    &self.model.installed_glasses,
+                    self.model.library_error.as_deref(),
+                    actions.open,
+                    cx,
+                ))
+                .child(details_view(&self.model.state)),
+        )
+        .child(status_view(&self.model.state))
+        .child(
+            div()
+                .v_flex()
+                .child("Serial console")
+                .child(self.model.console.clone()),
+        )
+        .child(
+            div()
+                .h_flex()
+                .child(Input::new(&self.input).disabled(!actions.console_input))
+                .child("Press Enter to send"),
+        )
     }
 }
 
@@ -163,9 +194,17 @@ impl RootglassWindow {
                     cx.notify();
                 }
             });
+
+        #[cfg(feature = "embedded-terminal")]
+        let embedded_tui = std::env::var_os("ROOTGLASS_GPUI_SMOKE")
+            .is_some()
+            .then(|| cx.new(|cx| embedded_terminal::EmbeddedTerminal::new(window, cx)));
+
         Self {
             model,
             input,
+            #[cfg(feature = "embedded-terminal")]
+            embedded_tui,
             _library_task,
             _poll_task,
             _input_subscription,
@@ -178,6 +217,21 @@ impl RootglassWindow {
 
     fn on_stop_shortcut(&mut self, _: &StopGlass, _: &mut Window, cx: &mut Context<Self>) {
         self.stop_guest(cx);
+    }
+
+    #[cfg(feature = "embedded-terminal")]
+    fn open_embedded_tui(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.embedded_tui.is_none() {
+            self.embedded_tui =
+                Some(cx.new(|cx| embedded_terminal::EmbeddedTerminal::new(window, cx)));
+            cx.notify();
+        }
+    }
+
+    #[cfg(feature = "embedded-terminal")]
+    fn close_embedded_tui(&mut self, cx: &mut Context<Self>) {
+        self.embedded_tui = None;
+        cx.notify();
     }
 
     fn open_bundle(&mut self, cx: &mut Context<Self>) {
@@ -590,7 +644,10 @@ fn manifest_validation_view(report: &ManifestValidationReport) -> Div {
         .child(format!("Name: {}", report.name))
         .child(format!("Identifier: {}", report.identifier))
         .child(format!("Version: {}", report.version))
-        .child(format!("Declared publisher: {}", report.declared_publisher_name))
+        .child(format!(
+            "Declared publisher: {}",
+            report.declared_publisher_name
+        ))
         .child(format!(
             "Declared identity: {}",
             report.declared_publisher_identity
@@ -641,7 +698,9 @@ fn preview_details_view(title: &str, glass: &GlassPreview, command: Option<&str>
         view = view.child(format!("Blocked: {blocker}"));
     }
     if let Some(command) = command {
-        view = view.child("Resolved launch command").child(command.to_string());
+        view = view
+            .child("Resolved launch command")
+            .child(command.to_string());
     }
     view
 }
@@ -658,6 +717,14 @@ fn removal_details_view(details: &RemovalDetails) -> Div {
 }
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--rootglass-tui-session") {
+        if let Err(error) = rootglass_tui::run_terminal(None) {
+            eprintln!("embedded Rootglass TUI session failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)
         .run(|cx| {
@@ -671,4 +738,7 @@ fn main() {
             })
             .expect("failed to open Rootglass window");
         });
+
+    #[cfg(feature = "embedded-terminal")]
+    embedded_terminal::wait_for_cleanup();
 }

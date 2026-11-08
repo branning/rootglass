@@ -1,6 +1,6 @@
 # TUI architecture and feature parity
 
-**Status:** S16.1–S16.5, S16.9 and S16.10 are merged. The standalone TUI covers the current library, lifecycle, guest serial, state/trust and signing/package workflows. The S16.6 public `libghostty-vt` PTY smoke passes in signed-source Linux CI; the native runner matrix is being extended to all approved targets. The maintainer approved `libghostty-vt`, a custom GPUI view, and Linux x86_64, macOS arm64, and Windows x86_64 as qualification targets. Native build and GPUI host evidence and the S16.7 implementation remain open.
+**Status:** S16.1–S16.6, S16.9 and S16.10 are merged. The standalone TUI covers the current library, lifecycle, guest serial, state/trust and signing/package workflows. The S16.6 public `libghostty-vt` PTY smoke passes on Linux x86_64, macOS arm64 and Windows x86_64. The maintainer approved those targets and a custom GPUI view. S16.7's desktop integration and Linux Xvfb interaction smoke are in progress; native macOS/Windows GPUI hosts and a real booted-guest terminal walkthrough remain open for acceptance.
 
 ## Product contract
 
@@ -10,7 +10,7 @@ The TUI must be testable without a display server or a real terminal. Keep its c
 
 The GPUI application will host the TUI through an embedded terminal surface backed by libghostty. The terminal host handles terminal input, output, resize, clipboard, and lifecycle; the TUI session owns Rootglass interaction and calls shared Rust APIs. The session adapter must not expose an arbitrary shell. The terminal host is the *outer* terminal that displays the Ratatui app; the TUI's guest-console pane separately reads and writes the guest's serial stream through `rootglass-app`.
 
-The TUI and GPUI host must not reimplement signature/trust policy, registry transactions, state locking, launch checks, or lifecycle rules. The TUI session calls `rootglass-app` APIs; signing/package flows call `rootglass-signature` APIs. Do not shell out to the CLI to perform an individual Rootglass operation. Whether the embedded session runs in-process or behind a private PTY process is gated by the libghostty prototype.
+The TUI and GPUI host must not reimplement signature/trust policy, registry transactions, state locking, launch checks, or lifecycle rules. The TUI session calls `rootglass-app` APIs; signing/package flows call `rootglass-signature` APIs. Do not shell out to the CLI to perform an individual Rootglass operation. The current desktop integration starts its own executable in a private PTY process with an internal TUI-session argument. It runs the shared TUI library and exposes no shell command surface.
 
 ## Frontend map
 
@@ -54,4 +54,4 @@ The maintainer approved Linux x86_64, macOS arm64, and Windows x86_64 as the S16
 
 Headless checks cover the same TUI controller and rendering code used by the standalone frontend: Ratatui `TestBackend`, deterministic service fakes, temporary library/state/trust directories, stale-operation and `RunId` handling, serial input/output, and fake-child cleanup. These checks do not need X11, a native window, or QEMU.
 
-Separate host smoke is still required for the embedded libghostty surface: keyboard mapping, focus/shortcuts, resize, clipboard, accessibility, terminal cleanup, and a real guest serial login/input/output flow. A missing desktop host is a blocked acceptance result, never a headless pass. Reuse existing A-02/A-05/A-07 evidence only when its revision and scenario still apply. Keep the R3 deferred features outside this workstream.
+The Linux Xvfb host smoke covers keyboard focus/input, resize, keyboard selection, clipboard copy/paste, ANSI rendering and cleanup when the GPUI window closes. It does not prove native macOS/Windows GPUI behavior, screen-reader accessibility, or a real guest serial login/input/output journey; retain those as host acceptance work. A missing desktop host is a blocked acceptance result, never a headless pass. Reuse existing A-02/A-05/A-07 evidence only when its revision and scenario still apply. Keep the R3 deferred features outside this workstream.

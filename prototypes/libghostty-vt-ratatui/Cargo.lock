@@ -3519,17 +3519,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "libghostty-vt-ratatui-spike"
-version = "0.1.0"
-dependencies = [
- "cc",
- "crossterm",
- "gpui-kit",
- "portable-pty",
- "ratatui",
-]
-
-[[package]]
 name = "libloading"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5490,6 +5479,17 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "rootglass-terminal-vt"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "crossterm",
+ "gpui-kit",
+ "portable-pty",
+ "ratatui",
 ]
 
 [[package]]

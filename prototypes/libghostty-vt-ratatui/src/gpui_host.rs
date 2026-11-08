@@ -4,8 +4,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use gpui_kit::*;
-use libghostty_vt_ratatui_spike::{encode_bracketed_paste, GhosttyTerminal};
 use portable_pty::{native_pty_system, Child, MasterPty, PtySize};
+use rootglass_terminal_vt::{encode_bracketed_paste, GhosttyTerminal};
 
 const INITIAL_COLS: u16 = 80;
 const INITIAL_ROWS: u16 = 24;

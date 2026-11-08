@@ -5,7 +5,10 @@ use crate::{
     StartEffect, StopRequest, UiModel, UiState,
 };
 use crossterm::cursor::Show;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers,
+};
 use crossterm::execute;
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::backend::CrosstermBackend;
@@ -104,6 +107,7 @@ fn run_event_loop(
                         break;
                     }
                 }
+                Event::Paste(text) => handle_paste(&mut input, &text),
                 Event::Resize(_, _) => {}
                 _ => {}
             }
@@ -269,6 +273,23 @@ fn handle_key(
         | InputMode::DeveloperCreatedAt
         | InputMode::DeveloperOutput => handle_developer_form_key(model, input, key, worker),
         InputMode::Normal => handle_normal_key(model, input, key, worker),
+    }
+}
+
+fn handle_paste(input: &mut InputBuffer, text: &str) {
+    if matches!(
+        input.mode,
+        InputMode::Normal
+            | InputMode::ConfirmRemoval
+            | InputMode::ConfirmStateReset
+            | InputMode::ConfirmStateDelete
+            | InputMode::DeveloperMenu
+    ) {
+        return;
+    }
+
+    for character in text.chars().filter(|character| !character.is_control()) {
+        input.push(character);
     }
 }
 
@@ -1350,6 +1371,8 @@ fn combine_cleanup(
 trait TerminalOps {
     fn enable_raw_mode(&mut self) -> io::Result<()>;
     fn disable_raw_mode(&mut self) -> io::Result<()>;
+    fn enable_bracketed_paste(&mut self) -> io::Result<()>;
+    fn disable_bracketed_paste(&mut self) -> io::Result<()>;
     fn enter_alternate_screen(&mut self) -> io::Result<()>;
     fn leave_alternate_screen(&mut self) -> io::Result<()>;
     fn hide_cursor(&mut self) -> io::Result<()>;
@@ -1377,6 +1400,14 @@ impl TerminalOps for CrosstermTerminalOps {
         terminal::disable_raw_mode()
     }
 
+    fn enable_bracketed_paste(&mut self) -> io::Result<()> {
+        execute!(self.stdout, EnableBracketedPaste)
+    }
+
+    fn disable_bracketed_paste(&mut self) -> io::Result<()> {
+        execute!(self.stdout, DisableBracketedPaste)
+    }
+
     fn enter_alternate_screen(&mut self) -> io::Result<()> {
         execute!(self.stdout, EnterAlternateScreen)
     }
@@ -1397,6 +1428,7 @@ impl TerminalOps for CrosstermTerminalOps {
 struct TerminalRestore<O: TerminalOps> {
     operations: O,
     raw_mode: bool,
+    bracketed_paste: bool,
     alternate_screen: bool,
     cursor_hidden: bool,
 }
@@ -1406,11 +1438,14 @@ impl<O: TerminalOps> TerminalRestore<O> {
         let mut restore = Self {
             operations,
             raw_mode: false,
+            bracketed_paste: false,
             alternate_screen: false,
             cursor_hidden: false,
         };
         restore.raw_mode = true;
         restore.operations.enable_raw_mode()?;
+        restore.bracketed_paste = true;
+        restore.operations.enable_bracketed_paste()?;
         restore.alternate_screen = true;
         restore.cursor_hidden = true;
         restore.operations.enter_alternate_screen()?;
@@ -1423,6 +1458,9 @@ impl<O: TerminalOps> TerminalRestore<O> {
         if self.cursor_hidden || self.alternate_screen {
             keep_first_error(&mut first_error, self.operations.show_cursor());
         }
+        if self.bracketed_paste {
+            keep_first_error(&mut first_error, self.operations.disable_bracketed_paste());
+        }
         if self.alternate_screen {
             keep_first_error(&mut first_error, self.operations.leave_alternate_screen());
         }
@@ -1430,6 +1468,7 @@ impl<O: TerminalOps> TerminalRestore<O> {
             keep_first_error(&mut first_error, self.operations.disable_raw_mode());
         }
         self.cursor_hidden = false;
+        self.bracketed_paste = false;
         self.alternate_screen = false;
         self.raw_mode = false;
         first_error.map_or(Ok(()), Err)
@@ -1497,6 +1536,14 @@ mod tests {
             self.record("raw-off")
         }
 
+        fn enable_bracketed_paste(&mut self) -> io::Result<()> {
+            self.record("paste-on")
+        }
+
+        fn disable_bracketed_paste(&mut self) -> io::Result<()> {
+            self.record("paste-off")
+        }
+
         fn enter_alternate_screen(&mut self) -> io::Result<()> {
             self.record("alternate-on")
         }
@@ -1529,9 +1576,11 @@ mod tests {
             *events.borrow(),
             [
                 "raw-on",
+                "paste-on",
                 "alternate-on",
                 "cursor-hide",
                 "cursor-show",
+                "paste-off",
                 "alternate-off",
                 "raw-off"
             ]
@@ -1554,8 +1603,8 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(
-            &events.borrow()[3..],
-            ["cursor-show", "alternate-off", "raw-off"]
+            &events.borrow()[4..],
+            ["cursor-show", "paste-off", "alternate-off", "raw-off"]
         );
     }
 
@@ -1572,8 +1621,10 @@ mod tests {
             *events.borrow(),
             [
                 "raw-on",
+                "paste-on",
                 "alternate-on",
                 "cursor-show",
+                "paste-off",
                 "alternate-off",
                 "raw-off"
             ]
@@ -2771,5 +2822,24 @@ mod tests {
             assert!(error.contains("requires an interactive terminal"));
             assert!(error.contains("full-duplex PTY"));
         }
+    }
+
+    #[test]
+    fn bracketed_paste_fills_text_prompts_without_triggering_actions() {
+        let mut input = InputBuffer {
+            mode: InputMode::OpenPath,
+            ..InputBuffer::default()
+        };
+
+        handle_paste(&mut input, "hello\nworld\t!");
+
+        assert_eq!(input.text, "helloworld!");
+        assert_eq!(input.mode, InputMode::OpenPath);
+
+        input.mode = InputMode::Normal;
+        input.text.clear();
+        handle_paste(&mut input, "q");
+        assert!(input.text.is_empty());
+        assert_eq!(input.mode, InputMode::Normal);
     }
 }
