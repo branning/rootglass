@@ -79,7 +79,7 @@ pub enum ImportError {
     #[error("archive contains a link or non-regular special file: {0}")]
     UnsupportedFileType(String),
     #[error("archive changed while it was being imported")]
-    ArchiveChanged,
+    ArchiveChanged { detail: String },
     #[error("archive is missing required manifest '{0}'")]
     MissingManifest(&'static str),
 }
@@ -249,7 +249,9 @@ fn import_snapshot(
     if installed_verification.publisher_identity != verification.publisher_identity
         || installed_verification.key_id != verification.key_id
     {
-        return Err(ImportError::ArchiveChanged);
+        return Err(ImportError::ArchiveChanged {
+            detail: "installed publisher identity or key ID differs from the verified archive".to_string(),
+        });
     }
     verify_installed_matches_archive(snapshot, &final_path, limits)?;
     let glass = Glass::load(&final_path)?;
@@ -432,7 +434,9 @@ fn extract_archive(
                 .map_err(|source| io_at(&output, source))?;
         }
         if member != entry.size() {
-            return Err(ImportError::ArchiveChanged);
+            return Err(ImportError::ArchiveChanged {
+                detail: format!("extracted member '{name}' size differs from its ZIP record"),
+            });
         }
         file.sync_all().map_err(|source| io_at(&output, source))?;
     }
@@ -490,7 +494,12 @@ fn verify_installed_matches_archive(
             ));
         }
         if metadata.len() != size {
-            return Err(ImportError::ArchiveChanged);
+            return Err(ImportError::ArchiveChanged {
+                detail: format!(
+                    "installed member '{normalized}' has size {}, archive records {size}",
+                    metadata.len()
+                ),
+            });
         }
         let mut installed =
             File::open(&installed_path).map_err(|source| io_at(&installed_path, source))?;
@@ -507,7 +516,9 @@ fn verify_installed_matches_archive(
             if archived_count != installed_count
                 || archived_buffer[..archived_count] != installed_buffer[..installed_count]
             {
-                return Err(ImportError::ArchiveChanged);
+                return Err(ImportError::ArchiveChanged {
+                    detail: format!("installed member '{normalized}' differs from archive bytes"),
+                });
             }
             if archived_count == 0 {
                 break;
@@ -527,14 +538,20 @@ fn verify_installed_matches_archive(
             }
         }
         if compared != size {
-            return Err(ImportError::ArchiveChanged);
+            return Err(ImportError::ArchiveChanged {
+                detail: format!(
+                    "installed member '{normalized}' yielded {compared} bytes, archive records {size}"
+                ),
+            });
         }
     }
 
     let mut installed_files = BTreeSet::new();
     collect_installed_files(installed_root, installed_root, &mut installed_files)?;
     if installed_files != archive_files {
-        return Err(ImportError::ArchiveChanged);
+        return Err(ImportError::ArchiveChanged {
+            detail: "installed file list differs from archive contents".to_string(),
+        });
     }
     Ok(())
 }
