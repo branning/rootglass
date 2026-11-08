@@ -60,7 +60,7 @@ for _ in $(seq 1 5); do
 done
 wait_for_marker ROOTGLASS_EMBEDDED_TUI_SELECTION
 xdotool key --clearmodifiers ctrl+shift+c
-copied_text="$(timeout 5 xclip -selection clipboard -out)"
+copied_text="$(timeout 5 xclip -selection clipboard -target UTF8_STRING -out)"
 if [[ -z "$copied_text" ]]; then
   echo "Terminal selection copy left the clipboard empty" >&2
   exit 1
@@ -72,7 +72,7 @@ wait_for_marker ROOTGLASS_EMBEDDED_TUI_TYPED
 xdotool key --clearmodifiers --repeat 12 BackSpace
 printf 'headless paste' | xclip -selection clipboard -in
 sleep 0.2
-clipboard_text="$(timeout 5 xclip -selection clipboard -out)"
+clipboard_text="$(timeout 5 xclip -selection clipboard -target UTF8_STRING -out)"
 if [[ "$clipboard_text" != "headless paste" ]]; then
   echo "Clipboard did not retain the expected paste text: $clipboard_text" >&2
   exit 1
