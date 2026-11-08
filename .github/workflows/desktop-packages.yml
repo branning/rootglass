@@ -65,7 +65,7 @@ jobs:
       - name: Cache Cargo registry and build outputs
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: crates/rootglass-desktop -> crates/rootglass-desktop/target
+          workspaces: crates/rootglass-desktop -> target
 
       - name: Cache C/C++ compiler outputs (Linux)
         if: runner.os == 'Linux'

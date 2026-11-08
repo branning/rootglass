@@ -85,7 +85,7 @@ jobs:
       - name: Cache Cargo registry and build outputs
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: prototypes/libghostty-vt-ratatui -> prototypes/libghostty-vt-ratatui/target
+          workspaces: prototypes/libghostty-vt-ratatui -> target
 
       - name: Cache C compiler outputs (Linux and macOS)
         if: runner.os != 'Windows'
