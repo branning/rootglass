@@ -439,22 +439,24 @@ impl RootglassWindow {
                     })
                     .await;
                 desktop_smoke_event("ROOTGLASS_DESKTOP_INSPECT_SERVICE_DONE");
+                desktop_smoke_event("ROOTGLASS_DESKTOP_STATE_LIST_START");
                 let state_result = match &result {
                     rootglass_desktop::ui_model::InspectionOutcome::Ready(preview) => {
                         let path = preview.path.clone();
                         let service_for_state = service.clone();
-                        Some(
-                            background_executor
-                                .spawn(async move {
-                                    lock_service(&service_for_state)
-                                        .and_then(|mut service| service.list_states(&path))
-                                })
-                                .await,
-                        )
+                        let result = background_executor
+                            .spawn(async move {
+                                lock_service(&service_for_state)
+                                    .and_then(|mut service| service.list_states(&path))
+                            })
+                            .await;
+                        desktop_smoke_event("ROOTGLASS_DESKTOP_STATE_LIST_DONE");
+                        Some(result)
                     }
                     _ => None,
                 };
-                let _ = view.update(cx, |view, cx| {
+                desktop_smoke_event("ROOTGLASS_DESKTOP_INSPECTION_UPDATE_START");
+                let update_result = view.update(cx, |view, cx| {
                     let inspection_applied = view.model.finish_inspection(&ticket, result);
                     desktop_smoke_event(if inspection_applied {
                         "ROOTGLASS_DESKTOP_INSPECTION_APPLIED"
@@ -474,6 +476,11 @@ impl RootglassWindow {
                         }
                     }
                     cx.notify();
+                });
+                desktop_smoke_event(if update_result.is_ok() {
+                    "ROOTGLASS_DESKTOP_INSPECTION_UPDATE_DONE"
+                } else {
+                    "ROOTGLASS_DESKTOP_INSPECTION_UPDATE_FAILED"
                 });
             }
         })
