@@ -194,7 +194,6 @@ fn libghostty_vt_round_trips_ratatui_over_pty_headlessly() -> io::Result<()> {
     let mut child = PtyChild::spawn(&binary)?;
     let mut ghostty = GhosttyTerminal::new(80, 24)?;
 
-    child.wait_for(&mut ghostty, "PTY-CHILD-READY")?;
     let screen = child.wait_for(&mut ghostty, "RATATUI-GHOSTTY-FIXTURE")?;
     assert!(screen.contains("LEFT:0"));
     assert!(ghostty.first_cell_is_styled()?);

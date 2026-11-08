@@ -152,3 +152,4 @@
 {"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-07T23:59:31.512506601Z","agent":"codex@worker-1","text":"CI Linux + standard checks pass; macOS path and Windows PTY startup fixes added; local smoke passes."}
 {"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-08T00:24:23.255395636Z","agent":"codex@worker-1","text":"Linux signed-source PTY smoke passes with libghostty-vt replies; final 3-host dispatch pending."}
 {"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-08T00:41:01.45425171Z","agent":"codex@worker-1","text":"Removed ConPTY startup input gate; signed-source Linux PTY smoke passes; 3-host retry pending."}
+{"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-08T00:57:22.655880084Z","agent":"codex@worker-1","text":"Windows fixture now waits directly for rendered screen; signed-source Linux smoke passes; Windows retry pending."}

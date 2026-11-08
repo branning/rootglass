@@ -1,4 +1,4 @@
-use std::io::{self, Stdout, Write};
+use std::io::{self, Stdout};
 use std::time::Duration;
 
 use crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode};
@@ -34,11 +34,8 @@ fn draw(terminal: &mut Terminal<CrosstermBackend<Stdout>>, state: &FixtureState)
 }
 
 fn fixture_child() -> io::Result<()> {
-    let mut stdout = io::stdout();
-    writeln!(stdout, "PTY-CHILD-READY")?;
-    stdout.flush()?;
-
     crossterm::terminal::enable_raw_mode()?;
+    let mut stdout = io::stdout();
     execute!(stdout, EnableBracketedPaste)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
     let mut state = FixtureState {
