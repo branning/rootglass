@@ -109,23 +109,6 @@ jobs:
           CCACHE_COMPILERCHECK: content
         run: cargo check --manifest-path crates/rootglass-desktop/Cargo.toml
 
-      - name: Restore libghostty-vt prefix for the GPUI prototype
-        uses: actions/cache/restore@v4
-        with:
-          path: ${{ runner.temp }}/rootglass-libghostty-vt-prefix
-          key: libghostty-vt-${{ runner.os }}-${{ runner.arch }}-ghostty-v1.0.0-zig-0.17.0-${{ hashFiles('scripts/smoke-libghostty-vt-pty.py', 'prototypes/libghostty-vt-ratatui/build.rs', 'prototypes/libghostty-vt-ratatui/src/ghostty_shim.c') }}
-
-      - name: Check GPUI libghostty-vt prototype
-        env:
-          CC: ccache gcc
-          CXX: ccache g++
-          CCACHE_DIR: ${{ runner.temp }}/rootglass-ccache
-          CCACHE_MAXSIZE: 512M
-          CCACHE_COMPILERCHECK: content
-          CARGO_TARGET_DIR: ${{ github.workspace }}/crates/rootglass-desktop/target
-          GHOSTTY_VT_PREFIX: ${{ runner.temp }}/rootglass-libghostty-vt-prefix
-        run: cargo check --locked --manifest-path prototypes/libghostty-vt-ratatui/Cargo.toml --features gpui
-
   cli-smoke:
     name: CLI smoke
     runs-on: ubuntu-latest

@@ -1,7 +1,7 @@
 use std::io::{self, Read, Write};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui_kit::*;
 use libghostty_vt_ratatui_spike::{encode_bracketed_paste, GhosttyTerminal};
@@ -137,6 +137,7 @@ struct TerminalWindow {
     parser: GhosttyTerminal,
     pty: TerminalPty,
     screen: String,
+    ready_reported: bool,
     focus: FocusHandle,
     _bounds_subscription: Subscription,
     _poll_task: Task<()>,
@@ -156,9 +157,15 @@ impl TerminalWindow {
                 cx.notify();
             }
         });
+        let smoke_mode = std::env::var_os("ROOTGLASS_GPUI_SMOKE").is_some();
+        let smoke_deadline = Instant::now() + Duration::from_secs(12);
         let background_executor = cx.background_executor().clone();
         let _poll_task = cx.spawn(async move |view, cx| loop {
             background_executor.timer(Duration::from_millis(16)).await;
+            if smoke_mode && Instant::now() >= smoke_deadline {
+                let _ = cx.update(|cx| cx.quit());
+                break;
+            }
             let _ = view.update(cx, |this, cx| {
                 if let Err(error) = this.poll_pty() {
                     this.screen = format!("PTY read failed: {error}");
@@ -171,6 +178,7 @@ impl TerminalWindow {
             parser,
             pty,
             screen: String::new(),
+            ready_reported: false,
             focus,
             _bounds_subscription,
             _poll_task,
@@ -192,6 +200,12 @@ impl TerminalWindow {
             }
         }
         self.screen = self.parser.screen()?;
+        if !self.ready_reported && self.screen.contains("RATATUI-GHOSTTY-FIXTURE") {
+            self.ready_reported = true;
+            if std::env::var_os("ROOTGLASS_GPUI_SMOKE").is_some() {
+                eprintln!("ROOTGLASS_GPUI_HOST_READY");
+            }
+        }
         Ok(())
     }
 

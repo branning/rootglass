@@ -160,3 +160,4 @@
 {"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-08T02:09:01.835337005Z","agent":"codex@worker-1","text":"Cargo and ccache CI pass; native PTY matrix and Windows cached dispatch pass; GPUI smoke pending."}
 {"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-08T02:39:22.801623112Z","agent":"codex@worker-1","text":"GPUI PTY prototype and cached Linux CI build added; format/YAML pass; graphical host validation remains."}
 {"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-08T02:44:52.788670054Z","agent":"codex@worker-1","text":"Corrected Rust cache target paths; ccache and prefix caches wired; YAML parses; CI and graphical validation remain."}
+{"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-08T03:04:33.837444855Z","agent":"codex@worker-1","text":"Moved GPUI smoke to native workflow; Xvfb screenshot and Rust caches configured; validation pending."}
