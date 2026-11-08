@@ -15,12 +15,20 @@ on:
           - linux
           - macos
           - windows
+      artifact_run_id:
+        description: Successful package workflow run ID to attach to a release without rebuilding
+        type: string
+        required: false
+      release_tag:
+        description: Existing prerelease tag to receive artifacts when artifact_run_id is set
+        type: string
+        required: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: desktop-packages-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ inputs.platform || 'all' }}
+  group: desktop-packages-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ inputs.platform || 'all' }}-${{ inputs.artifact_run_id || 'build' }}-${{ inputs.release_tag || 'no-release' }}
   cancel-in-progress: true
 
 jobs:
@@ -49,6 +57,7 @@ jobs:
 
   runtime_assets:
     name: Materialize pinned guest boot assets
+    if: github.event_name != 'workflow_dispatch' || inputs.artifact_run_id == ''
     runs-on: ubuntu-24.04
     outputs:
       runtime_version: ${{ steps.version.outputs.runtime_version }}
@@ -87,6 +96,7 @@ jobs:
 
   package:
     name: ${{ matrix.name }} package
+    if: github.event_name != 'workflow_dispatch' || inputs.artifact_run_id == ''
     needs: [select-platforms, runtime_assets]
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -203,13 +213,18 @@ jobs:
         working-directory: crates/rootglass-desktop
         shell: pwsh
         run: |
-          @(Get-ChildItem target/release/*.${{ matrix.extension }}) +
+          $installer = @(Get-ChildItem target/release/*-setup.${{ matrix.extension }})
+          if ($installer.Count -ne 1) {
+            throw "Expected one NSIS installer, found $($installer.Count)"
+          }
+          $installer +
           @(Get-Item "$env:RUNNER_TEMP/rootglass-runtime-windows-x86_64-${{ needs.runtime_assets.outputs.runtime_version }}.zip") |
             Get-FileHash -Algorithm SHA256 |
             ForEach-Object { "$($_.Hash.ToLower())  $([IO.Path]::GetFileName($_.Path))" } |
             Set-Content target/release/SHA256SUMS-${{ matrix.config }}.txt
 
       - name: Upload unsigned package artifact
+        if: runner.os != 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: rootglass-${{ matrix.format }}-${{ runner.os }}-${{ runner.arch }}
@@ -217,6 +232,20 @@ jobs:
             crates/rootglass-desktop/target/release/*.${{ matrix.extension }}
             crates/rootglass-desktop/target/release/SHA256SUMS-${{ matrix.config }}.txt
             ${{ runner.temp }}/rootglass-runtime-*.tar.gz
+            ${{ runner.temp }}/rootglass-runtime-*.zip
+            ${{ runner.temp }}/rootglass-runtime-*.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Upload Windows installer instead of raw desktop executable
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rootglass-${{ matrix.format }}-${{ runner.os }}-${{ runner.arch }}
+          path: |
+            crates/rootglass-desktop/target/release/*-setup.${{ matrix.extension }}
+            crates/rootglass-desktop/target/release/SHA256SUMS-${{ matrix.config }}.txt
             ${{ runner.temp }}/rootglass-runtime-*.zip
             ${{ runner.temp }}/rootglass-runtime-*.sha256
           if-no-files-found: error
@@ -244,6 +273,95 @@ jobs:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           mapfile -t assets < <(find release-assets -type f -print | sort)
+          if [[ "${#assets[@]}" -ne 12 ]]; then
+            printf 'Expected 12 release assets, found %s\n' "${#assets[@]}" >&2
+            printf '%s\n' "${assets[@]}" >&2
+            exit 1
+          fi
+          gh release upload "$RELEASE_TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+
+  attach-existing-release-assets:
+    name: Attach artifacts from an existing package run
+    if: github.event_name == 'workflow_dispatch' && inputs.artifact_run_id != ''
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download package artifacts from the selected run
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rootglass-*
+          path: downloaded-artifacts
+          merge-multiple: false
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.artifact_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Verify and attach package and runtime assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          [[ "$ARTIFACT_RUN_ID" =~ ^[0-9]+$ ]] || { echo "artifact_run_id must be numeric" >&2; exit 1; }
+          [[ -n "$RELEASE_TAG" ]] || { echo "release_tag is required with artifact_run_id" >&2; exit 1; }
+
+          run_state=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ARTIFACT_RUN_ID" --jq '[.status, (.conclusion // "")] | join(":")')
+          [[ "$run_state" == "completed:success" ]] || {
+            echo "Artifact run $ARTIFACT_RUN_ID must have completed successfully (found $run_state)" >&2
+            exit 1
+          }
+          is_prerelease=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.prerelease')
+          [[ "$is_prerelease" == "true" ]] || {
+            echo "Release $RELEASE_TAG must exist and be marked as a prerelease" >&2
+            exit 1
+          }
+
+          expected_dirs=(
+            rootglass-deb-Linux-X64
+            rootglass-dmg-macOS-ARM64
+            rootglass-nsis-Windows-X64
+          )
+          mapfile -t found_dirs < <(find downloaded-artifacts -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
+          mapfile -t expected_sorted < <(printf '%s\n' "${expected_dirs[@]}" | sort)
+          if [[ "${found_dirs[*]}" != "${expected_sorted[*]}" ]]; then
+            printf 'Expected package artifacts %s; found %s\n' "${expected_sorted[*]}" "${found_dirs[*]}" >&2
+            exit 1
+          fi
+
+          mkdir -p release-assets-ready
+          declare -a assets=()
+          for platform in linux macos windows; do
+            case "$platform" in
+              linux) artifact_dir=downloaded-artifacts/rootglass-deb-Linux-X64; package_glob='*.deb'; runtime_glob='*.tar.gz' ;;
+              macos) artifact_dir=downloaded-artifacts/rootglass-dmg-macOS-ARM64; package_glob='*.dmg'; runtime_glob='*.tar.gz' ;;
+              windows) artifact_dir=downloaded-artifacts/rootglass-nsis-Windows-X64; package_glob='*-setup.exe'; runtime_glob='*.zip' ;;
+            esac
+            mapfile -t packages < <(find "$artifact_dir" -maxdepth 1 -type f -name "$package_glob" -print)
+            mapfile -t runtimes < <(find "$artifact_dir" -maxdepth 1 -type f -name "$runtime_glob" -print)
+            mapfile -t runtime_checksums < <(find "$artifact_dir" -maxdepth 1 -type f -name '*.sha256' -print)
+            if [[ "${#packages[@]}" -ne 1 || "${#runtimes[@]}" -ne 1 || "${#runtime_checksums[@]}" -ne 1 ]]; then
+              echo "Expected one installer, runtime archive, and runtime checksum for $platform" >&2
+              find "$artifact_dir" -maxdepth 1 -type f -print >&2
+              exit 1
+            fi
+
+            destination="release-assets-ready/$platform"
+            mkdir -p "$destination"
+            cp "${packages[0]}" "${runtimes[0]}" "${runtime_checksums[0]}" "$destination/"
+            runtime_checksum_name=$(basename "${runtime_checksums[0]}")
+            manifest="SHA256SUMS-$platform.txt"
+            (
+              cd "$destination"
+              sha256sum --check "$runtime_checksum_name"
+              sha256sum "$(basename "${packages[0]}")" "$(basename "${runtimes[0]}")" > "$manifest"
+              sha256sum --check "$manifest"
+            )
+            assets+=("$destination/$(basename "${packages[0]}")" "$destination/$manifest" "$destination/$(basename "${runtimes[0]}")" "$destination/$runtime_checksum_name")
+          done
+
           if [[ "${#assets[@]}" -ne 12 ]]; then
             printf 'Expected 12 release assets, found %s\n' "${#assets[@]}" >&2
             printf '%s\n' "${assets[@]}" >&2
