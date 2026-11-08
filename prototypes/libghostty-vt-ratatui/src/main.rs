@@ -1,4 +1,4 @@
-use std::io::{self, Read, Stdout, Write};
+use std::io::{self, Stdout, Write};
 use std::time::Duration;
 
 use crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode};
@@ -37,8 +37,6 @@ fn fixture_child() -> io::Result<()> {
     let mut stdout = io::stdout();
     writeln!(stdout, "PTY-CHILD-READY")?;
     stdout.flush()?;
-    let mut start = [0];
-    io::stdin().read_exact(&mut start)?;
 
     crossterm::terminal::enable_raw_mode()?;
     execute!(stdout, EnableBracketedPaste)?;
