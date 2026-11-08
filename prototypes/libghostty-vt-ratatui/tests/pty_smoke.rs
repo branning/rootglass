@@ -4,15 +4,15 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-#[cfg(not(windows))]
-use libghostty_vt_ratatui_spike::encode_bracketed_paste;
-use libghostty_vt_ratatui_spike::GhosttyTerminal;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 use ratatui::text::Text;
 use ratatui::widgets::Paragraph;
 use ratatui::Terminal;
+#[cfg(not(windows))]
+use rootglass_terminal_vt::encode_bracketed_paste;
+use rootglass_terminal_vt::GhosttyTerminal;
 
 struct PtyChild {
     master: Option<Box<dyn MasterPty + Send>>,

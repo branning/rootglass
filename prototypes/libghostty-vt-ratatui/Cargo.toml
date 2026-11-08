@@ -1,11 +1,15 @@
 [package]
-name = "libghostty-vt-ratatui-spike"
+name = "rootglass-terminal-vt"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
 publish = false
 
 [workspace]
+
+[[bin]]
+name = "libghostty-vt-ratatui-spike"
+path = "src/main.rs"
 
 [features]
 default = []

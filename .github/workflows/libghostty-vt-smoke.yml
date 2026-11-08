@@ -7,7 +7,10 @@ on:
     paths:
       - .github/workflows/libghostty-vt-smoke.yml
       - prototypes/libghostty-vt-ratatui/**
+      - crates/rootglass-desktop/**
+      - crates/rootglass-tui/**
       - scripts/smoke-gpui-host-xvfb.sh
+      - scripts/smoke-rootglass-tui-gpui-xvfb.sh
       - scripts/smoke-libghostty-vt-pty.py
   push:
     branches:
@@ -15,7 +18,10 @@ on:
     paths:
       - .github/workflows/libghostty-vt-smoke.yml
       - prototypes/libghostty-vt-ratatui/**
+      - crates/rootglass-desktop/**
+      - crates/rootglass-tui/**
       - scripts/smoke-gpui-host-xvfb.sh
+      - scripts/smoke-rootglass-tui-gpui-xvfb.sh
       - scripts/smoke-libghostty-vt-pty.py
   workflow_dispatch:
     inputs:
@@ -89,10 +95,15 @@ jobs:
       - name: Check prototype formatting
         run: cargo fmt --manifest-path prototypes/libghostty-vt-ratatui/Cargo.toml --check
 
+      - name: Check desktop formatting
+        run: cargo fmt --manifest-path crates/rootglass-desktop/Cargo.toml --check
+
       - name: Cache Cargo registry and build outputs
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: prototypes/libghostty-vt-ratatui -> target
+          workspaces: |
+            prototypes/libghostty-vt-ratatui -> target
+            crates/rootglass-desktop -> target
 
       - name: Cache C compiler outputs (Linux and macOS)
         if: runner.os != 'Windows'
@@ -180,11 +191,48 @@ jobs:
             prototypes/libghostty-vt-ratatui/target/debug/libghostty-vt-ratatui-spike \
             prototypes/libghostty-vt-ratatui/artifacts/gpui-xvfb.png
 
+      - name: Build Rootglass desktop with embedded terminal
+        if: runner.os == 'Linux'
+        env:
+          CC: ccache gcc
+          CXX: ccache g++
+          CCACHE_DIR: ${{ runner.temp }}/rootglass-ccache
+          CCACHE_MAXSIZE: 512M
+          CCACHE_COMPILERCHECK: content
+          GHOSTTY_VT_PREFIX: ${{ runner.temp }}/rootglass-libghostty-vt-prefix
+        run: cargo build --locked --manifest-path crates/rootglass-desktop/Cargo.toml --features embedded-terminal
+
+      - name: Test embedded terminal grid and selection
+        if: runner.os == 'Linux'
+        env:
+          GHOSTTY_VT_PREFIX: ${{ runner.temp }}/rootglass-libghostty-vt-prefix
+        run: cargo test --locked --manifest-path crates/rootglass-desktop/Cargo.toml --features embedded-terminal --bin rootglass-desktop
+
+      - name: Smoke embedded Rootglass TUI in GPUI under Xvfb
+        if: runner.os == 'Linux'
+        env:
+          LD_LIBRARY_PATH: ${{ runner.temp }}/rootglass-libghostty-vt-prefix/lib
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24 +extension GLX +render -noreset" \
+            bash scripts/smoke-rootglass-tui-gpui-xvfb.sh \
+            crates/rootglass-desktop/target/debug/rootglass-desktop \
+            crates/rootglass-desktop/artifacts/embedded-tui-xvfb.png
+
       - name: Upload GPUI Xvfb screenshot
         if: always() && runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
           name: gpui-libghostty-vt-xvfb-screenshot
           path: prototypes/libghostty-vt-ratatui/artifacts/gpui-xvfb.png
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload embedded TUI Xvfb screenshot
+        if: always() && runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rootglass-embedded-tui-xvfb-screenshot
+          path: crates/rootglass-desktop/artifacts/embedded-tui-xvfb.png
           if-no-files-found: warn
           retention-days: 14
