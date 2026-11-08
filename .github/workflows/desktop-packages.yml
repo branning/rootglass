@@ -308,11 +308,28 @@ jobs:
           [[ "$ARTIFACT_RUN_ID" =~ ^[0-9]+$ ]] || { echo "artifact_run_id must be numeric" >&2; exit 1; }
           [[ -n "$RELEASE_TAG" ]] || { echo "release_tag is required with artifact_run_id" >&2; exit 1; }
 
-          run_state=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ARTIFACT_RUN_ID" --jq '[.status, (.conclusion // "")] | join(":")')
-          [[ "$run_state" == "completed:success" ]] || {
-            echo "Artifact run $ARTIFACT_RUN_ID must have completed successfully (found $run_state)" >&2
+          run_status=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ARTIFACT_RUN_ID" --jq '.status')
+          [[ "$run_status" == "completed" ]] || {
+            echo "Artifact run $ARTIFACT_RUN_ID must be complete (found $run_status)" >&2
             exit 1
           }
+          mapfile -t source_jobs < <(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ARTIFACT_RUN_ID/jobs" --paginate --jq '.jobs[] | select(.name == "Materialize pinned guest boot assets" or .name == "Linux x64 package" or .name == "macOS arm64 package" or .name == "Windows x64 package") | [.name, .conclusion] | @tsv')
+          if [[ "${#source_jobs[@]}" -ne 4 ]]; then
+            printf 'Expected four completed runtime/package jobs in run %s, found %s\n' "$ARTIFACT_RUN_ID" "${#source_jobs[@]}" >&2
+            printf '%s\n' "${source_jobs[@]}" >&2
+            exit 1
+          fi
+          for required_job in \
+            'Materialize pinned guest boot assets' \
+            'Linux x64 package' \
+            'macOS arm64 package' \
+            'Windows x64 package'; do
+            if ! printf '%s\n' "${source_jobs[@]}" | grep -Fqx "$required_job"$'\t'success; then
+              echo "Required package job did not succeed in run $ARTIFACT_RUN_ID: $required_job" >&2
+              printf '%s\n' "${source_jobs[@]}" >&2
+              exit 1
+            fi
+          done
           is_prerelease=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.prerelease')
           [[ "$is_prerelease" == "true" ]] || {
             echo "Release $RELEASE_TAG must exist and be marked as a prerelease" >&2
