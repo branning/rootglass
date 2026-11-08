@@ -452,10 +452,12 @@ fn state_api_unavailable(action: &str) -> AppError {
 }
 
 fn app_state_snapshot(service: &mut AppService, source: &Path) -> Result<StateSnapshot, AppError> {
-    let records = AppService::list_states(service, source)?;
-    let locked = AppService::states_in_use(service, source)?;
-    let selected_state_id = AppService::selected_state_id(service, source)?;
-    Ok(snapshot_with_default(records, locked, selected_state_id))
+    let snapshot = AppService::state_snapshot(service, source)?;
+    Ok(snapshot_with_default(
+        snapshot.records,
+        snapshot.locked,
+        snapshot.selected_state_id,
+    ))
 }
 
 fn snapshot_with_default(
