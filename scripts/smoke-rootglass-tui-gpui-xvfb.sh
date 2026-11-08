@@ -60,6 +60,7 @@ for _ in $(seq 1 5); do
 done
 wait_for_marker ROOTGLASS_EMBEDDED_TUI_SELECTION
 xdotool key --clearmodifiers ctrl+shift+c
+wait_for_marker ROOTGLASS_EMBEDDED_TUI_COPIED
 copied_text="$(timeout 5 xclip -selection clipboard -target UTF8_STRING -out)"
 if [[ -z "$copied_text" ]]; then
   echo "Terminal selection copy left the clipboard empty" >&2
