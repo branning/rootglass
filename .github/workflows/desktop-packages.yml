@@ -356,12 +356,12 @@ jobs:
               macos) artifact_dir=downloaded-artifacts/rootglass-dmg-macOS-ARM64; package_glob='*.dmg'; runtime_glob='*.tar.gz' ;;
               windows) artifact_dir=downloaded-artifacts/rootglass-nsis-Windows-X64; package_glob='*-setup.exe'; runtime_glob='*.zip' ;;
             esac
-            mapfile -t packages < <(find "$artifact_dir" -maxdepth 1 -type f -name "$package_glob" -print)
-            mapfile -t runtimes < <(find "$artifact_dir" -maxdepth 1 -type f -name "$runtime_glob" -print)
-            mapfile -t runtime_checksums < <(find "$artifact_dir" -maxdepth 1 -type f -name '*.sha256' -print)
+            mapfile -t packages < <(find "$artifact_dir" -type f -name "$package_glob" -print)
+            mapfile -t runtimes < <(find "$artifact_dir" -type f -name "$runtime_glob" -print)
+            mapfile -t runtime_checksums < <(find "$artifact_dir" -type f -name '*.sha256' -print)
             if [[ "${#packages[@]}" -ne 1 || "${#runtimes[@]}" -ne 1 || "${#runtime_checksums[@]}" -ne 1 ]]; then
               echo "Expected one installer, runtime archive, and runtime checksum for $platform" >&2
-              find "$artifact_dir" -maxdepth 1 -type f -print >&2
+              find "$artifact_dir" -type f -print >&2
               exit 1
             fi
 
