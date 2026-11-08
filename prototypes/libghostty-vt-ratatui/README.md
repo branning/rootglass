@@ -2,7 +2,7 @@
 
 This is a disposable S16.6 prototype, not the production Rootglass TUI or GPUI bridge. It pins the public `libghostty-vt` API to Ghostty tag `v1.0.0`, commit `0fa3d577a5614150ff8e2c152de5fb9d5c6d2dec`.
 
-The fixture runs a small Ratatui program in the host's native PTY (ConPTY on Windows). Its parent parses the PTY output with `GhosttyTerminal`, reads render state, encodes a key and bracketed paste with libghostty-vt, resizes the PTY and terminal grid, copies a selected range with the public formatter, then renders the parsed screen through Ratatui's `TestBackend`. The test also waits for the child to exit before dropping its PTY and terminal handles.
+The fixture runs a small Ratatui program in the host's native PTY (ConPTY on Windows). Its parent parses PTY output with `GhosttyTerminal` and forwards public libghostty-vt terminal replies back through the PTY. It reads render state, encodes a key and bracketed paste, resizes the PTY and terminal grid, copies a selected range with the public formatter, then renders the parsed screen through Ratatui's `TestBackend`. The test also waits for the child to exit before dropping its PTY and terminal handles.
 
 ## Result and boundary
 

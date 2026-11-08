@@ -150,3 +150,4 @@
 {"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-07T23:43:20.799089502Z","agent":"codex@worker-1","text":"Checks: signed Ghostty v1.0.0 build and Linux PTY smoke passed; fmt, Python, diff checks pass."}
 {"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-07T23:44:30.979331571Z","agent":"codex@worker-1","text":"PR: #72 opened; macOS/Windows matrix and GPUI host smoke remain pending."}
 {"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-07T23:59:31.512506601Z","agent":"codex@worker-1","text":"CI Linux + standard checks pass; macOS path and Windows PTY startup fixes added; local smoke passes."}
+{"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-08T00:24:23.255395636Z","agent":"codex@worker-1","text":"Linux signed-source PTY smoke passes with libghostty-vt replies; final 3-host dispatch pending."}

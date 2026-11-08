@@ -5,7 +5,44 @@
 
 typedef struct {
   GhosttyTerminal terminal;
+  uint8_t *pty_output;
+  size_t pty_output_len;
+  size_t pty_output_cap;
+  bool pty_output_failed;
 } RgGhosttyTerminal;
+
+static void write_pty_reply(GhosttyTerminal terminal, void *userdata,
+                            const uint8_t *data, size_t len) {
+  (void)terminal;
+  RgGhosttyTerminal *wrapper = userdata;
+  if (!wrapper || !data || len == 0 || wrapper->pty_output_failed) return;
+  if (len > SIZE_MAX - wrapper->pty_output_len) {
+    wrapper->pty_output_failed = true;
+    return;
+  }
+
+  size_t needed = wrapper->pty_output_len + len;
+  if (needed > wrapper->pty_output_cap) {
+    size_t capacity = wrapper->pty_output_cap ? wrapper->pty_output_cap : 256;
+    while (capacity < needed) {
+      if (capacity > SIZE_MAX / 2) {
+        capacity = needed;
+        break;
+      }
+      capacity *= 2;
+    }
+    uint8_t *output = realloc(wrapper->pty_output, capacity);
+    if (!output) {
+      wrapper->pty_output_failed = true;
+      return;
+    }
+    wrapper->pty_output = output;
+    wrapper->pty_output_cap = capacity;
+  }
+
+  memcpy(wrapper->pty_output + wrapper->pty_output_len, data, len);
+  wrapper->pty_output_len = needed;
+}
 
 static int format_terminal(GhosttyTerminal terminal, int as_vt, int x1, int y1,
                            int x2, int y2, char *out, size_t out_cap,
@@ -69,6 +106,14 @@ void *rgvt_new(uint16_t cols, uint16_t rows) {
     free(wrapper);
     return NULL;
   }
+  if (ghostty_terminal_set(wrapper->terminal, GHOSTTY_TERMINAL_OPT_USERDATA,
+                           wrapper) != GHOSTTY_SUCCESS ||
+      ghostty_terminal_set(wrapper->terminal, GHOSTTY_TERMINAL_OPT_WRITE_PTY,
+                           (const void *)write_pty_reply) != GHOSTTY_SUCCESS) {
+    ghostty_terminal_free(wrapper->terminal);
+    free(wrapper);
+    return NULL;
+  }
   return wrapper;
 }
 
@@ -76,6 +121,7 @@ void rgvt_free(void *handle) {
   RgGhosttyTerminal *wrapper = handle;
   if (!wrapper) return;
   ghostty_terminal_free(wrapper->terminal);
+  free(wrapper->pty_output);
   free(wrapper);
 }
 
@@ -90,6 +136,22 @@ void rgvt_write(void *handle, const uint8_t *bytes, size_t len) {
   if (wrapper && bytes && len) {
     ghostty_terminal_vt_write(wrapper->terminal, bytes, len);
   }
+}
+
+int rgvt_take_pty_output(void *handle, uint8_t *out, size_t out_cap,
+                         size_t *out_len) {
+  RgGhosttyTerminal *wrapper = handle;
+  if (!wrapper || !out_len) return (int)GHOSTTY_INVALID_VALUE;
+  if (wrapper->pty_output_failed) return (int)GHOSTTY_OUT_OF_MEMORY;
+
+  *out_len = wrapper->pty_output_len;
+  if (wrapper->pty_output_len > out_cap) return (int)GHOSTTY_OUT_OF_SPACE;
+  if (wrapper->pty_output_len > 0 && !out) return (int)GHOSTTY_INVALID_VALUE;
+  if (wrapper->pty_output_len > 0) {
+    memcpy(out, wrapper->pty_output, wrapper->pty_output_len);
+  }
+  wrapper->pty_output_len = 0;
+  return (int)GHOSTTY_SUCCESS;
 }
 
 int rgvt_screen(void *handle, char *out, size_t out_cap, size_t *out_len) {

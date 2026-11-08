@@ -8,6 +8,12 @@ unsafe extern "C" {
     fn rgvt_free(handle: *mut c_void);
     fn rgvt_resize(handle: *mut c_void, cols: u16, rows: u16) -> i32;
     fn rgvt_write(handle: *mut c_void, bytes: *const u8, len: usize);
+    fn rgvt_take_pty_output(
+        handle: *mut c_void,
+        out: *mut u8,
+        out_cap: usize,
+        out_len: *mut usize,
+    ) -> i32;
     fn rgvt_screen(handle: *mut c_void, out: *mut i8, out_cap: usize, out_len: *mut usize) -> i32;
     fn rgvt_screen_vt(
         handle: *mut c_void,
@@ -62,6 +68,20 @@ impl GhosttyTerminal {
 
     pub fn write(&mut self, bytes: &[u8]) {
         unsafe { rgvt_write(self.0, bytes.as_ptr(), bytes.len()) };
+    }
+
+    pub fn take_pty_output(&self) -> io::Result<Vec<u8>> {
+        let mut bytes = vec![0u8; BUFFER_CAP];
+        let mut len = 0;
+        let result =
+            unsafe { rgvt_take_pty_output(self.0, bytes.as_mut_ptr(), bytes.len(), &mut len) };
+        if result != 0 {
+            return Err(io::Error::other(format!(
+                "libghostty-vt PTY response retrieval failed: {result}"
+            )));
+        }
+        bytes.truncate(len);
+        Ok(bytes)
     }
 
     pub fn screen(&self) -> io::Result<String> {

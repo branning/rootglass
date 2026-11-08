@@ -107,6 +107,10 @@ impl PtyChild {
                     let sample_len = bytes.len().min(512 - self.output_sample.len());
                     self.output_sample.extend_from_slice(&bytes[..sample_len]);
                     parser.write(&bytes);
+                    let pty_reply = parser.take_pty_output()?;
+                    if !pty_reply.is_empty() {
+                        self.write_all(&pty_reply)?;
+                    }
                 }
                 Ok(Err(error)) => return Err(error),
                 Err(RecvTimeoutError::Timeout) => {}
