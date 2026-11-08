@@ -220,3 +220,7 @@
 {"version":1,"task_id":"74J665","kind":"created","at":"2026-11-08T19:28:11.431169357Z"}
 {"version":1,"task_id":"MEN3B7","kind":"created","at":"2026-11-08T19:28:11.492660577Z"}
 {"version":1,"task_id":"EPHVRF","kind":"result","at":"2026-11-08T19:46:28.763828329Z","agent":"codex@worker-1","text":"PR #87 implements draft-first sample packaging; static checks pass. End-to-end build awaits a future mutable draft tag."}
+{"version":1,"task_id":"EPHVRF","kind":"result","at":"2026-11-08T20:22:59.013674291Z","agent":"codex@worker-1","text":"Checks: CI 42517759556 passed 7/7; run 42517763533 verified signature, import, plan, and checksum."}
+{"version":1,"task_id":"EPHVRF","kind":"result","at":"2026-11-08T20:22:59.023652848Z","agent":"codex@worker-1","text":"Artifacts: guest-runtime-assets and rootglass-example-glass uploaded in run 42517763533."}
+{"version":1,"task_id":"EPHVRF","kind":"result","at":"2026-11-08T20:22:59.034302779Z","agent":"codex@worker-1","text":"Merge: PR #87 merged as 3f5d027; release attachment waits for a new mutable draft tag."}
+{"version":1,"task_id":"EPHVRF","kind":"block","at":"2026-11-08T20:22:59.045429361Z","agent":"codex@worker-1","text":"Implementation is merged; waiting for a maintainer-selected new draft prerelease tag because v0.0.1 is immutable."}
