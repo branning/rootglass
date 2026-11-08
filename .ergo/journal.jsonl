@@ -176,3 +176,4 @@
 {"version":1,"task_id":"WPEQ6N","kind":"result","at":"2026-11-08T04:38:55.774920277Z","agent":"codex@worker-1","text":"Rootglass TUI: 52 tests pass; libghostty PTY smoke passes; GPUI/Xvfb CI pending."}
 {"version":1,"task_id":"WPEQ6N","kind":"result","at":"2026-11-08T04:41:18.892874578Z","agent":"codex@worker-1","text":"PR #75 open; desktop build and Xvfb smoke pending on Linux; native PTY passes."}
 {"version":1,"task_id":"WPEQ6N","kind":"result","at":"2026-11-08T04:56:55.603778639Z","agent":"codex@worker-1","text":"PR #75 compile caught missing StyledExt import and borrowed String; fixed, Linux dispatch pending."}
+{"version":1,"task_id":"WPEQ6N","kind":"result","at":"2026-11-08T05:10:59.61683479Z","agent":"codex@worker-1","text":"PR #75 desktop build passes; focused test found #[test] macro collision; isolated imports, Linux dispatch pending."}

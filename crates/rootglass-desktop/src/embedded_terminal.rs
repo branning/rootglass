@@ -828,7 +828,7 @@ fn put_cell(grid: &mut [Vec<TerminalCell>], x: usize, y: usize, character: char,
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{ansi_color, color_rgb, parse_vt_screen, CellPoint, Selection};
 
     #[test]
     fn terminal_grid_applies_ansi_foreground_and_truecolor_background() {
