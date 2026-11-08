@@ -6,7 +6,7 @@ The fixture runs a small Ratatui program in the host's native PTY (ConPTY on Win
 
 ## Result and boundary
 
-The headless Linux x86_64 smoke passes for colored VT output, row/cell render state, a left-arrow key event, resize, selected-text copy, bracketed paste, Ratatui `TestBackend`, and PTY child cleanup. On Windows the smoke sends text through ConPTY and checks the key-event path because Crossterm 0.28's Windows event backend does not emit `Event::Paste`. The C shim calls only public `libghostty-vt` headers.
+The native PTY matrix passes on Linux x86_64, macOS arm64, and Windows x86_64 for colored VT output, row/cell render state, a left-arrow key event, resize, selected-text copy, Ratatui `TestBackend`, text input, and PTY child cleanup. Linux and macOS exercise bracketed paste through Crossterm's `Event::Paste`. Windows sends text through ConPTY and checks the key-event path because Crossterm 0.28's Windows event backend does not emit `Event::Paste`. The C shim calls only public `libghostty-vt` headers.
 
 Observed fixture values, in order:
 
@@ -16,7 +16,7 @@ render-state first cell: styled
 encoded left key: LEFT:1
 selected-text copy: LEFT:1
 PTY resize: SIZE:90x30
-bracketed paste: INPUT:headless paste
+input: INPUT:headless paste
 shutdown: child exits with status 0
 ```
 
@@ -42,7 +42,7 @@ The prototype build needs a C compiler and a host-native `libghostty-vt` build i
 - The public library version is `1.0.0`; the C ABI is stable within major version 1 and the Linux shared library uses SONAME `libghostty-vt.so.1`. The build and CI should pin a specific upstream tag and consume the signed source/dependency artifacts.
 - The v1.0.0 packaging guide lists Tier 1 targets including Linux x86_64, macOS 13+, and Windows x86_64 GNU. The maintainer approved Linux x86_64, macOS arm64, and Windows x86_64 as Rootglass qualification targets. The CI matrix exercises those targets, but upstream library support and a headless PTY pass do not qualify Rootglass's GPUI host.
 - Ghostty is MIT. The packaged dependencies and notices listed by the upstream guide include Highway (`Apache-2.0 OR BSD-3-Clause`), simdutf (`Apache-2.0 OR MIT`), translate_c (`MIT`), uucode (`MIT AND Unicode-3.0`), and Wuffs (`Apache-2.0 OR MIT`). ARO is build-only (`MIT AND Unicode-3.0`). Preserve the upstream license files and notices in any shipped package.
-- The focused [`libghostty-vt smoke` workflow](../../.github/workflows/libghostty-vt-smoke.yml) builds the library from signed v1.0.0 source and dependency tarballs, verifies the Zig 0.17.0 archive checksum, then runs the PTY fixture on native Linux x86_64, macOS arm64, and Windows x86_64 runners. It caches the installed native prefix per OS, architecture, upstream version, Zig version and build recipe; it still verifies the signed source archives on each run. It runs on PR open/reopen/ready-for-review, on `main`, or by manual dispatch, but not on each PR `synchronize`. Manual dispatch can select all hosts or one OS. The standard workspace CI does not build Zig or this isolated prototype.
+- The focused [`libghostty-vt smoke` workflow](../../.github/workflows/libghostty-vt-smoke.yml) builds the library from signed v1.0.0 source and dependency tarballs, verifies the Zig 0.17.0 archive checksum, then runs the PTY fixture on native Linux x86_64, macOS arm64, and Windows x86_64 runners. It caches the installed native prefix per OS, architecture, upstream version, Zig version and build recipe, and uses `rust-cache` for the standalone Cargo target. It still verifies the signed source archives on each run. It runs on PR open/reopen/ready-for-review, on `main`, or by manual dispatch, but not on each PR `synchronize`. Manual dispatch can select all hosts or one OS. The standard workspace CI does not build Zig or this isolated prototype.
 - These native PTY builds do not qualify the GPUI surface, native clipboard, focus/accessibility, or any graphical host. Ghostty's packaging guide notes that its Windows library uses the GNU ABI and provides an import library for MSVC applications.
 
-The spike leaves S16.6 open for the native matrix to pass and for graphical-host validation on the approved target set.
+The native PTY matrix passes on the approved target set. S16.6 remains open until a GPUI surface and graphical-host smoke are demonstrated.

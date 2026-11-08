@@ -62,12 +62,26 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache Cargo registry and build outputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/rootglass-desktop -> crates/rootglass-desktop/target
+
+      - name: Cache C/C++ compiler outputs (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/rootglass-ccache
+          key: ccache-packages-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/rootglass-desktop/Cargo.lock') }}
+          restore-keys: |
+            ccache-packages-${{ runner.os }}-${{ runner.arch }}-
+
       - name: Install Linux desktop dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            clang g++ gcc dpkg-dev \
+            ccache clang g++ gcc dpkg-dev \
             libasound2-dev libfontconfig-dev libssl-dev libvulkan1 \
             libwayland-dev libwebkit2gtk-4.1-dev libx11-xcb-dev \
             libxkbcommon-x11-dev libzstd-dev vulkan-validationlayers
@@ -79,7 +93,21 @@ jobs:
       - name: Install Cargo Packager
         run: cargo install cargo-packager --locked --version 0.11.8
 
+      - name: Build and package desktop (Linux ccache)
+        if: runner.os == 'Linux'
+        working-directory: crates/rootglass-desktop
+        env:
+          CC: ccache gcc
+          CXX: ccache g++
+          CCACHE_DIR: ${{ runner.temp }}/rootglass-ccache
+          CCACHE_MAXSIZE: 512M
+          CCACHE_COMPILERCHECK: content
+        run: |
+          cargo build --release
+          cargo-packager --release --formats ${{ matrix.format }}
+
       - name: Build and package desktop
+        if: runner.os != 'Linux'
         working-directory: crates/rootglass-desktop
         run: |
           cargo build --release
