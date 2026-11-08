@@ -38,6 +38,11 @@ queue of new work.
 - **Framework decision:** native Rust GUI is Longbridge GPUI Kit `=0.9.0` with its default `gpui-pre` backend, not Tauri, direct moving Zed GPUI, or a JavaScript shell. Consult GPUI Kit tagged docs/examples for method signatures.
 - **Dependency direction:** `rootglass-qemu` already uses `rootglass-core`. The new `rootglass-app` service coordinates them, so no dependency cycle is introduced. Desktop and CLI call shared Rust service APIs, never each other as subprocesses.
 - A pass means actual evidence: compile, targeted tests, negative-path tests, cleanup tests and linked acceptance IDs. Where GUI or host OS testing is unavailable, state the limitation and assign validation to the platform agent.
+- For PRs that change user-visible UI, include screenshots in the PR description
+  or link a CI screenshot artifact. Headless captures using Xvfb or VirtualGL
+  are acceptable; identify the OS/display method and any interaction or
+  accessibility checks the image does not cover. Screenshots supplement test
+  and platform evidence; they do not replace it.
 - Re-sign any changed signed fixture in the same PR; keep private keys out of Git.
 - User/data security: production imports must be authenticated and bounded; run no untrusted host code; immutable package/rootfs must never be mutated by a guest or state reset.
 - Do not change policies by assumption. Put tradeoffs into a small ADR/issue and notify the integration owner.
