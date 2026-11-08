@@ -163,3 +163,5 @@
 {"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-08T03:04:33.837444855Z","agent":"codex@worker-1","text":"Moved GPUI smoke to native workflow; Xvfb screenshot and Rust caches configured; validation pending."}
 {"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-08T03:18:10.083065384Z","agent":"codex@worker-1","text":"CI 42441188770 passed 7/7 in 9.48 runner-min; Cargo target path and ccache verified."}
 {"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-08T03:18:10.089836237Z","agent":"codex@worker-1","text":"Linux run 42441203743 passed GPUI Xvfb smoke; uploaded 1280x800 PNG artifact 13601847822."}
+{"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-08T03:42:08.884400043Z","agent":"codex@worker-1","text":"CI 42443516852 passed 7/7 in 6.67 runner-min; cache path fixed and hit."}
+{"version":1,"task_id":"Q3HT7R","kind":"result","at":"2026-11-08T03:42:08.894317494Z","agent":"codex@worker-1","text":"Run 42443517410: GPUI Xvfb keyboard, copy/paste, resize, cleanup and PNG pass."}
