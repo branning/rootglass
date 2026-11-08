@@ -298,7 +298,7 @@ xdotool windowsize --sync "$window_id" 1000 650
 sleep 1
 import -window "$window_id" "${artifact_dir}/06-guest-stopped-resized.png"
 
-xdotool windowclose "$window_id"
+xdotool key --clearmodifiers alt+F4
 for _ in $(seq 1 300); do
   app_state="$(ps -o stat= -p "$app_pid" 2>/dev/null | tr -d ' ' || true)"
   if [[ -z "$app_state" || "$app_state" == Z* ]]; then
