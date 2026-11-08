@@ -30,6 +30,16 @@ The CLI remains the reference workflow, and the GPUI Kit desktop shell now uses 
 
 The native desktop shell uses [GPUI Kit](https://github.com/longbridge/gpui-kit) `=0.9.0`, a curated distribution of Zed's GPUI with components. The desktop shell is implemented; clean-host installer validation, runtime bundling, release signing, and GUI acceptance coverage remain open. See [the delivery roadmap](docs/roadmap.md) and [desktop package status](docs/desktop-packages.md).
 
+### macOS preview first-launch caveat
+
+The v0.0.1 macOS DMG is unsigned and not notarized. After mounting the DMG, drag `Rootglass.app` to the Applications folder. If macOS then reports that the app is damaged and cannot be opened, remove the quarantine attribute from the installed app in Terminal:
+
+```sh
+xattr -d com.apple.quarantine /Applications/Rootglass.app
+```
+
+This removes quarantine from this app bundle; it does not sign or notarize the app. See the [v0.0.1 release notes](CHANGELOG.md) and [desktop package limits](docs/desktop-packages.md).
+
 ## Quickstart
 
 ### Prerequisites

@@ -196,3 +196,15 @@
 {"version":1,"task_id":"N565MG","kind":"result","at":"2026-11-08T18:32:19.732592047Z","agent":"codex@worker-1","text":"Static validation passes for TOML/lockfile, workflow YAML, scripts and diff whitespace; Cargo is unavailable locally."}
 {"version":1,"task_id":"N565MG","kind":"result","at":"2026-11-08T18:34:10.57592077Z","agent":"codex@worker-1","text":"PR #83 opened at 63af5ce; Actions CI and platform smoke are pending."}
 {"version":1,"task_id":"N565MG","kind":"done","at":"2026-11-08T18:42:24.67173151Z","agent":"codex@worker-1","text":"Merged PR #83 at b4bc3501c0d6a41885a3aa2b37a500a5716a9d2d.\n\nCI 42510758472 passed; native Linux/macOS/Windows workflow 42510765499 passed.\n\nScreenshot artifacts are linked from PR #83; embedded TUI flow includes selection, paste, resize, and cleanup."}
+{"version":1,"task_id":"76OBMN","kind":"created","at":"2026-11-08T19:06:42.661064842Z"}
+{"version":1,"task_id":"CB6M2H","kind":"created","at":"2026-11-08T19:06:42.661387808Z"}
+{"version":1,"task_id":"G7FQ37","kind":"created","at":"2026-11-08T19:06:42.661392414Z"}
+{"version":1,"task_id":"I2LVE7","kind":"created","at":"2026-11-08T19:06:42.661398894Z"}
+{"version":1,"task_id":"RYFXK4","kind":"created","at":"2026-11-08T19:06:42.661403982Z"}
+{"version":1,"task_id":"E2DGHS","kind":"created","at":"2026-11-08T19:06:42.66140973Z"}
+{"version":1,"task_id":"GCIYRC","kind":"created","at":"2026-11-08T19:06:42.661413827Z"}
+{"version":1,"task_id":"PGCM5H","kind":"created","at":"2026-11-08T19:06:42.661419876Z"}
+{"version":1,"task_id":"CB6M2H","kind":"open","at":"2026-11-08T19:07:07.087939203Z","text":"Open the architecture reconciliation; keep proposal implementation tasks staged until scope and measurable acceptance are approved."}
+{"version":1,"task_id":"7Q7CFF","kind":"created","at":"2026-11-08T19:07:23.034480794Z"}
+{"version":1,"task_id":"7Q7CFF","kind":"claim","at":"2026-11-08T19:07:26.128906268Z","agent":"codex@worker-1"}
+{"version":1,"task_id":"7Q7CFF","kind":"result","at":"2026-11-08T19:09:10.889448197Z","agent":"codex@worker-1","text":"README and v0.0.1 release notes document the user-reported workaround; issue closure waits for merge."}
