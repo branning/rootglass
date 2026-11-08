@@ -103,9 +103,9 @@ Ctrl-a x
 
 The desktop release workflow materializes and packages this fixture as
 `rootglass-hello-world-0.1.0.glass`, then includes it and
-`SHA256SUMS-example.txt` in the draft prerelease asset set. Because the
-published `v0.0.1` release is immutable, the example will first appear on a
-later draft prerelease.
+`SHA256SUMS-example.txt` in the draft prerelease asset set. The example is
+included with the `v0.0.2` preview prerelease; the published `v0.0.1` release
+remains immutable and unchanged.
 
 After installing Rootglass and downloading both files, verify and inspect the
 bundle from the command line:

@@ -228,3 +228,8 @@
 {"version":1,"task_id":"GOMUP3","kind":"block","at":"2026-11-08T20:42:31.103579178Z","agent":"codex@worker-1","text":"Awaiting maintainer native macOS GUI review, focus/accessibility checks, and platform decision; package link is recorded."}
 {"version":1,"task_id":"GOMUP3","kind":"result","at":"2026-11-08T20:45:55.034110395Z","text":"Package artifact links and individual expiry dates are recorded in the evidence.","file":{"path":"docs/s13-desktop-smoke-evidence.md","sha256":"9d3ee245f3ad4168d9a35c94e74df33ff1fca99f7d71acc2df62ef3de2e28014","mtime":"2026-11-08T20:45:50.49690421Z","git_commit":"26fabafe9e4335065fb29bde7b11cef12fe53250"}}
 {"version":1,"task_id":"GOMUP3","kind":"result","at":"2026-11-08T20:50:07.621019034Z","text":"PR #89; CI 42521842892 passed 7/7; awaiting native macOS maintainer review."}
+{"version":1,"task_id":"EPHVRF","kind":"open","at":"2026-11-08T20:55:42.898411565Z","text":"Maintainer authorizes patch version bumps; use v0.0.2 and preserve published v0.0.1."}
+{"version":1,"task_id":"EPHVRF","kind":"claim","at":"2026-11-08T20:55:43.085709469Z","agent":"codex@worker-1"}
+{"version":1,"task_id":"LISUZ7","kind":"open","at":"2026-11-08T20:56:18.558456295Z","text":"Maintainer authorized the next patch release v0.0.2; publish after EPHVRF attaches the draft assets."}
+{"version":1,"task_id":"EPHVRF","kind":"result","at":"2026-11-08T21:04:08.565525257Z","agent":"codex@worker-1","text":"Set package version to 0.0.2; TOML, lockfile, Ergo graph, and diff checks pass."}
+{"version":1,"task_id":"EPHVRF","kind":"result","at":"2026-11-08T21:09:03.292999725Z","agent":"codex@worker-1","text":"PR #90 CI passed 7/7; native PTY smoke passed on Linux, macOS, and Windows."}

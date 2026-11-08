@@ -28,17 +28,17 @@ The CLI remains the reference workflow, and the GPUI Kit desktop shell now uses 
 - an interactive CLI boot command once local assets exist,
 - CI for formatting, clippy, tests, and CLI smoke checks.
 
-The native desktop shell uses [GPUI Kit](https://github.com/longbridge/gpui-kit) `=0.9.0`, a curated distribution of Zed's GPUI with components. The desktop shell is implemented; clean-host installer validation, runtime bundling, release signing, and GUI acceptance coverage remain open. See [the delivery roadmap](docs/roadmap.md) and [desktop package status](docs/desktop-packages.md).
+The native desktop shell uses [GPUI Kit](https://github.com/longbridge/gpui-kit) `=0.9.0`, a curated distribution of Zed's GPUI with components. The desktop shell and bundled runtime packaging are implemented; clean-host installer validation, release signing, and GUI acceptance coverage remain open. See [the delivery roadmap](docs/roadmap.md) and [desktop package status](docs/desktop-packages.md).
 
 ### macOS preview first-launch caveat
 
-The v0.0.1 macOS DMG is unsigned and not notarized. After mounting the DMG, drag `Rootglass.app` to the Applications folder. If macOS then reports that the app is damaged and cannot be opened, remove the quarantine attribute from the installed app in Terminal:
+The macOS preview DMGs, including v0.0.2, are unsigned and not notarized. After mounting the DMG, drag `Rootglass.app` to the Applications folder. If macOS then reports that the app is damaged and cannot be opened, remove the quarantine attribute from the installed app in Terminal:
 
 ```sh
 xattr -d com.apple.quarantine /Applications/Rootglass.app
 ```
 
-This removes quarantine from this app bundle; it does not sign or notarize the app. See the [v0.0.1 release notes](CHANGELOG.md) and [desktop package limits](docs/desktop-packages.md).
+This removes quarantine from this app bundle; it does not sign or notarize the app. See the [preview release notes](CHANGELOG.md) and [desktop package limits](docs/desktop-packages.md).
 
 ## Quickstart
 
@@ -168,9 +168,9 @@ the package into the local content-addressed library first. A directory-form
 `.glass` is planned or booted in place.
 To log in to the disposable sample guest, use `root` and password
 `rootglass-ci`. The fixture key and password are public demo credentials; do
-not use the guest for sensitive data. The current `v0.0.1` release is
-immutable, so the materialized example will appear with a later draft
-prerelease. See [release asset details](docs/desktop-packages.md).
+not use the guest for sensitive data. The published `v0.0.1` release remains
+immutable and unchanged. The materialized example is included with the `v0.0.2`
+preview release. See [release asset details](docs/desktop-packages.md).
 
 ## What is a `.glass`?
 
