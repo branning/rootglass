@@ -36,6 +36,9 @@ jobs:
     outputs:
       matrix: ${{ steps.select.outputs.matrix }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
       - name: Validate release build selection
         env:
           PLATFORM: ${{ inputs.platform }}
@@ -64,13 +67,12 @@ jobs:
             exit 1
           fi
           if [[ -n "$RELEASE_TAG" ]]; then
-            release_api="repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG"
-            release_draft=$(gh api "$release_api" --jq '.draft')
-            release_immutable=$(gh api "$release_api" --jq '.immutable')
-            release_prerelease=$(gh api "$release_api" --jq '.prerelease')
+            release_record=$(bash scripts/find-release-by-tag.sh "$RELEASE_TAG")
+            IFS=$'\t' read -r release_id release_draft release_immutable release_prerelease <<< "$release_record"
             [[ "$release_draft" == true ]] || { echo "Release $RELEASE_TAG must be a draft" >&2; exit 1; }
             [[ "$release_immutable" == false ]] || { echo "Release $RELEASE_TAG is immutable" >&2; exit 1; }
             [[ "$release_prerelease" == true ]] || { echo "Release $RELEASE_TAG must be a prerelease" >&2; exit 1; }
+            echo "Validated mutable draft prerelease $RELEASE_TAG (release ID $release_id)"
           fi
 
       - name: Select platform matrix

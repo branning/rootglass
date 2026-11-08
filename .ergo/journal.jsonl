@@ -233,3 +233,6 @@
 {"version":1,"task_id":"LISUZ7","kind":"open","at":"2026-11-08T20:56:18.558456295Z","text":"Maintainer authorized the next patch release v0.0.2; publish after EPHVRF attaches the draft assets."}
 {"version":1,"task_id":"EPHVRF","kind":"result","at":"2026-11-08T21:04:08.565525257Z","agent":"codex@worker-1","text":"Set package version to 0.0.2; TOML, lockfile, Ergo graph, and diff checks pass."}
 {"version":1,"task_id":"EPHVRF","kind":"result","at":"2026-11-08T21:09:03.292999725Z","agent":"codex@worker-1","text":"PR #90 CI passed 7/7; native PTY smoke passed on Linux, macOS, and Windows."}
+{"version":1,"task_id":"EPHVRF","kind":"result","at":"2026-11-08T21:15:42.767838658Z","agent":"codex@worker-1","text":"Dispatch 42524134700 failed at draft tag lookup (HTTP 404); no package jobs started."}
+{"version":1,"task_id":"EPHVRF","kind":"result","at":"2026-11-08T21:17:48.548031736Z","agent":"codex@worker-1","text":"Draft lookup resolves v0.0.2; Bash, YAML, and diff checks pass."}
+{"version":1,"task_id":"EPHVRF","kind":"result","at":"2026-11-08T21:21:28.300337495Z","agent":"codex@worker-1","text":"PR #91; CI passed 7/7; draft lookup verified against live v0.0.2 release."}
