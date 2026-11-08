@@ -196,6 +196,9 @@ impl EmbeddedTerminal {
         if platform_copy || terminal_copy {
             let text = self.copy_text();
             cx.write_to_clipboard(ClipboardItem::new_string(text));
+            if std::env::var_os("ROOTGLASS_GPUI_SMOKE").is_some() {
+                eprintln!("ROOTGLASS_EMBEDDED_TUI_COPIED");
+            }
             return;
         }
 
