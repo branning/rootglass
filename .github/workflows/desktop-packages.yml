@@ -249,4 +249,4 @@ jobs:
             printf '%s\n' "${assets[@]}" >&2
             exit 1
           fi
-          gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+          gh release upload "$RELEASE_TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
