@@ -195,10 +195,28 @@ impl EmbeddedTerminal {
         let platform_paste = modifiers.platform && key.eq_ignore_ascii_case("v");
         let terminal_paste = modifiers.control && key.eq_ignore_ascii_case("v");
         if platform_paste || terminal_paste {
+            let smoke = std::env::var_os("ROOTGLASS_GPUI_SMOKE").is_some();
+            if smoke {
+                eprintln!(
+                    "ROOTGLASS_EMBEDDED_TUI_PASTE_KEY platform={platform_paste} control={terminal_paste}"
+                );
+            }
             if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                if let Ok(bytes) = encode_bracketed_paste(&text) {
-                    let _ = self.write_pty(&bytes);
+                if smoke {
+                    eprintln!("ROOTGLASS_EMBEDDED_TUI_CLIPBOARD_READ bytes={}", text.len());
                 }
+                if let Ok(bytes) = encode_bracketed_paste(&text) {
+                    match self.write_pty(&bytes) {
+                        Ok(()) if smoke => eprintln!("ROOTGLASS_EMBEDDED_TUI_PASTE_SENT"),
+                        Ok(()) => {}
+                        Err(error) if smoke => {
+                            eprintln!("ROOTGLASS_EMBEDDED_TUI_PASTE_WRITE_FAILED {error}")
+                        }
+                        Err(_) => {}
+                    }
+                }
+            } else if smoke {
+                eprintln!("ROOTGLASS_EMBEDDED_TUI_CLIPBOARD_EMPTY");
             }
             return;
         }

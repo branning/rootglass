@@ -107,7 +107,16 @@ fn run_event_loop(
                         break;
                     }
                 }
-                Event::Paste(text) => handle_paste(&mut input, &text),
+                Event::Paste(text) => {
+                    if std::env::var_os("ROOTGLASS_GPUI_SMOKE").is_some() {
+                        eprintln!(
+                            "ROOTGLASS_TUI_PASTE_EVENT mode={:?} bytes={}",
+                            input.mode,
+                            text.len()
+                        );
+                    }
+                    handle_paste(&mut input, &text);
+                }
                 Event::Resize(_, _) => {}
                 _ => {}
             }

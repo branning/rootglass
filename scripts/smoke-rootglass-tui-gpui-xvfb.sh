@@ -69,11 +69,19 @@ fi
 xdotool key --clearmodifiers o
 xdotool type --clearmodifiers --delay 10 "headless-key"
 wait_for_marker ROOTGLASS_EMBEDDED_TUI_TYPED
-xdotool key --clearmodifiers Escape
-xdotool key --clearmodifiers o
+xdotool key --clearmodifiers --repeat 12 BackSpace
 printf 'headless paste' | xclip -selection clipboard -in
 sleep 0.2
+clipboard_text="$(timeout 5 xclip -selection clipboard -out)"
+if [[ "$clipboard_text" != "headless paste" ]]; then
+  echo "Clipboard did not retain the expected paste text: $clipboard_text" >&2
+  exit 1
+fi
 xdotool key --clearmodifiers ctrl+v
+wait_for_marker ROOTGLASS_EMBEDDED_TUI_PASTE_KEY
+wait_for_marker ROOTGLASS_EMBEDDED_TUI_CLIPBOARD_READ
+wait_for_marker ROOTGLASS_EMBEDDED_TUI_PASTE_SENT
+wait_for_marker ROOTGLASS_TUI_PASTE_EVENT
 wait_for_marker ROOTGLASS_EMBEDDED_TUI_PASTE
 
 xdotool windowsize --sync "$window_id" 960 640

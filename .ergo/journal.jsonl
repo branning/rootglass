@@ -177,3 +177,4 @@
 {"version":1,"task_id":"WPEQ6N","kind":"result","at":"2026-11-08T04:41:18.892874578Z","agent":"codex@worker-1","text":"PR #75 open; desktop build and Xvfb smoke pending on Linux; native PTY passes."}
 {"version":1,"task_id":"WPEQ6N","kind":"result","at":"2026-11-08T04:56:55.603778639Z","agent":"codex@worker-1","text":"PR #75 compile caught missing StyledExt import and borrowed String; fixed, Linux dispatch pending."}
 {"version":1,"task_id":"WPEQ6N","kind":"result","at":"2026-11-08T05:10:59.61683479Z","agent":"codex@worker-1","text":"PR #75 desktop build passes; focused test found #[test] macro collision; isolated imports, Linux dispatch pending."}
+{"version":1,"task_id":"WPEQ6N","kind":"result","at":"2026-11-08T05:29:43.580348767Z","agent":"codex@worker-1","text":"Linux build and 2 tests pass; paste smoke fails; added smoke diagnostics and stable prompt paste; rerun pending."}
