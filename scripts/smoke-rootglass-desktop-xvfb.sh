@@ -11,7 +11,8 @@ work_dir="$(mktemp -d)"
 log_file="${work_dir}/desktop.log"
 app_pid=""
 window_id=""
-sentinel="rootglass-serial-smoke-314159"
+sentinel="Password:"
+serial_username="root"
 
 wait_for_marker() {
   local marker="$1"
@@ -268,15 +269,19 @@ wait_for_marker ROOTGLASS_DESKTOP_BOOT_STARTED 120
 wait_for_marker ROOTGLASS_DESKTOP_GUEST_READY 120
 import -window "$window_id" "${artifact_dir}/03-guest-running.png"
 
-# Serial input is sent through the UI input field and echoed by the guest getty.
+# Submit a username at the guest login prompt and wait for its password request.
 window_geometry="$(xdotool getwindowgeometry --shell "$window_id")"
 window_height="$(sed -n 's/^HEIGHT=//p' <<<"$window_geometry")"
 input_y="$((window_height - 16))"
 xdotool mousemove --window "$window_id" 180 "$input_y" click 1
-xdotool type --clearmodifiers --delay 20 "$sentinel"
+xdotool type --clearmodifiers --delay 20 "$serial_username"
 xdotool key Return
 wait_for_marker ROOTGLASS_DESKTOP_SERIAL_INPUT_SENT
 wait_for_marker ROOTGLASS_DESKTOP_SERIAL_ECHO 45
+xdotool mousemove --window "$window_id" 900 "$((window_height - 100))"
+xdotool click --repeat 20 --delay 25 5
+sleep 0.5
+import -window "$window_id" "${artifact_dir}/04-guest-password-prompt.png"
 
 # Restart, wait for a second guest-ready event, then stop through the UI.
 xdotool mousemove --window "$window_id" 365 26 click 1
@@ -286,7 +291,7 @@ xdotool mousemove --window "$window_id" 425 26 click 1
 wait_for_marker ROOTGLASS_DESKTOP_STOPPED 120
 xdotool windowsize --sync "$window_id" 1000 650
 sleep 1
-import -window "$window_id" "${artifact_dir}/04-guest-stopped-resized.png"
+import -window "$window_id" "${artifact_dir}/05-guest-stopped-resized.png"
 
 xdotool windowclose "$window_id"
 wait "$app_pid"
