@@ -15,14 +15,14 @@ desktop-ui = ["dep:gpui-kit"]
 embedded-terminal = ["desktop-ui", "dep:portable-pty", "dep:rootglass-terminal-vt"]
 
 [[bin]]
-name = "rootglass-desktop"
+name = "rootglass"
 path = "src/main.rs"
-required-features = ["desktop-ui"]
 
 [dependencies]
 gpui-kit = { version = "=0.9.0", optional = true }
 portable-pty = { version = "0.9", optional = true }
 rootglass-app = { path = "../rootglass-app" }
+rootglass-cli = { path = "../rootglass-cli" }
 rootglass-core = { path = "../rootglass-core" }
 rootglass-tui = { path = "../rootglass-tui" }
 rootglass-terminal-vt = { path = "../../prototypes/libghostty-vt-ratatui", optional = true }
@@ -34,7 +34,7 @@ description = "Open, verify, and run offline Rootglass guest systems"
 homepage = "https://github.com/branning/rootglass"
 category = "Utility"
 license-file = "../../LICENSE"
-binaries = [{ path = "rootglass-desktop", main = true }]
+binaries = [{ path = "rootglass", main = true }]
 out-dir = "target/release"
 resources = [
   "../../LICENSE",
@@ -44,3 +44,6 @@ resources = [
 file-associations = [
   { extensions = ["glass"], mime-type = "application/vnd.rootglass.glass", description = "Rootglass guest package", name = "Rootglass Glass", role = "editor" }
 ]
+
+[dev-dependencies]
+libc = "0.2"

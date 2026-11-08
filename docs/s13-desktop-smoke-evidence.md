@@ -9,16 +9,14 @@ The required CI run [42482901592](https://github.com/branning/rootglass/actions/
 
 The full smoke run [42482916674](https://github.com/branning/rootglass/actions/runs/42482916674) passed the GPUI desktop workflow on Ubuntu 24.04 x86_64 under Xvfb and the libghostty PTY smoke on Linux x86_64, macOS arm64, and Windows x86_64. The desktop scenario exercised picker cancellation, file drop, trusted/untrusted/tampered bundle handling, preflight, guest start, serial input/response, restart, stop, resize, screenshots, window exit, and child cleanup.
 
-The desktop workflow built and ran these commands:
+The desktop workflow built and ran the single `rootglass` executable for both the GPUI shell and CLI operations:
 
 ```sh
-cargo build --locked --package rootglass-cli
 cargo build --locked --manifest-path crates/rootglass-desktop/Cargo.toml
 bash scripts/materialize-example-assets.sh
 xvfb-run -a -s "-screen 0 1280x800x24 +extension GLX +render -noreset" \
   dbus-run-session -- bash scripts/smoke-rootglass-desktop-xvfb.sh \
-  crates/rootglass-desktop/target/debug/rootglass-desktop \
-  target/debug/rootglass \
+  crates/rootglass-desktop/target/debug/rootglass \
   artifacts/gpui-desktop-xvfb
 ```
 

@@ -163,9 +163,9 @@ Single primary window, native appearance, keyboard-accessible controls, and sens
 - Keyboard: Open (`Cmd/Ctrl+O`), Stop (`Cmd/Ctrl+.`), switch focus between console/input, accessible focus rings, correct screen-reader labels. No blanket global keystroke capture that steals guest input from native shortcuts.
 - Prefer system-native window/dialog behavior. Do not reimplement custom frameless chrome before the basic app works.
 
-### 5.4 Planned headless TUI and GPUI terminal surface
+### 5.4 Headless TUI and GPUI terminal surface
 
-S16 adds a standalone Ratatui interface available as `rootglass tui`. It is a second frontend over the existing Rootglass service, not a new verification or lifecycle implementation. It must be testable without a display by rendering the same controller through Ratatui's `TestBackend` and a deterministic service fake.
+S16 provides a standalone Ratatui interface available as `rootglass tui`. It is a second frontend over the existing Rootglass service, not a new verification or lifecycle implementation. It is testable without a display by rendering the same controller through Ratatui's `TestBackend` and a deterministic service fake.
 
 The TUI covers the existing `validate`, `plan`, `boot`, `sign`, and `package` workflows, plus bundle open/import, installed-release management, trust/preflight diagnostics, named state once S12.2 exposes the safe service contract, and interactive guest serial input/output. The current signing API accepts an external secret-file path; agent integration can be added only through a compatible library API. The TUI never accepts pasted key bytes or displays key material. See [tui-architecture.md](tui-architecture.md) for the current service coverage and gaps.
 
@@ -178,17 +178,18 @@ The GPUI Kit `=0.9.0` shell hosts the same TUI session in an embedded terminal b
 Current `rootglass-qemu` depends on `rootglass-core::LaunchRequest`. Therefore **do not put code in rootglass-core that imports rootglass-qemu**: that creates a Rust dependency cycle. Keep application orchestration in the existing `rootglass-app` integration crate:
 
 ```text
-Current frontends:
-  rootglass-desktop ─────────────────────────> rootglass-app
-  rootglass-cli: validate ───────────────────> rootglass-manifest
-  rootglass-cli: plan/boot ──────────────────> rootglass-app
-  rootglass-cli: sign/package ───────────────> rootglass-signature
+Single `rootglass` multicall executable:
+  no args / `gui` ──> rootglass-desktop GPUI library ──> rootglass-app
+  `tui` ────────────> rootglass-tui
+  CLI commands ────> rootglass-cli command library
+  embedded PTY ────> same executable's internal TUI-session dispatch
+                     (GPUI hosts the session through libghostty)
 
-Planned terminal frontends:
-  rootglass-cli: `tui` ──────────────────────> rootglass-tui
-  GPUI libghostty host <── terminal session ──> same TUI session
-                                                   │
-                                                   v
+The command library routes:
+  validate ───────────────────────────────────────────> rootglass-manifest
+  plan/boot ─────────────────────────────────────────> rootglass-app
+  sign/package ──────────────────────────────────────> rootglass-signature
+
 rootglass-app (application service / supervisor)
                                                │
                                                ├──> rootglass-core (validation, plan, types)
@@ -197,7 +198,7 @@ rootglass-app (application service / supervisor)
                                                └──> rootglass-manifest (TOML schema)
 ```
 
-The `rootglass-app` crate owns installed-glass records, import transactions, runtime orchestration, cancellation, lifecycle event streaming, state instances, session locks, and cleanup. It has **no GPUI imports**. Keep `rootglass-core` as UI-independent policy/preflight types; keep `rootglass-qemu` as typed command/process adapter. This fulfills "desktop uses the core library directly rather than shelling out to CLI" via the shared app service.
+The `rootglass-app` crate owns installed-glass records, import transactions, runtime orchestration, cancellation, lifecycle event streaming, state instances, session locks, and cleanup. It has **no GPUI imports**. Keep `rootglass-core` as UI-independent policy/preflight types; keep `rootglass-qemu` as typed command/process adapter. The one `rootglass` executable dispatches to the GPUI library by default, to the Ratatui TUI for `rootglass tui`, and to the command library for existing CLI operations. The embedded terminal starts the internal TUI-session mode of that same executable. GUI and CLI behavior still call shared Rust libraries rather than invoking one another as separate programs.
 
 ### 6.2 Proposed repository layout
 
@@ -208,9 +209,9 @@ crates/
   rootglass-core/                # existing; preflight, launch request, profiles, storage model
   rootglass-qemu/                # existing; QEMU adapter and supervised process I/O
   rootglass-app/                 # existing; app service + import, registry, lifecycle, state
-  rootglass-cli/                 # existing; preserve CLI, delegate to app service
-  rootglass-desktop/             # existing; GPUI Kit binary and views
-  rootglass-tui/                 # PLANNED: Ratatui TUI session and TestBackend tests
+  rootglass-cli/                 # existing; CLI command library, delegates to app service
+  rootglass-desktop/             # existing; GPUI Kit library and the `rootglass` binary
+  rootglass-tui/                 # existing; Ratatui TUI session and TestBackend tests
 scripts/
   materialize-example-assets.sh  # existing, harden
   smoke-boot-example.sh          # existing, replace prompt-only criterion
@@ -403,8 +404,8 @@ Keep the current CLI contract:
 cargo fmt --all -- --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace --all-targets
-cargo run --locked -p rootglass-cli -- validate examples/hello-world.glass
-cargo run --locked -p rootglass-cli -- plan examples/hello-world.glass
+cargo run --locked --manifest-path crates/rootglass-desktop/Cargo.toml --no-default-features -- validate examples/hello-world.glass
+cargo run --locked --manifest-path crates/rootglass-desktop/Cargo.toml --no-default-features -- plan examples/hello-world.glass
 bash scripts/smoke-boot-example.sh
 ```
 

@@ -1,6 +1,7 @@
 set shell := ["bash", "-cu"]
 
 glass := "examples/hello-world.glass"
+rootglass_manifest := "crates/rootglass-desktop/Cargo.toml"
 
 # List available commands.
 default:
@@ -30,18 +31,18 @@ cli-smoke: validate plan boot-preflight-missing-assets
 
 # Validate the default example glass manifest.
 validate:
-    cargo run --locked -p rootglass-cli -- validate {{glass}}
+    cargo run --locked --manifest-path {{rootglass_manifest}} --no-default-features -- validate {{glass}}
 
 # Print the QEMU launch plan for the default example glass.
 plan:
-    cargo run --locked -p rootglass-cli -- plan {{glass}}
+    cargo run --locked --manifest-path {{rootglass_manifest}} --no-default-features -- plan {{glass}}
 
 # Prove boot fails before QEMU when generated assets are absent.
 boot-preflight-missing-assets:
     if [[ -f {{glass}}/rootfs.img || -f runtime-assets/alpine-aarch64/vmlinuz-virt ]]; then \
       echo "generated assets exist; skipping missing-asset preflight check"; \
     else \
-      cargo run --locked -p rootglass-cli -- boot {{glass}} 2>&1 | tee /tmp/rootglass-boot-preflight.log; \
+      cargo run --locked --manifest-path {{rootglass_manifest}} --no-default-features -- boot {{glass}} 2>&1 | tee /tmp/rootglass-boot-preflight.log; \
       grep -q "missing kernel asset" /tmp/rootglass-boot-preflight.log; \
     fi
 
@@ -51,12 +52,12 @@ materialize-assets:
 
 # Print a bootable plan after local assets have been materialized.
 plan-with-assets: materialize-assets
-    cargo run --locked -p rootglass-cli -- plan {{glass}}
+    cargo run --locked --manifest-path {{rootglass_manifest}} --no-default-features -- plan {{glass}}
 
 # Boot the default example glass interactively after local assets have been materialized.
 # Exit QEMU with Ctrl-a x when using -nographic/mon:stdio.
 boot: materialize-assets
-    cargo run --locked -p rootglass-cli -- boot {{glass}}
+    cargo run --locked --manifest-path {{rootglass_manifest}} --no-default-features -- boot {{glass}}
 
 # Run bounded real-guest boot, serial-command, and state-persistence smoke tests.
 boot-smoke:

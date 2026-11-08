@@ -5600,6 +5600,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rootglass-cli"
+version = "0.1.0"
+dependencies = [
+ "rootglass-app",
+ "rootglass-core",
+ "rootglass-manifest",
+ "rootglass-qemu",
+ "rootglass-signature",
+ "rootglass-tui",
+]
+
+[[package]]
 name = "rootglass-core"
 version = "0.1.0"
 dependencies = [
@@ -5616,8 +5628,10 @@ name = "rootglass-desktop"
 version = "0.0.1"
 dependencies = [
  "gpui-kit",
+ "libc",
  "portable-pty",
  "rootglass-app",
+ "rootglass-cli",
  "rootglass-core",
  "rootglass-terminal-vt",
  "rootglass-tui",

@@ -226,7 +226,7 @@ jobs:
         if: runner.os == 'Linux'
         env:
           GHOSTTY_VT_PREFIX: ${{ runner.temp }}/rootglass-libghostty-vt-prefix
-        run: cargo test --locked --manifest-path crates/rootglass-desktop/Cargo.toml --features embedded-terminal --bin rootglass-desktop
+        run: cargo test --locked --manifest-path crates/rootglass-desktop/Cargo.toml --features embedded-terminal --lib
 
       - name: Smoke embedded Rootglass TUI in GPUI under Xvfb
         if: runner.os == 'Linux'
@@ -236,7 +236,7 @@ jobs:
         run: |
           xvfb-run -a -s "-screen 0 1280x800x24 +extension GLX +render -noreset" \
             bash scripts/smoke-rootglass-tui-gpui-xvfb.sh \
-            crates/rootglass-desktop/target/debug/rootglass-desktop \
+            crates/rootglass-desktop/target/debug/rootglass \
             crates/rootglass-desktop/artifacts/embedded-tui-xvfb.png
 
       - name: Upload GPUI Xvfb screenshot
@@ -290,7 +290,6 @@ jobs:
 
       - name: Build Rootglass desktop and CLI
         run: |
-          cargo build --locked --package rootglass-cli
           cargo build --locked --manifest-path crates/rootglass-desktop/Cargo.toml
 
       - name: Materialize the signed guest fixture assets
@@ -303,8 +302,7 @@ jobs:
           xvfb-run -a -s \
             "-screen 0 1280x800x24 +extension GLX +render -noreset" \
             dbus-run-session -- bash scripts/smoke-rootglass-desktop-xvfb.sh \
-            crates/rootglass-desktop/target/debug/rootglass-desktop \
-            target/debug/rootglass \
+            crates/rootglass-desktop/target/debug/rootglass \
             artifacts/gpui-desktop-xvfb
 
       - name: Upload GPUI desktop smoke evidence

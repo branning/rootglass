@@ -213,8 +213,8 @@ Generated assets:
   ${ASSET_DIR}/initramfs-virt
 
 Next:
-  cargo run --locked -p rootglass-cli -- validate examples/hello-world.glass
-  cargo run --locked -p rootglass-cli -- plan examples/hello-world.glass
-  cargo run --locked -p rootglass-cli -- boot examples/hello-world.glass
+  cargo run --locked --manifest-path crates/rootglass-desktop/Cargo.toml --no-default-features -- validate examples/hello-world.glass
+  cargo run --locked --manifest-path crates/rootglass-desktop/Cargo.toml --no-default-features -- plan examples/hello-world.glass
+  cargo run --locked --manifest-path crates/rootglass-desktop/Cargo.toml --no-default-features -- boot examples/hello-world.glass
 EOF
 

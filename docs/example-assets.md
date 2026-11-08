@@ -81,7 +81,7 @@ just boot
 Equivalent command:
 
 ```bash
-cargo run --locked -p rootglass-cli -- boot examples/hello-world.glass
+cargo run --locked --manifest-path crates/rootglass-desktop/Cargo.toml --no-default-features -- boot examples/hello-world.glass
 ```
 
 The `boot` command:

@@ -4,34 +4,30 @@ use rootglass_signature::{
     load_signing_key, package_glass_directory, package_glass_directory_at, sign_glass_directory,
     sign_glass_directory_at, SigningReport,
 };
-use std::env;
 use std::path::PathBuf;
-use std::process::ExitCode;
 
-fn main() -> ExitCode {
-    match run(env::args().skip(1).collect()) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("error: {error}");
-            ExitCode::FAILURE
-        }
-    }
-}
-
-fn run(args: Vec<String>) -> Result<(), String> {
-    run_with_tui(args, rootglass_tui::run_terminal)
-}
-
-fn run_with_tui(
+pub fn run_with_frontends(
     args: Vec<String>,
+    launch_gui: impl FnOnce() -> Result<(), String>,
     launch_tui: impl FnOnce(Option<PathBuf>) -> Result<(), String>,
 ) -> Result<(), String> {
     let Some(command) = args.first().map(String::as_str) else {
-        print_usage();
-        return Err("missing command".to_string());
+        return launch_gui();
     };
 
     match command {
+        "gui" => {
+            if args.len() != 1 {
+                return Err("usage: rootglass gui".to_string());
+            }
+            launch_gui()
+        }
+        "--rootglass-tui-session" => {
+            if args.len() != 1 {
+                return Err("invalid internal Rootglass TUI session arguments".to_string());
+            }
+            launch_tui(None)
+        }
         "validate" => {
             let glass_root = required_path_arg(&args, "validate")?;
             validate_glass(glass_root)
@@ -203,10 +199,11 @@ fn print_verification(summary: &GlassSummary) {
 
 fn print_usage() {
     eprintln!("usage:");
+    eprintln!("  rootglass [gui]");
+    eprintln!("  rootglass tui [path-to.glass]");
     eprintln!("  rootglass validate <path-to.glass>");
     eprintln!("  rootglass plan <path-to.glass>");
     eprintln!("  rootglass boot <path-to.glass>");
-    eprintln!("  rootglass tui [path-to.glass]");
     eprintln!("  rootglass sign <glass-directory> --key <secret-file> [--created-at <RFC3339>]");
     eprintln!("  rootglass package <glass-directory> <output.glass> --key <secret-file> [--created-at <RFC3339>]");
 }
@@ -218,8 +215,9 @@ mod tests {
     #[test]
     fn tui_dispatch_passes_optional_bundle_path_to_the_session() {
         let mut received = None;
-        run_with_tui(
+        run_with_frontends(
             vec!["tui".to_string(), "example.glass".to_string()],
+            || panic!("the GUI should not launch for the TUI command"),
             |path| {
                 received = path;
                 Ok(())
@@ -232,11 +230,15 @@ mod tests {
     #[test]
     fn tui_dispatch_accepts_no_bundle_path() {
         let mut launched = false;
-        run_with_tui(vec!["tui".to_string()], |path| {
-            assert_eq!(path, None);
-            launched = true;
-            Ok(())
-        })
+        run_with_frontends(
+            vec!["tui".to_string()],
+            || panic!("the GUI should not launch for the TUI command"),
+            |path| {
+                assert_eq!(path, None);
+                launched = true;
+                Ok(())
+            },
+        )
         .expect("TUI command dispatch succeeds");
         assert!(launched);
     }
@@ -244,12 +246,13 @@ mod tests {
     #[test]
     fn tui_dispatch_rejects_multiple_bundle_paths_before_launch() {
         let mut launched = false;
-        let error = run_with_tui(
+        let error = run_with_frontends(
             vec![
                 "tui".to_string(),
                 "one.glass".to_string(),
                 "two.glass".to_string(),
             ],
+            || panic!("the GUI should not launch for the TUI command"),
             |_| {
                 launched = true;
                 Ok(())
@@ -262,7 +265,7 @@ mod tests {
 
     #[test]
     fn validate_accepts_sample_manifest() {
-        run(vec![
+        run_cli(vec![
             "validate".to_string(),
             "../../examples/hello-world.glass".to_string(),
         ])
@@ -271,7 +274,7 @@ mod tests {
 
     #[test]
     fn plan_prints_for_sample_manifest() {
-        run(vec![
+        run_cli(vec![
             "plan".to_string(),
             "../../examples/hello-world.glass".to_string(),
         ])
@@ -280,12 +283,20 @@ mod tests {
 
     #[test]
     fn boot_fails_before_qemu_when_assets_are_missing() {
-        let error = run(vec![
+        let error = run_cli(vec![
             "boot".to_string(),
             "../../examples/hello-world.glass".to_string(),
         ])
         .expect_err("boot should fail before QEMU without generated assets");
 
         assert!(error.contains("missing kernel asset"));
+    }
+
+    fn run_cli(args: Vec<String>) -> Result<(), String> {
+        run_with_frontends(
+            args,
+            || Err("GUI dispatch is unavailable in a CLI unit test".to_string()),
+            rootglass_tui::run_terminal,
+        )
     }
 }
