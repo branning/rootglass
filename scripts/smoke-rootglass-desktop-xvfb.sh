@@ -178,7 +178,9 @@ fi
 xdotool windowfocus --sync "$window_id"
 
 # Confirm the real native chooser opens and returns a user-cancel result.
-xdotool key ctrl+o
+# The toolbar path works consistently across platforms and avoids assuming a
+# platform-specific modifier for the app's cmd-o shortcut.
+xdotool mousemove --window "$window_id" 170 26 click 1
 wait_for_marker ROOTGLASS_DESKTOP_PICKER_OPEN
 xdotool key Escape
 wait_for_marker ROOTGLASS_DESKTOP_PICKER_CANCELLED
