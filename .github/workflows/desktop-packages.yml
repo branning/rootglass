@@ -30,21 +30,47 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  select-platforms:
-    name: Select package platforms
+  validate-release:
+    name: Validate mutable draft prerelease
+    if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
     runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.select.outputs.matrix }}
+    # GitHub hides draft releases from tokens with contents:read.
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Validate release target
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ -z "$ARTIFACT_RUN_ID" && ( "$GITHUB_REF_TYPE" != tag || "$GITHUB_REF_NAME" != "$RELEASE_TAG" ) ]]; then
+            echo "Build against the same tag named by release_tag" >&2
+            exit 1
+          fi
+          release_record=$(bash scripts/find-release-by-tag.sh "$RELEASE_TAG")
+          IFS=$'\t' read -r release_id release_draft release_immutable release_prerelease <<< "$release_record"
+          [[ "$release_draft" == true ]] || { echo "Release $RELEASE_TAG must be a draft" >&2; exit 1; }
+          [[ "$release_immutable" == false ]] || { echo "Release $RELEASE_TAG is immutable" >&2; exit 1; }
+          [[ "$release_prerelease" == true ]] || { echo "Release $RELEASE_TAG must be a prerelease" >&2; exit 1; }
+          echo "Validated mutable draft prerelease $RELEASE_TAG (release ID $release_id)"
+
+  select-platforms:
+    name: Select package platforms
+    needs: [validate-release]
+    if: always() && (needs.validate-release.result == 'success' || needs.validate-release.result == 'skipped')
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
       - name: Validate release build selection
         env:
           PLATFORM: ${{ inputs.platform }}
           RELEASE_TAG: ${{ inputs.release_tag }}
           ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
-          GH_TOKEN: ${{ github.token }}
         run: |
           case "$PLATFORM" in
             all|linux|macos|windows) ;;
@@ -65,14 +91,6 @@ jobs:
           if [[ -n "$RELEASE_TAG" && -z "$ARTIFACT_RUN_ID" && ( "$GITHUB_REF_TYPE" != tag || "$GITHUB_REF_NAME" != "$RELEASE_TAG" ) ]]; then
             echo "Build against the same tag named by release_tag" >&2
             exit 1
-          fi
-          if [[ -n "$RELEASE_TAG" ]]; then
-            release_record=$(bash scripts/find-release-by-tag.sh "$RELEASE_TAG")
-            IFS=$'\t' read -r release_id release_draft release_immutable release_prerelease <<< "$release_record"
-            [[ "$release_draft" == true ]] || { echo "Release $RELEASE_TAG must be a draft" >&2; exit 1; }
-            [[ "$release_immutable" == false ]] || { echo "Release $RELEASE_TAG is immutable" >&2; exit 1; }
-            [[ "$release_prerelease" == true ]] || { echo "Release $RELEASE_TAG must be a prerelease" >&2; exit 1; }
-            echo "Validated mutable draft prerelease $RELEASE_TAG (release ID $release_id)"
           fi
 
       - name: Select platform matrix
