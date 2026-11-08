@@ -2,6 +2,10 @@
 #[path = "embedded_terminal.rs"]
 mod embedded_terminal;
 
+use crate::ui_model::{
+    lock_service, GlassPreview, RemovalDetails, SignatureStatus, StartEffect, StopRequest, UiModel,
+    UiState,
+};
 use gpui_kit::actions;
 use gpui_kit::base::StyledExt;
 use gpui_kit::component::button::*;
@@ -12,10 +16,6 @@ use gpui_kit::*;
 use rootglass_app::registry::InstalledGlass;
 use rootglass_app::ManifestValidationReport;
 use rootglass_app::RuntimeEvent;
-use crate::ui_model::{
-    lock_service, GlassPreview, RemovalDetails, SignatureStatus, StartEffect, StopRequest, UiModel,
-    UiState,
-};
 use std::path::PathBuf;
 use std::time::Duration;
 
