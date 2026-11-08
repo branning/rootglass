@@ -248,7 +248,7 @@ jobs:
 
   desktop-smoke:
     name: GPUI desktop workflow smoke (Linux x86_64)
-    if: github.event_name == 'workflow_dispatch' && inputs.desktop_smoke && (inputs.platform == 'all' || inputs.platform == 'linux')
+    if: (github.event_name == 'workflow_dispatch' && inputs.desktop_smoke && (inputs.platform == 'all' || inputs.platform == 'linux')) || (github.event_name == 'pull_request' && github.event.action == 'ready_for_review' && github.event.pull_request.base.ref == 'main')
     runs-on: ubuntu-24.04
 
     steps:
