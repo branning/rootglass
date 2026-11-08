@@ -85,6 +85,14 @@ pub struct TrustPolicyStatus {
     pub error: Option<String>,
 }
 
+/// One consistent snapshot of the selected bundle's writable states.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StateStoreSnapshot {
+    pub records: Vec<state::StateRecord>,
+    pub locked: bool,
+    pub selected_state_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeEvent {
     StateChanged {
@@ -352,6 +360,19 @@ impl AppService {
         self.state_store_for(source)?
             .list()
             .map_err(state_app_error)
+    }
+
+    /// Read records, lock status, and selected state after preparing the bundle once.
+    pub fn state_snapshot(&mut self, source: &Path) -> Result<StateStoreSnapshot, AppError> {
+        let store = self.state_store_for(source)?;
+        let records = store.list().map_err(state_app_error)?;
+        let locked = store.is_in_use();
+        let selected_state_id = store.selected_state_id().map_err(state_app_error)?;
+        Ok(StateStoreSnapshot {
+            records,
+            locked,
+            selected_state_id,
+        })
     }
 
     /// Advisory lock status for disabling TUI state actions while a guest owns the store.
