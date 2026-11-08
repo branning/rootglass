@@ -5613,7 +5613,7 @@ dependencies = [
 
 [[package]]
 name = "rootglass-desktop"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "gpui-kit",
  "portable-pty",

@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
@@ -107,7 +107,11 @@ impl QemuLaunchPlan {
         let binary = QemuBinary {
             path: binary_path.into(),
         };
-        let mut args = vec![
+        let mut args = Vec::new();
+        if let Some(data_dir) = bundled_qemu_data_dir(&binary.path) {
+            args.extend(["-L".to_string(), data_dir.display().to_string()]);
+        }
+        args.extend([
             "-machine".to_string(),
             "virt".to_string(),
             "-cpu".to_string(),
@@ -118,7 +122,7 @@ impl QemuLaunchPlan {
             request.cpus.to_string(),
             "-kernel".to_string(),
             request.kernel.display().to_string(),
-        ];
+        ]);
 
         if let Some(device_tree) = &request.device_tree {
             args.push("-dtb".to_string());
@@ -191,6 +195,7 @@ impl QemuLaunchPlan {
     pub fn command(&self) -> Command {
         let mut command = Command::new(&self.binary.path);
         command.args(&self.args);
+        configure_bundled_runtime(&mut command, &self.binary.path);
         command.stdin(Stdio::null());
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());
@@ -200,6 +205,7 @@ impl QemuLaunchPlan {
     pub fn interactive_command(&self) -> Command {
         let mut command = Command::new(&self.binary.path);
         command.args(&self.args);
+        configure_bundled_runtime(&mut command, &self.binary.path);
         command.stdin(Stdio::inherit());
         command.stdout(Stdio::inherit());
         command.stderr(Stdio::inherit());
@@ -460,6 +466,7 @@ impl QemuProcess {
         let command_line = plan.command_line();
         let mut command = Command::new(&plan.binary.path);
         command.args(supervised_args(&plan.args, port));
+        configure_bundled_runtime(&mut command, &plan.binary.path);
         command.stdin(Stdio::piped());
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());
@@ -705,6 +712,51 @@ fn spawn_pipe_reader<R: Read + Send + 'static>(
             operation: "starting output reader",
             source,
         })
+}
+
+fn bundled_runtime_root(binary: &Path) -> Option<PathBuf> {
+    let root = binary.parent()?.parent()?;
+    root.is_dir().then(|| root.to_path_buf())
+}
+
+fn bundled_qemu_data_dir(binary: &Path) -> Option<PathBuf> {
+    let data_dir = bundled_runtime_root(binary)?.join("share").join("qemu");
+    data_dir.is_dir().then_some(data_dir)
+}
+
+fn configure_bundled_runtime(command: &mut Command, binary: &Path) {
+    let Some(runtime_root) = bundled_runtime_root(binary) else {
+        return;
+    };
+
+    let library_dir = runtime_root.join("lib");
+    if library_dir.is_dir() {
+        let module_dir = library_dir.join("qemu");
+        if module_dir.is_dir() {
+            command.env("QEMU_MODULE_DIR", module_dir);
+        }
+        #[cfg(target_os = "linux")]
+        prepend_command_path(command, "LD_LIBRARY_PATH", &library_dir);
+        #[cfg(target_os = "macos")]
+        prepend_command_path(command, "DYLD_LIBRARY_PATH", &library_dir);
+        #[cfg(target_os = "macos")]
+        prepend_command_path(command, "DYLD_FALLBACK_LIBRARY_PATH", &library_dir);
+    }
+
+    #[cfg(target_os = "windows")]
+    if let Some(binary_dir) = binary.parent() {
+        prepend_command_path(command, "PATH", binary_dir);
+    }
+}
+
+fn prepend_command_path(command: &mut Command, variable: &str, path: &Path) {
+    let mut paths = vec![path.to_path_buf()];
+    if let Some(existing) = std::env::var_os(variable) {
+        paths.extend(std::env::split_paths(&existing));
+    }
+    if let Ok(joined) = std::env::join_paths(paths) {
+        command.env(variable, joined);
+    }
 }
 
 fn shell_quote(value: &str) -> String {

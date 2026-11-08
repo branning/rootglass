@@ -348,7 +348,7 @@ Do not conflate a GitHub `ubuntu-24.04-arm` runner with KVM-enabled hardware. Ho
 ### 8.3 QEMU and release packaging
 
 - The **developer** CLI may use a system QEMU executable found on PATH.
-- The **end-user** app must ship an appropriate QEMU binary/runtime package or a separately installed, user-friendly companion package with fully automated discovery. Decide this in issue #20, documenting target-specific binaries, licensing, native library dependencies, checksums, vulnerabilities and updates.
+- The **end-user** app must ship an appropriate QEMU binary/runtime package or a separately installed, user-friendly companion package with fully automated discovery. See [ADR-0002](adr/0002-versioned-desktop-qemu-runtime.md) for the preview distribution decision, target-specific binaries, licensing, native library dependencies, checksums, and update policy.
 - Ship every required runtime asset offline for a sample v1 package. No surprise Alpine CDN download on first launch.
 - Native app signing/notarization where applicable; include MIT project license and all bundled upstream license/notice obligations (including QEMU/GPUI Kit and Alpine).
 - Keep signed app distribution separate from signed `.glass` publisher trust; the two are independent trust decisions.
