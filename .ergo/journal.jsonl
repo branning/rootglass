@@ -250,3 +250,5 @@
 {"version":1,"task_id":"RN2PXH","kind":"created","at":"2026-11-08T23:29:38.369300792Z"}
 {"version":1,"task_id":"RN2PXH","kind":"claim","at":"2026-11-08T23:29:50.835698521Z","agent":"codex@worker-1"}
 {"version":1,"task_id":"RN2PXH","kind":"result","at":"2026-11-08T23:32:08.101861197Z","agent":"codex@worker-1","text":"Checks: trust JSON parses, key fingerprint matches, doc links exist, and diff check passes."}
+{"version":1,"task_id":"RN2PXH","kind":"result","at":"2026-11-08T23:36:16.205566953Z","agent":"codex@worker-1","text":"PR #94 merged; all 7 CI checks passed; docs cover sample trust without changing default deny."}
+{"version":1,"task_id":"RN2PXH","kind":"done","at":"2026-11-08T23:36:16.216658638Z","agent":"codex@worker-1","text":"Merged PR #94; CI run 42535702354 passed 7/7; sample trust instructions include fingerprint/key and public-key warning."}
