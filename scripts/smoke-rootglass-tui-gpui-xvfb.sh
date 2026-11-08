@@ -92,7 +92,10 @@ identify -format 'Captured embedded Rootglass TUI: %wx%h %m\n' "$screenshot"
 
 # Quit from the embedded terminal surface. GPUI shutdown drops the terminal,
 # whose PTY cleanup sends Ctrl+Q to the private TUI and reaps its child.
-xdotool key ctrl+q
+# GPUI may close X as soon as it handles the quit shortcut, before xdotool
+# finishes releasing the key. The app-exit and PTY-cleanup markers below are
+# the authoritative result for this interaction.
+xdotool key ctrl+q || true
 wait_for_marker ROOTGLASS_EMBEDDED_TUI_APP_QUIT
 for _ in $(seq 1 450); do
   process_state="$(ps -o stat= -p "$app_pid" 2>/dev/null | tr -d '[:space:]' | cut -c1)"
