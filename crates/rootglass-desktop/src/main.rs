@@ -32,38 +32,7 @@ struct RootglassWindow {
 }
 
 impl Render for RootglassWindow {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let file_drop_listener = cx.listener(|this, event: &FileDropEvent, _, cx| match event {
-            FileDropEvent::Entered { paths, .. } => {
-                this.pending_file_drop = paths.paths().first().cloned();
-                this.file_drop_active = this.pending_file_drop.is_some();
-                desktop_smoke_event("ROOTGLASS_DESKTOP_DROP_ENTER");
-                cx.notify();
-            }
-            FileDropEvent::Pending { .. } => {
-                this.file_drop_active = true;
-                cx.notify();
-            }
-            FileDropEvent::Submit { .. } => {
-                this.file_drop_active = false;
-                if let Some(path) = this.pending_file_drop.take() {
-                    desktop_smoke_event("ROOTGLASS_DESKTOP_DROP_SUBMIT");
-                    this.open_path(path, cx);
-                }
-                cx.notify();
-            }
-            FileDropEvent::Exited | FileDropEvent::Ended => {
-                this.pending_file_drop = None;
-                this.file_drop_active = false;
-                cx.notify();
-            }
-        });
-        window.on_mouse_event(move |event: &FileDropEvent, phase, window, cx| {
-            if phase == DispatchPhase::Bubble {
-                file_drop_listener(event, window, cx);
-            }
-        });
-
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let actions = self.model.actions();
         let mut toolbar = div()
             .h_flex()
@@ -120,6 +89,35 @@ impl Render for RootglassWindow {
             .v_flex()
             .size_full()
             .key_context(ROOTGLASS_CONTEXT)
+            .on_drag_move(cx.listener(|this, event: &DragMoveEvent<ExternalPaths>, _, cx| {
+                let path = event
+                    .dragged_item()
+                    .downcast_ref::<ExternalPaths>()
+                    .and_then(|paths| paths.paths().first())
+                    .cloned();
+                if let Some(path) = path {
+                    if this.pending_file_drop.as_ref() != Some(&path) {
+                        this.pending_file_drop = Some(path);
+                        this.file_drop_active = true;
+                        desktop_smoke_event("ROOTGLASS_DESKTOP_DROP_ENTER");
+                        cx.notify();
+                    }
+                }
+            }))
+            .on_file_drop_exit(cx.listener(|this, _, _, cx| {
+                this.pending_file_drop = None;
+                this.file_drop_active = false;
+                cx.notify();
+            }))
+            .on_drop::<ExternalPaths>(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                this.pending_file_drop = None;
+                this.file_drop_active = false;
+                if let Some(path) = paths.paths().first().cloned() {
+                    desktop_smoke_event("ROOTGLASS_DESKTOP_DROP_SUBMIT");
+                    this.open_path(path, cx);
+                }
+                cx.notify();
+            }))
             .on_action(cx.listener(Self::on_open_bundle))
             .on_action(cx.listener(Self::on_stop_shortcut))
             .child(toolbar);
