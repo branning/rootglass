@@ -81,7 +81,7 @@ xdotool type --clearmodifiers --delay 10 "headless-key"
 wait_for_marker ROOTGLASS_GPUI_TYPED_READY
 
 xdotool key --clearmodifiers ctrl+shift+c
-copied_text="$(timeout 5 xclip -selection clipboard -out)"
+copied_text="$(timeout 5 xclip -selection clipboard -target UTF8_STRING -out)"
 if [[ "$copied_text" != *"INPUT:headless-key"* ]]; then
   printf 'Clipboard copy did not contain the visible terminal screen: %s\n' "$copied_text" >&2
   exit 1
