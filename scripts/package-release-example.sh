@@ -32,7 +32,7 @@ with open(sys.argv[1], "wb") as payload:
     for counter in range(32768):
         payload.write(hashlib.sha256(b"rootglass release sample state" + counter.to_bytes(8, "little")).digest())
 PY
-debugfs -w -R "write $ratio_guard /rootglass-release-ratio-guard.bin" "$state_image" >/dev/null
+debugfs -w -R "write $ratio_guard /.rootglass-release-ratio-guard.bin" "$state_image" >/dev/null
 
 # This deterministic public fixture key is intentionally not a production
 # secret. The signing library generates the package signature from this seed.
