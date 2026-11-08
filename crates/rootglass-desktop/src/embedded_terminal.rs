@@ -184,6 +184,13 @@ impl EmbeddedTerminal {
     fn handle_key(&mut self, event: &KeyDownEvent, cx: &mut App) {
         let key = event.keystroke.key.as_str();
         let modifiers = &event.keystroke.modifiers;
+        if modifiers.platform && key.eq_ignore_ascii_case("q") {
+            if std::env::var_os("ROOTGLASS_GPUI_SMOKE").is_some() {
+                eprintln!("ROOTGLASS_EMBEDDED_TUI_APP_QUIT");
+            }
+            cx.quit();
+            return;
+        }
         let platform_copy = modifiers.platform && !modifiers.shift && key.eq_ignore_ascii_case("c");
         let terminal_copy = modifiers.control && modifiers.shift && key.eq_ignore_ascii_case("c");
         if platform_copy || terminal_copy {

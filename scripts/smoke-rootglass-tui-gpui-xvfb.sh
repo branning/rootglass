@@ -90,9 +90,23 @@ import -window "$window_id" "$screenshot"
 test -s "$screenshot"
 identify -format 'Captured embedded Rootglass TUI: %wx%h %m\n' "$screenshot"
 
-# Closing the GPUI window requests Ctrl+Q in the private PTY. The TUI then
-# stops any owned guest before the session process is reaped.
-xdotool windowclose "$window_id"
+# Quit from the embedded terminal surface. GPUI shutdown drops the terminal,
+# whose PTY cleanup sends Ctrl+Q to the private TUI and reaps its child.
+xdotool key ctrl+q
+wait_for_marker ROOTGLASS_EMBEDDED_TUI_APP_QUIT
+for _ in $(seq 1 450); do
+  process_state="$(ps -o stat= -p "$app_pid" 2>/dev/null | tr -d '[:space:]' | cut -c1)"
+  if [[ -z "$process_state" || "$process_state" == Z ]]; then
+    break
+  fi
+  sleep 0.1
+done
+process_state="$(ps -o stat= -p "$app_pid" 2>/dev/null | tr -d '[:space:]' | cut -c1)"
+if [[ -n "$process_state" && "$process_state" != Z ]]; then
+  cat "$log_file"
+  echo "Rootglass desktop did not shut down within 45 seconds" >&2
+  exit 1
+fi
 wait "$app_pid"
 app_pid=""
 cat "$log_file"
