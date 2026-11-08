@@ -219,9 +219,14 @@ impl RootglassWindow {
                             {
                                 let sentinel = sentinel.to_string_lossy();
                                 if !sentinel.is_empty()
-                                    && bytes
-                                        .windows(sentinel.len())
-                                        .any(|window| window == sentinel.as_bytes())
+                                    && bytes.windows(sentinel.len()).any(|window| {
+                                        window.iter().zip(sentinel.as_bytes()).all(
+                                            |(byte, expected)| {
+                                                byte.to_ascii_lowercase()
+                                                    == expected.to_ascii_lowercase()
+                                            },
+                                        )
+                                    })
                                 {
                                     desktop_smoke_event("ROOTGLASS_DESKTOP_SERIAL_ECHO");
                                 }
