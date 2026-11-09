@@ -931,8 +931,12 @@ fn packaged_resource_root() -> PathBuf {
     }
     #[cfg(target_os = "linux")]
     {
+        let installed = PathBuf::from("/usr/lib/rootglass/rootglass");
+        if installed.join("runtime-assets").is_dir() {
+            return installed;
+        }
         let installed = PathBuf::from("/usr/lib/rootglass");
-        if installed.is_dir() {
+        if installed.join("runtime-assets").is_dir() {
             return installed;
         }
     }
