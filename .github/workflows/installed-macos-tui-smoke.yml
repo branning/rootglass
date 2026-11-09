@@ -124,7 +124,9 @@ jobs:
 
           mountpoint="$RUNNER_TEMP/rootglass-dmg"
           mkdir -p "$mountpoint"
-          hdiutil attach -readonly -nobrowse -mountpoint "$mountpoint" "$dmg"
+          # The DMG embeds its license agreement. Supply the affirmative
+          # response so hdiutil can mount it on a headless runner.
+          printf 'y\n' | hdiutil attach -readonly -nobrowse -mountpoint "$mountpoint" "$dmg"
           trap 'hdiutil detach "$mountpoint" >/dev/null 2>&1 || true' EXIT
           [[ -d "$mountpoint/Rootglass.app" ]] || {
             echo "Rootglass.app was not present at the DMG root" >&2
