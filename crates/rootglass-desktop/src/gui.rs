@@ -699,6 +699,16 @@ impl RootglassWindow {
 fn desktop_smoke_event(marker: &str) {
     if std::env::var_os("ROOTGLASS_DESKTOP_SMOKE").is_some() {
         eprintln!("{marker}");
+        if let Some(path) = std::env::var_os("ROOTGLASS_DESKTOP_SMOKE_EVENT_LOG") {
+            if let Ok(mut log) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                use std::io::Write;
+                let _ = writeln!(log, "{marker}");
+            }
+        }
     }
 }
 
@@ -947,11 +957,11 @@ fn removal_details_view(details: &RemovalDetails) -> Div {
         .child("Immutable files remain until library garbage collection.")
 }
 
-pub fn run_gui() {
+pub fn run_gui(initial_glass: Option<PathBuf>) {
     gpui_kit::application()
         .with_quit_mode(QuitMode::LastWindowClosed)
         .with_assets(gpui_kit::assets::Assets)
-        .run(|cx| {
+        .run(move |cx| {
             gpui_kit::init(cx);
             cx.bind_keys([
                 KeyBinding::new("cmd-o", OpenBundle, Some(ROOTGLASS_CONTEXT)),
@@ -960,8 +970,16 @@ pub fn run_gui() {
                 KeyBinding::new("cmd-w", Quit, Some(ROOTGLASS_CONTEXT)),
                 KeyBinding::new("alt-f4", Quit, Some(ROOTGLASS_CONTEXT)),
             ]);
-            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
-                cx.new(|cx| RootglassWindow::new(window, cx))
+            let initial_glass = initial_glass.clone();
+            gpui_kit::open_window(WindowOptions::default(), cx, move |window, cx| {
+                let initial_glass = initial_glass.clone();
+                cx.new(move |cx| {
+                    let mut view = RootglassWindow::new(window, cx);
+                    if let Some(path) = initial_glass {
+                        view.open_path(path, cx);
+                    }
+                    view
+                })
             })
             .expect("failed to open Rootglass window");
         });

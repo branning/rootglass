@@ -15,13 +15,13 @@ fn main() -> ExitCode {
 }
 
 #[cfg(feature = "desktop-ui")]
-fn launch_gui() -> Result<(), String> {
-    rootglass_desktop::run_gui();
+fn launch_gui(initial_glass: Option<std::path::PathBuf>) -> Result<(), String> {
+    rootglass_desktop::run_gui(initial_glass);
     Ok(())
 }
 
 #[cfg(not(feature = "desktop-ui"))]
-fn launch_gui() -> Result<(), String> {
+fn launch_gui(_initial_glass: Option<std::path::PathBuf>) -> Result<(), String> {
     Err(
         "Rootglass was built without GUI support; rebuild with default features to use `rootglass gui`."
             .to_string(),
