@@ -1171,15 +1171,25 @@ impl ServiceWorker {
                     model.finish_state_operation(result);
                 }
             }
-            WorkerCompletion::Opened(_, OpenedBundle::Cancelled) => {}
+            WorkerCompletion::Opened(_, OpenedBundle::Cancelled) => {
+                trace_tui("open completion: cancelled");
+            }
             WorkerCompletion::Opened(ticket, OpenedBundle::Inspected(result)) => {
-                if model.finish_inspection(&ticket, *result) {
+                let ready = matches!(&*result, InspectionOutcome::Ready(_));
+                let applied = model.finish_inspection(&ticket, *result);
+                trace_tui(format!(
+                    "open completion: inspected_ready={ready}, applied={applied}"
+                ));
+                if applied {
                     refresh_state_selection(model, self)?;
                 }
             }
             WorkerCompletion::Opened(ticket, OpenedBundle::Imported(result)) => {
                 let imported = result.is_ok();
                 let applied = model.finish_import(&ticket, *result);
+                trace_tui(format!(
+                    "open completion: imported={imported}, applied={applied}"
+                ));
                 if !applied && imported {
                     self.refresh_library()?;
                 } else if applied {
@@ -1310,6 +1320,10 @@ fn service_worker_loop(
                 Some(WorkerCompletion::States(path, result))
             }
             WorkerRequest::Open(ticket, path) => {
+                trace_tui(format!(
+                    "open worker started: path_is_directory={}",
+                    path.is_dir()
+                ));
                 let opened = if ticket.is_cancelled() {
                     OpenedBundle::Cancelled
                 } else if path.is_dir() {
@@ -1324,6 +1338,7 @@ fn service_worker_loop(
                         service.import_and_inspect(&path)
                     })))
                 };
+                trace_tui("open worker returned");
                 Some(WorkerCompletion::Opened(ticket, opened))
             }
             WorkerRequest::ValidateManifest(ticket, path) => Some(WorkerCompletion::Validated(

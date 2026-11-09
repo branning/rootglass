@@ -45,6 +45,9 @@ cleanup() {
   if [[ -f "$log_file" ]]; then
     cp "$log_file" "$artifact_dir/embedded-guest.log"
   fi
+  if [[ -f "$work_dir/tui-trace.log" ]]; then
+    cp "$work_dir/tui-trace.log" "$artifact_dir/tui-trace.log"
+  fi
   if [[ -d "$work_dir/tmp" ]]; then
     find "$work_dir/tmp" -maxdepth 1 -type f -name 'rootglass-qemu-*.log' \
       -exec cp {} "$artifact_dir/" \; 2>/dev/null || true
@@ -112,6 +115,7 @@ export XDG_RUNTIME_DIR="$work_dir/runtime"
 export TMPDIR="$work_dir/tmp"
 export XDG_CURRENT_DESKTOP=GNOME
 export GDK_BACKEND=x11
+export ROOTGLASS_TUI_TRACE_FILE="$work_dir/tui-trace.log"
 setsid env ROOTGLASS_GPUI_SMOKE=1 "$binary" >"$log_file" 2>&1 &
 app_pid=$!
 wait_for_marker ROOTGLASS_EMBEDDED_TUI_READY 60
