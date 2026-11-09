@@ -357,49 +357,115 @@ jobs:
           PY
           progress "installed rootglass plan verified"
 
-      - name: Run offline install, association, and guest smoke
+      - name: Run installed OS association smoke offline
+        timeout-minutes: 6
         env:
           EXAMPLE_DIR: ${{ runner.temp }}/rootglass-example
           TEST_HOME: ${{ runner.temp }}/rootglass-user-home
           EVIDENCE_DIR: ${{ runner.temp }}/rootglass-install-evidence
         run: |
           set -euo pipefail
+          progress() {
+            printf '%s\n' "$1" | tee -a "$EVIDENCE_DIR/progress.txt"
+          }
           rootglass_binary=$(cat "$EVIDENCE_DIR/binary-path.txt")
           glass=$(cat "$EXAMPLE_DIR/glass-path.txt")
           shim_path="$RUNNER_TEMP/rootglass-shims:$PATH"
           sudo iptables -I OUTPUT 1 ! -o lo -j REJECT
           trap 'sudo iptables -D OUTPUT 1 ! -o lo -j REJECT >/dev/null 2>&1 || true' EXIT
+          association_log="$EVIDENCE_DIR/association-smoke.log"
+          progress "running offline .glass association check"
+          if timeout --signal=TERM --kill-after=15s 300s \
+            dbus-run-session -- xvfb-run --auto-servernum \
+              --server-args='-screen 0 1920x1200x24' \
+              env PATH="$shim_path" HOME="$TEST_HOME" \
+              bash scripts/smoke-rootglass-installed-linux-association.sh \
+                "$rootglass_binary" "$glass" "$EVIDENCE_DIR/association" \
+            > "$association_log" 2>&1; then
+            cat "$association_log"
+          else
+            association_status=$?
+            cat "$association_log"
+            exit "$association_status"
+          fi
+          progress "installed .glass association verified"
 
-          dbus-run-session -- xvfb-run --auto-servernum \
-            --server-args='-screen 0 1920x1200x24' \
-            env PATH="$shim_path" HOME="$TEST_HOME" \
-            bash scripts/smoke-rootglass-installed-linux-association.sh \
-              "$rootglass_binary" "$glass" "$EVIDENCE_DIR/association"
+      - name: Run installed GPUI desktop guest workflow offline
+        timeout-minutes: 12
+        env:
+          EVIDENCE_DIR: ${{ runner.temp }}/rootglass-install-evidence
+        run: |
+          set -euo pipefail
+          progress() {
+            printf '%s\n' "$1" | tee -a "$EVIDENCE_DIR/progress.txt"
+          }
+          rootglass_binary=$(cat "$EVIDENCE_DIR/binary-path.txt")
+          shim_path="$RUNNER_TEMP/rootglass-shims:$PATH"
+          sudo iptables -I OUTPUT 1 ! -o lo -j REJECT
+          trap 'sudo iptables -D OUTPUT 1 ! -o lo -j REJECT >/dev/null 2>&1 || true' EXIT
+          gui_log="$EVIDENCE_DIR/gui-workflow-output.txt"
+          progress "running installed GPUI workflow offline"
+          if timeout --signal=TERM --kill-after=15s 600s \
+            dbus-run-session -- xvfb-run --auto-servernum \
+              --server-args='-screen 0 1920x1200x24' \
+              env PATH="$shim_path" \
+              bash scripts/smoke-rootglass-desktop-xvfb.sh \
+                "$rootglass_binary" "$EVIDENCE_DIR/gui-workflow" \
+            > "$gui_log" 2>&1; then
+            cat "$gui_log"
+          else
+            gui_status=$?
+            cat "$gui_log"
+            exit "$gui_status"
+          fi
+          progress "installed GPUI workflow verified"
 
-          dbus-run-session -- xvfb-run --auto-servernum \
-            --server-args='-screen 0 1920x1200x24' \
-            env PATH="$shim_path" \
-            bash scripts/smoke-rootglass-desktop-xvfb.sh \
-              "$rootglass_binary" "$EVIDENCE_DIR/gui-workflow"
+      - name: Run installed CLI guest boot offline
+        timeout-minutes: 8
+        env:
+          EXAMPLE_DIR: ${{ runner.temp }}/rootglass-example
+          TEST_HOME: ${{ runner.temp }}/rootglass-user-home
+          EVIDENCE_DIR: ${{ runner.temp }}/rootglass-install-evidence
+        run: |
+          set -euo pipefail
+          progress() {
+            printf '%s\n' "$1" | tee -a "$EVIDENCE_DIR/progress.txt"
+          }
+          rootglass_binary=$(cat "$EVIDENCE_DIR/binary-path.txt")
+          shim_path="$RUNNER_TEMP/rootglass-shims:$PATH"
+          sudo iptables -I OUTPUT 1 ! -o lo -j REJECT
+          trap 'sudo iptables -D OUTPUT 1 ! -o lo -j REJECT >/dev/null 2>&1 || true' EXIT
 
           work_dir="$RUNNER_TEMP/rootglass-installed-boot"
           mkdir -p "$work_dir"
+          mkdir -p "$RUNNER_TEMP/rootglass-qemu-tmp"
           cp -a examples/hello-world.glass "$work_dir/hello-world.glass"
-          env PATH="$shim_path" \
-            HOME="$TEST_HOME" \
-            XDG_CONFIG_HOME="$TEST_HOME/.config" \
-            TMPDIR="$RUNNER_TEMP/rootglass-qemu-tmp" \
-            ROOTGLASS_BINARY="$rootglass_binary" \
-            ROOTGLASS_SMOKE_GLASS="$work_dir/hello-world.glass" \
-            ROOTGLASS_SMOKE_CWD="$work_dir" \
-            ROOTGLASS_SMOKE_LOG="$EVIDENCE_DIR/installed-cli-boot.log" \
-            python3 scripts/smoke-boot-example.py | tee "$EVIDENCE_DIR/installed-cli-boot-output.txt"
+          boot_log="$EVIDENCE_DIR/installed-cli-boot-output.txt"
+          progress "running offline installed CLI guest boot"
+          if timeout --signal=TERM --kill-after=15s 420s \
+            env PATH="$shim_path" \
+              HOME="$TEST_HOME" \
+              XDG_CONFIG_HOME="$TEST_HOME/.config" \
+              TMPDIR="$RUNNER_TEMP/rootglass-qemu-tmp" \
+              ROOTGLASS_BINARY="$rootglass_binary" \
+              ROOTGLASS_SMOKE_GLASS="$work_dir/hello-world.glass" \
+              ROOTGLASS_SMOKE_CWD="$work_dir" \
+              ROOTGLASS_SMOKE_LOG="$EVIDENCE_DIR/installed-cli-boot.log" \
+              python3 scripts/smoke-boot-example.py \
+            > "$boot_log" 2>&1; then
+            cat "$boot_log"
+          else
+            boot_status=$?
+            cat "$boot_log"
+            exit "$boot_status"
+          fi
 
           if compgen -G "$RUNNER_TEMP/rootglass-shims/*.used" >/dev/null; then
             echo "The installed app attempted to use a developer tool or system QEMU" >&2
             ls -l "$RUNNER_TEMP/rootglass-shims" >&2
             exit 1
           fi
+          progress "installed CLI guest boot verified"
           echo "PASS: package installed and guest workflows ran offline outside the checkout"
 
       - name: Verify uninstall preserves user trust and library data
