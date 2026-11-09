@@ -8,19 +8,19 @@ use std::path::PathBuf;
 
 pub fn run_with_frontends(
     args: Vec<String>,
-    launch_gui: impl FnOnce() -> Result<(), String>,
+    launch_gui: impl FnOnce(Option<PathBuf>) -> Result<(), String>,
     launch_tui: impl FnOnce(Option<PathBuf>) -> Result<(), String>,
 ) -> Result<(), String> {
     let Some(command) = args.first().map(String::as_str) else {
-        return launch_gui();
+        return launch_gui(None);
     };
 
     match command {
         "gui" => {
-            if args.len() != 1 {
-                return Err("usage: rootglass gui".to_string());
+            if args.len() > 2 {
+                return Err("usage: rootglass gui [path-to.glass]".to_string());
             }
-            launch_gui()
+            launch_gui(args.get(1).map(PathBuf::from))
         }
         "--rootglass-tui-session" => {
             if args.len() != 1 {
@@ -52,11 +52,19 @@ pub fn run_with_frontends(
             print_usage();
             Ok(())
         }
+        other if args.len() == 1 && is_glass_path(other) => launch_gui(Some(PathBuf::from(other))),
         other => {
             print_usage();
             Err(format!("unknown command '{other}'"))
         }
     }
+}
+
+fn is_glass_path(value: &str) -> bool {
+    PathBuf::from(value)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("glass"))
 }
 
 fn sign_command(args: &[String]) -> Result<(), String> {
@@ -213,7 +221,8 @@ fn print_verification(summary: &GlassSummary) {
 
 fn print_usage() {
     eprintln!("usage:");
-    eprintln!("  rootglass [gui]");
+    eprintln!("  rootglass [gui [path-to.glass]]");
+    eprintln!("  rootglass <path-to.glass>");
     eprintln!("  rootglass tui [path-to.glass]");
     eprintln!("  rootglass validate <path-to.glass>");
     eprintln!("  rootglass plan <path-to.glass>");
@@ -231,7 +240,7 @@ mod tests {
         let mut received = None;
         run_with_frontends(
             vec!["tui".to_string(), "example.glass".to_string()],
-            || panic!("the GUI should not launch for the TUI command"),
+            |_| panic!("the GUI should not launch for the TUI command"),
             |path| {
                 received = path;
                 Ok(())
@@ -246,7 +255,7 @@ mod tests {
         let mut launched = false;
         run_with_frontends(
             vec!["tui".to_string()],
-            || panic!("the GUI should not launch for the TUI command"),
+            |_| panic!("the GUI should not launch for the TUI command"),
             |path| {
                 assert_eq!(path, None);
                 launched = true;
@@ -266,7 +275,7 @@ mod tests {
                 "one.glass".to_string(),
                 "two.glass".to_string(),
             ],
-            || panic!("the GUI should not launch for the TUI command"),
+            |_| panic!("the GUI should not launch for the TUI command"),
             |_| {
                 launched = true;
                 Ok(())
@@ -309,8 +318,38 @@ mod tests {
     fn run_cli(args: Vec<String>) -> Result<(), String> {
         run_with_frontends(
             args,
-            || Err("GUI dispatch is unavailable in a CLI unit test".to_string()),
+            |_| Err("GUI dispatch is unavailable in a CLI unit test".to_string()),
             rootglass_tui::run_terminal,
         )
+    }
+
+    #[test]
+    fn file_association_dispatches_glass_path_to_gui() {
+        let mut received = None;
+        run_with_frontends(
+            vec!["/tmp/hello world.GLASS".to_string()],
+            |path| {
+                received = path;
+                Ok(())
+            },
+            |_| panic!("the TUI should not launch for a .glass association"),
+        )
+        .expect("a .glass path launches the GUI");
+        assert_eq!(received, Some(PathBuf::from("/tmp/hello world.GLASS")));
+    }
+
+    #[test]
+    fn gui_command_accepts_a_path_from_the_file_association() {
+        let mut received = None;
+        run_with_frontends(
+            vec!["gui".to_string(), "hello.glass".to_string()],
+            |path| {
+                received = path;
+                Ok(())
+            },
+            |_| panic!("the TUI should not launch for the GUI command"),
+        )
+        .expect("gui with a bundle path launches successfully");
+        assert_eq!(received, Some(PathBuf::from("hello.glass")));
     }
 }

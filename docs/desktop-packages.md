@@ -119,6 +119,24 @@ gh workflow run installed-macos-tui-smoke.yml --repo branning/rootglass \
 The smoke rejects artifacts built from a different commit. Its only trigger is
 `workflow_dispatch`, so the additional macOS runner minutes are opt-in.
 
+## Manual installed Ubuntu package smoke
+
+The **Installed Ubuntu clean-install smoke** workflow checks the Linux x64
+package on a fresh Ubuntu 24.04 Actions runner. First run **Desktop packages**
+with `platform=linux` on the commit under review, then dispatch the install
+smoke on that same commit and provide the package run ID as `package_run_id`.
+It installs the `.deb`, checks its runtime inventory and `.glass` MIME handler,
+opens the signed example through `xdg-open`, and exercises the installed GUI and
+guest lifecycle with outbound networking blocked. The application processes run
+from temporary directories outside the checkout; failing shims catch any use of
+`cargo`, `rustc`, or system QEMU. Screenshots, install inventory, plan output,
+serial logs, and uninstall/data-retention evidence are kept for 14 days.
+
+This workflow qualifies only the Linux x64 package on the hosted TCG path. It
+does not qualify Linux aarch64 package support, KVM hardware acceleration, or
+native interaction on a user's desktop. Those limits remain part of the
+platform decision.
+
 ## Remaining release limits
 
 - App and installer signing, macOS notarization, and release provenance are not configured. No signing credentials are stored in the repository.

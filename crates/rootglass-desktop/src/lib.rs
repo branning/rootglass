@@ -4,6 +4,6 @@ pub mod ui_model;
 mod gui;
 
 #[cfg(feature = "desktop-ui")]
-pub fn run_gui() {
-    gui::run_gui();
+pub fn run_gui(initial_glass: Option<std::path::PathBuf>) {
+    gui::run_gui(initial_glass);
 }

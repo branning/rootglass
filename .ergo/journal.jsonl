@@ -301,3 +301,10 @@
 {"version":1,"task_id":"LES477","kind":"done","at":"2026-11-09T15:42:40.431331505Z","agent":"codex@worker-1","text":"Merged PR #109 at 923ab63; runtime inventory recorded and issue #20 closed."}
 {"version":1,"task_id":"E6SUUH","kind":"claim","at":"2026-11-09T15:49:45.369619947Z","agent":"codex@worker-1"}
 {"version":1,"task_id":"E6SUUH","kind":"result","at":"2026-11-09T16:17:46.260696809Z","agent":"codex@worker-1","text":"Added Linux embedded guest smoke for shared TUI workflows; awaiting CI evidence."}
+{"version":1,"task_id":"E6SUUH","kind":"result","at":"2026-11-09T18:43:27.578468056Z","agent":"codex@worker-1","text":"PR #111 merged as b5b866d; final CI run 42675901431 passed all seven checks."}
+{"version":1,"task_id":"E6SUUH","kind":"result","at":"2026-11-09T18:43:27.592344481Z","agent":"codex@worker-1","text":"Linux embedded guest smoke 42672997313 passed; artifact 13699786813; 52 tests passed."}
+{"version":1,"task_id":"E6SUUH","kind":"result","at":"2026-11-09T18:43:27.60702634Z","agent":"codex@worker-1","text":"Embedded terminal remains opt-in Linux x86_64; native macOS/Windows UX is deferred."}
+{"version":1,"task_id":"E6SUUH","kind":"done","at":"2026-11-09T18:43:32.137949551Z","agent":"codex@worker-1","text":"Merged PR #111 with final Linux embedded guest acceptance evidence; native macOS/Windows and UX review remain explicitly unqualified/deferred."}
+{"version":1,"task_id":"IEELHO","kind":"claim","at":"2026-11-09T18:48:58.802339731Z","agent":"codex@worker-1"}
+{"version":1,"task_id":"IEELHO","kind":"result","at":"2026-11-09T19:12:55.696691697Z","agent":"codex@worker-1","text":"Fixed .glass association dispatch; rootglass-cli tests passed 8/8; desktop package CI is pending."}
+{"version":1,"task_id":"IEELHO","kind":"result","at":"2026-11-09T19:12:55.709847572Z","agent":"codex@worker-1","text":"Added opt-in Ubuntu install workflow; YAML, embedded shell, formatting, and bash syntax checks pass."}

@@ -4,7 +4,7 @@ Tiny worlds under glass.
 
 Rootglass is a cross-platform shell for running self-contained embedded Linux application environments on a regular computer. One Rust executable provides the GPUI desktop, a Ratatui TUI, and CLI commands. The implementation can validate, verify, import, plan, and boot signed `.glass` environments through QEMU, with cross-platform package builds.
 
-The `rootglass` executable opens GPUI by default. Use `rootglass gui` to request it explicitly, `rootglass tui` to open the terminal UI, or commands such as `rootglass validate` and `rootglass boot` for CLI workflows. The embedded Ghostty terminal starts the TUI session through an internal mode of the same executable.
+The `rootglass` executable opens GPUI by default. Passing a `.glass` file opens it in GPUI too, including when the OS launches Rootglass through the file association. Use `rootglass gui [path-to.glass]` to request that explicitly, `rootglass tui` to open the terminal UI, or commands such as `rootglass validate` and `rootglass boot` for CLI workflows. The embedded Ghostty terminal starts the TUI session through an internal mode of the same executable.
 
 ## Complete application build specification
 

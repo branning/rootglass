@@ -17,8 +17,11 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-GLASS = ROOT / "examples/hello-world.glass"
-LOG = ROOT / ".rootglass/build/hello-world-boot.log"
+GLASS = Path(os.environ.get("ROOTGLASS_SMOKE_GLASS", ROOT / "examples/hello-world.glass")).resolve()
+WORKDIR = Path(os.environ.get("ROOTGLASS_SMOKE_CWD", ROOT)).resolve()
+LOG = Path(
+    os.environ.get("ROOTGLASS_SMOKE_LOG", ROOT / ".rootglass/build/hello-world-boot.log")
+).resolve()
 MAX_LOG_BYTES = 1_000_000
 BOOT_TIMEOUT = int(os.environ.get("TIMEOUT_SECONDS", "120"))
 STOP_TIMEOUT = int(os.environ.get("STOP_TIMEOUT_SECONDS", "20"))
@@ -203,7 +206,7 @@ def terminate_group(child: int) -> None:
 def run_state_session(nonce: str, write_state: bool) -> bytearray:
     child, fd = pty.fork()
     if child == 0:
-        os.chdir(ROOT)
+        os.chdir(WORKDIR)
         command = cli_command("boot", str(GLASS))
         os.execvp(command[0], command)
 
@@ -260,7 +263,7 @@ def main() -> int:
             os.environ["XDG_DATA_HOME"] = state_home
             plan = subprocess.run(
                 cli_command("plan", str(GLASS)),
-                cwd=ROOT,
+                cwd=WORKDIR,
                 check=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,

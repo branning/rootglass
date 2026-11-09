@@ -88,6 +88,33 @@ wait_for_trace_count() {
   exit 1
 }
 
+close_developer_panel() {
+  local expected_count="$1"
+  local count
+  count="$(grep -Fc 'developer panel closed' "$work_dir/tui-trace.log" 2>/dev/null || true)"
+  count="${count//[[:space:]]/}"
+  if (( ${count:-0} >= expected_count )); then
+    return 0
+  fi
+  for _ in $(seq 1 5); do
+    xdotool windowfocus --sync "$window_id"
+    xdotool key --clearmodifiers Escape
+    for _ in $(seq 1 20); do
+      local count
+      count="$(grep -Fc 'developer panel closed' "$work_dir/tui-trace.log" 2>/dev/null || true)"
+      count="${count//[[:space:]]/}"
+      if (( ${count:-0} >= expected_count )); then
+        return 0
+      fi
+      sleep 0.1
+    done
+  done
+  cat "$log_file"
+  cat "$work_dir/tui-trace.log" 2>/dev/null || true
+  echo "The embedded TUI developer panel did not close after Escape" >&2
+  exit 1
+}
+
 cleanup() {
   if [[ -n "$app_pid" ]] && kill -0 "$app_pid" 2>/dev/null; then
     if [[ -n "$window_id" ]]; then
@@ -237,11 +264,13 @@ xdotool key --clearmodifiers Return
 wait_for_trace_marker "developer worker returned: action=SignDirectory, successful=true" 60
 wait_for_marker ROOTGLASS_EMBEDDED_TUI_DEVELOPER_SIGNED 60
 test -f "$glass_dir/rootglass.toml"
-xdotool key --clearmodifiers Escape
+close_developer_panel 1
 xdotool type --clearmodifiers --delay 5 D
 xdotool key --clearmodifiers p
+wait_for_trace_marker "developer form opened: action=PackageArchive" 15
 xdotool type --clearmodifiers --delay 5 "$glass_dir"
 xdotool key --clearmodifiers Return
+wait_for_trace_count "developer source accepted: directory=true, manifest_exists=true" 2 15
 xdotool type --clearmodifiers --delay 5 "$trusted_key"
 xdotool key --clearmodifiers Return
 xdotool key --clearmodifiers Return
@@ -257,8 +286,7 @@ if ! grep -Fq "developer worker returned: action=PackageArchive, successful=true
 fi
 wait_for_marker ROOTGLASS_EMBEDDED_TUI_DEVELOPER_PACKAGED 30
 test -s "$developer_package"
-xdotool key --clearmodifiers Escape
-wait_for_trace_marker "developer panel closed" 15
+close_developer_panel 2
 
 xdotool key --clearmodifiers b
 wait_for_trace_marker "shortcut input: action=boot" 15

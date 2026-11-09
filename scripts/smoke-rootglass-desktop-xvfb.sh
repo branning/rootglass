@@ -162,7 +162,7 @@ export XDG_RUNTIME_DIR="${work_dir}/runtime"
 export XDG_CURRENT_DESKTOP=GNOME
 export GDK_BACKEND=x11
 
-setsid "$desktop_binary" >"$log_file" 2>&1 &
+setsid bash -c 'cd "$1"; exec "$2"' _ "$work_dir" "$desktop_binary" >"$log_file" 2>&1 &
 app_pid=$!
 wait_for_marker ROOTGLASS_DESKTOP_WINDOW_READY
 
