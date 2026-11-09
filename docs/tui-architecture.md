@@ -1,6 +1,12 @@
 # TUI architecture and feature parity
 
-**Status:** S16.1–S16.6, S16.9 and S16.10 are merged. The standalone TUI covers the current library, lifecycle, guest serial, state/trust and signing/package workflows. The S16.6 public `libghostty-vt` PTY smoke passes on Linux x86_64, macOS arm64 and Windows x86_64. The maintainer approved those targets and a custom GPUI view. S16.7's desktop integration and Linux Xvfb interaction smoke are in progress; native macOS/Windows GPUI hosts and a real booted-guest terminal walkthrough remain open for acceptance.
+**Status (2026-11-09):** S16.1–S16.6, S16.9 and S16.10 are merged. The standalone TUI covers the current library, lifecycle, guest serial, state/trust and signing/package workflows. The public `libghostty-vt` PTY smoke passes on Linux x86_64, macOS arm64 and Windows x86_64. The custom GPUI terminal view passes Linux Xvfb host interaction checks for keyboard input, ANSI output, selection, copy/paste, resize, quit and PTY cleanup. The view is behind the optional `embedded-terminal` feature; release package workflows do not enable or bundle that feature. Its Xvfb smoke does not boot a guest through the embedded session. Native macOS/Windows GPUI hosts and the embedded guest workflow remain open for S16.8 acceptance. Native UX review is deferred to later Figma-led work.
+
+## Current acceptance record
+
+The A-08 GPUI desktop smoke is complete under Ergo task `GOMUP3`. Linux 24.04 x86_64 Xvfb exercised the real desktop workflow, including verification states, preflight, boot, serial input/output, restart, stop, resize, window exit and child cleanup. Its [screenshot and log artifact](https://github.com/branning/rootglass/actions/runs/42482916674/artifacts/13618535851) is linked in [the S13.2 evidence record](s13-desktop-smoke-evidence.md). The exact v0.0.3 macOS arm64 package passed the [installed TUI guest smoke](https://github.com/branning/rootglass/actions/runs/42560261893/artifacts/13648873558), and the maintainer separately confirmed a GUI boot and `uname -a` output showing Alpine aarch64.
+
+These results close the A-08 desktop workflow objective. They do not prove the embedded TUI guest path: the libghostty Xvfb smoke currently types into the TUI path prompt and verifies terminal rendering/input/clipboard/resize/cleanup, but it never opens a bundle or starts QEMU. Nor does the smoke imply native macOS/Windows GPUI qualification. The full S16.8 parity task stays open until the embedded session boots and interacts with the guest and its package-host scope is recorded.
 
 ## Product contract
 

@@ -11,6 +11,7 @@ on:
       - crates/rootglass-tui/**
       - scripts/smoke-gpui-host-xvfb.sh
       - scripts/smoke-rootglass-tui-gpui-xvfb.sh
+      - scripts/smoke-rootglass-embedded-guest-xvfb.sh
       - scripts/smoke-libghostty-vt-pty.py
   push:
     branches:
@@ -22,6 +23,7 @@ on:
       - crates/rootglass-tui/**
       - scripts/smoke-gpui-host-xvfb.sh
       - scripts/smoke-rootglass-tui-gpui-xvfb.sh
+      - scripts/smoke-rootglass-embedded-guest-xvfb.sh
       - scripts/smoke-libghostty-vt-pty.py
   workflow_dispatch:
     inputs:
@@ -37,6 +39,11 @@ on:
           - windows
       desktop_smoke:
         description: Run the real-service GPUI desktop smoke on Linux only
+        required: false
+        type: boolean
+        default: false
+      embedded_guest_smoke:
+        description: Run the real guest workflow inside the embedded TUI on Linux only
         required: false
         type: boolean
         default: false
@@ -59,6 +66,7 @@ jobs:
         env:
           REQUESTED_PLATFORM: ${{ inputs.platform || 'all' }}
           DESKTOP_SMOKE: ${{ inputs.desktop_smoke || 'false' }}
+          EMBEDDED_GUEST_SMOKE: ${{ inputs.embedded_guest_smoke || 'false' }}
         run: |
           python - <<'PY'
           import json
@@ -70,7 +78,13 @@ jobs:
               {"platform": "windows", "name": "Windows x86_64", "runner": "windows-2025"},
           ]
           requested = os.environ["REQUESTED_PLATFORM"]
-          if os.environ["DESKTOP_SMOKE"].lower() == "true" and requested not in ("all", "linux"):
+          desktop_smoke = os.environ["DESKTOP_SMOKE"].lower() == "true"
+          embedded_guest_smoke = os.environ["EMBEDDED_GUEST_SMOKE"].lower() == "true"
+          if desktop_smoke and embedded_guest_smoke:
+              raise SystemExit("desktop_smoke and embedded_guest_smoke are separate Linux runs")
+          if embedded_guest_smoke and requested not in ("all", "linux"):
+              raise SystemExit("the embedded guest smoke runs on Linux only")
+          if desktop_smoke and requested not in ("all", "linux"):
               raise SystemExit("the real-service GPUI desktop smoke runs on Linux only")
           selected = platforms if requested == "all" else [
               platform for platform in platforms if platform["platform"] == requested
@@ -85,7 +99,7 @@ jobs:
   pty-smoke:
     name: PTY smoke (${{ matrix.name }})
     needs: select_platforms
-    if: (github.event_name != 'pull_request' || (!github.event.pull_request.draft && github.event.pull_request.base.ref == 'main')) && !(github.event_name == 'workflow_dispatch' && inputs.desktop_smoke)
+    if: (github.event_name != 'pull_request' || (!github.event.pull_request.draft && github.event.pull_request.base.ref == 'main')) && !(github.event_name == 'workflow_dispatch' && (inputs.desktop_smoke || inputs.embedded_guest_smoke))
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -259,7 +273,7 @@ jobs:
 
   desktop-smoke:
     name: GPUI desktop workflow smoke (Linux x86_64)
-    if: (github.event_name == 'workflow_dispatch' && inputs.desktop_smoke && (inputs.platform == 'all' || inputs.platform == 'linux')) || (github.event_name == 'pull_request' && github.event.action == 'ready_for_review' && github.event.pull_request.base.ref == 'main')
+    if: (github.event_name == 'workflow_dispatch' && inputs.desktop_smoke && (inputs.platform == 'all' || inputs.platform == 'linux')) || (github.event_name == 'pull_request' && github.event.action == 'ready_for_review' && !github.event.pull_request.draft && github.event.pull_request.base.ref == 'main')
     runs-on: ubuntu-24.04
 
     steps:
@@ -311,5 +325,105 @@ jobs:
         with:
           name: gpui-desktop-workflow-smoke-linux-x86_64
           path: artifacts/gpui-desktop-xvfb/
+          if-no-files-found: warn
+          retention-days: 14
+
+  embedded-guest-smoke:
+    name: Embedded TUI guest workflow smoke (Linux x86_64)
+    needs: [select_platforms, pty-smoke]
+    if: always() && needs.select_platforms.result == 'success' && (needs.pty-smoke.result == 'success' || (github.event_name == 'workflow_dispatch' && inputs.embedded_guest_smoke)) && ((github.event_name == 'workflow_dispatch' && inputs.embedded_guest_smoke && (inputs.platform == 'all' || inputs.platform == 'linux')) || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'reopened' || github.event.action == 'ready_for_review') && !github.event.pull_request.draft && github.event.pull_request.base.ref == 'main'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust and Python
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Install Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Cache Cargo registry and build outputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            prototypes/libghostty-vt-ratatui -> target
+            crates/rootglass-desktop -> target
+          cache-on-failure: 'true'
+
+      - name: Cache C compiler outputs
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/rootglass-ccache
+          key: ccache-libghostty-vt-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('prototypes/libghostty-vt-ratatui/build.rs', 'prototypes/libghostty-vt-ratatui/src/ghostty_shim.c') }}
+          restore-keys: |
+            ccache-libghostty-vt-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Install GUI, QEMU, and fixture tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential ccache cpio dbus-x11 e2fsprogs imagemagick minisign pkg-config \
+            libasound2-dev libfontconfig-dev libgl1-mesa-dri libssl-dev \
+            libvulkan1 libwayland-dev libwebkit2gtk-4.1-dev libx11-xcb-dev \
+            libxkbcommon-x11-dev libzstd-dev mesa-vulkan-drivers \
+            python3 qemu-system-arm squashfs-tools \
+            x11-utils xauth xdg-desktop-portal xdg-desktop-portal-gtk xdotool xvfb
+          echo "CC=ccache gcc" >> "$GITHUB_ENV"
+          echo "CXX=ccache g++" >> "$GITHUB_ENV"
+          echo "CCACHE_DIR=${{ runner.temp }}/rootglass-ccache" >> "$GITHUB_ENV"
+          echo "CCACHE_MAXSIZE=512M" >> "$GITHUB_ENV"
+          echo "CCACHE_COMPILERCHECK=content" >> "$GITHUB_ENV"
+
+      - name: Restore native libghostty-vt build
+        id: libghostty-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/rootglass-libghostty-vt-prefix
+          key: libghostty-vt-${{ runner.os }}-${{ runner.arch }}-ghostty-v1.0.0-zig-0.17.0-${{ hashFiles('scripts/smoke-libghostty-vt-pty.py', 'prototypes/libghostty-vt-ratatui/build.rs', 'prototypes/libghostty-vt-ratatui/src/ghostty_shim.c') }}
+
+      - name: Build and smoke pinned libghostty-vt
+        id: native-smoke
+        env:
+          GHOSTTY_VT_PREFIX: ${{ runner.temp }}/rootglass-libghostty-vt-prefix
+        run: python scripts/smoke-libghostty-vt-pty.py
+
+      - name: Save native libghostty-vt build
+        if: always() && steps.native-smoke.outputs.cache_ready == 'true' && steps.libghostty-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/rootglass-libghostty-vt-prefix
+          key: libghostty-vt-${{ runner.os }}-${{ runner.arch }}-ghostty-v1.0.0-zig-0.17.0-${{ hashFiles('scripts/smoke-libghostty-vt-pty.py', 'prototypes/libghostty-vt-ratatui/build.rs', 'prototypes/libghostty-vt-ratatui/src/ghostty_shim.c') }}
+
+      - name: Materialize the signed guest fixture assets
+        run: bash scripts/materialize-example-assets.sh
+
+      - name: Build Rootglass with the embedded terminal feature
+        env:
+          GHOSTTY_VT_PREFIX: ${{ runner.temp }}/rootglass-libghostty-vt-prefix
+        run: cargo build --locked --manifest-path crates/rootglass-desktop/Cargo.toml --features embedded-terminal
+
+      - name: Exercise a guest boot through the embedded TUI under Xvfb
+        env:
+          LD_LIBRARY_PATH: ${{ runner.temp }}/rootglass-libghostty-vt-prefix/lib
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: |
+          xvfb-run -a -s "-screen 0 1280x800x24 +extension GLX +render -noreset" \
+            dbus-run-session -- bash scripts/smoke-rootglass-embedded-guest-xvfb.sh \
+            crates/rootglass-desktop/target/debug/rootglass \
+            crates/rootglass-desktop/artifacts/embedded-guest-xvfb
+
+      - name: Upload embedded guest workflow evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: embedded-tui-guest-workflow-smoke-linux-x86_64
+          path: crates/rootglass-desktop/artifacts/embedded-guest-xvfb/
           if-no-files-found: warn
           retention-days: 14

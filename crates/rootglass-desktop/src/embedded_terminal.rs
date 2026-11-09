@@ -31,6 +31,20 @@ pub struct EmbeddedTerminal {
     typed_reported: bool,
     paste_reported: bool,
     ansi_reported: bool,
+    guest_login_reported: bool,
+    guest_password_reported: bool,
+    guest_shell_reported: bool,
+    guest_uname_reported: bool,
+    bundle_ready_reported: bool,
+    manifest_valid_reported: bool,
+    launch_plan_reported: bool,
+    state_trust_reported: bool,
+    state_created_reported: bool,
+    developer_sign_reported: bool,
+    developer_package_reported: bool,
+    guest_restart_started_reported: bool,
+    guest_restart_running_reported: bool,
+    guest_stopped_reported: bool,
     cursor: CellPoint,
     selection: Option<Selection>,
     focus: FocusHandle,
@@ -94,6 +108,20 @@ impl EmbeddedTerminal {
             typed_reported: false,
             paste_reported: false,
             ansi_reported: false,
+            guest_login_reported: false,
+            guest_password_reported: false,
+            guest_shell_reported: false,
+            guest_uname_reported: false,
+            bundle_ready_reported: false,
+            manifest_valid_reported: false,
+            launch_plan_reported: false,
+            state_trust_reported: false,
+            state_created_reported: false,
+            developer_sign_reported: false,
+            developer_package_reported: false,
+            guest_restart_started_reported: false,
+            guest_restart_running_reported: false,
+            guest_stopped_reported: false,
             cursor: CellPoint { x: 0, y: 0 },
             selection: None,
             focus,
@@ -154,6 +182,86 @@ impl EmbeddedTerminal {
             {
                 self.ansi_reported = true;
                 eprintln!("ROOTGLASS_EMBEDDED_TUI_ANSI");
+            }
+            if !self.guest_login_reported && self.screen.contains("rootglass-hello login:") {
+                self.guest_login_reported = true;
+                eprintln!("ROOTGLASS_EMBEDDED_TUI_GUEST_LOGIN");
+            }
+            if !self.guest_password_reported && self.screen.contains("Password:") {
+                self.guest_password_reported = true;
+                eprintln!("ROOTGLASS_EMBEDDED_TUI_GUEST_PASSWORD");
+            }
+            if !self.guest_shell_reported && self.screen.contains("rootglass-hello:~#") {
+                self.guest_shell_reported = true;
+                eprintln!("ROOTGLASS_EMBEDDED_TUI_GUEST_SHELL");
+            }
+            if !self.guest_uname_reported
+                && self.screen.contains("ROOTGLASS_EMBEDDED_GUEST_UNAME_DONE")
+            {
+                self.guest_uname_reported = true;
+                eprintln!("ROOTGLASS_EMBEDDED_TUI_GUEST_UNAME");
+            }
+            if !self.bundle_ready_reported
+                && self.screen.contains("Hello World")
+                && self.screen.contains("Ready")
+            {
+                self.bundle_ready_reported = true;
+                eprintln!("ROOTGLASS_EMBEDDED_TUI_BUNDLE_READY");
+            }
+            if !self.manifest_valid_reported && self.screen.contains("Manifest valid") {
+                self.manifest_valid_reported = true;
+                eprintln!("ROOTGLASS_EMBEDDED_TUI_MANIFEST_VALID");
+            }
+            if !self.launch_plan_reported && self.screen.contains("Verified launch plan") {
+                self.launch_plan_reported = true;
+                eprintln!("ROOTGLASS_EMBEDDED_TUI_LAUNCH_PLAN");
+            }
+            if !self.state_trust_reported
+                && self.screen.contains("Named state")
+                && self.screen.contains("Publisher trust")
+            {
+                self.state_trust_reported = true;
+                eprintln!("ROOTGLASS_EMBEDDED_TUI_STATE_TRUST");
+            }
+            if !self.state_created_reported && self.screen.contains("embedded-smoke") {
+                self.state_created_reported = true;
+                eprintln!("ROOTGLASS_EMBEDDED_TUI_STATE_CREATED");
+            }
+            if !self.developer_sign_reported
+                && self.screen.contains("Developer workflow complete")
+                && self.screen.contains("directory verifier")
+            {
+                self.developer_sign_reported = true;
+                eprintln!("ROOTGLASS_EMBEDDED_TUI_DEVELOPER_SIGNED");
+            }
+            if !self.developer_package_reported
+                && self.screen.contains("Developer workflow complete")
+                && self.screen.contains("archive verifier")
+            {
+                self.developer_package_reported = true;
+                eprintln!("ROOTGLASS_EMBEDDED_TUI_DEVELOPER_PACKAGED");
+            }
+            if !self.guest_restart_started_reported
+                && self.guest_uname_reported
+                && self.screen.contains("Booting")
+            {
+                self.guest_restart_started_reported = true;
+                eprintln!("ROOTGLASS_EMBEDDED_TUI_GUEST_RESTART_STARTED");
+            }
+            if !self.guest_restart_running_reported
+                && self.guest_restart_started_reported
+                && self.screen.contains("Running")
+            {
+                self.guest_restart_running_reported = true;
+                eprintln!("ROOTGLASS_EMBEDDED_TUI_GUEST_RESTART_RUNNING");
+            }
+            if !self.guest_stopped_reported
+                && self.guest_uname_reported
+                && self.screen.contains("Ready")
+                && !self.screen.contains("Running")
+            {
+                self.guest_stopped_reported = true;
+                eprintln!("ROOTGLASS_EMBEDDED_TUI_GUEST_STOPPED");
             }
         }
         Ok(true)
