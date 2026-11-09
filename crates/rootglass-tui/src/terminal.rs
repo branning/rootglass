@@ -1210,7 +1210,11 @@ impl ServiceWorker {
                 }
             }
             WorkerCompletion::Validated(ticket, result) => {
-                model.finish_validation(&ticket, result);
+                let successful = result.is_ok();
+                let applied = model.finish_validation(&ticket, result);
+                trace_tui(format!(
+                    "validate completion: successful={successful}, applied={applied}"
+                ));
             }
             WorkerCompletion::Planned(ticket, result) => {
                 let successful = result.is_ok();
@@ -1358,10 +1362,15 @@ fn service_worker_loop(
                 trace_tui("open worker returned");
                 Some(WorkerCompletion::Opened(ticket, opened))
             }
-            WorkerRequest::ValidateManifest(ticket, path) => Some(WorkerCompletion::Validated(
-                ticket,
-                with_service(&service, |service| service.validate_manifest(&path)),
-            )),
+            WorkerRequest::ValidateManifest(ticket, path) => {
+                trace_tui("validate worker started");
+                let result = with_service(&service, |service| service.validate_manifest(&path));
+                trace_tui(format!(
+                    "validate worker returned: {}",
+                    if result.is_ok() { "ok" } else { "error" }
+                ));
+                Some(WorkerCompletion::Validated(ticket, result))
+            }
             WorkerRequest::PlanBundle(ticket, path) => {
                 trace_tui("plan worker started");
                 let result = with_service(&service, |service| service.plan_bundle(&path));
