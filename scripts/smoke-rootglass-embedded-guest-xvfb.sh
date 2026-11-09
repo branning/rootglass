@@ -125,6 +125,14 @@ if [[ -z "$window_id" ]]; then
 fi
 xdotool windowfocus --sync "$window_id"
 
+# A window-level focus can land before the embedded terminal has received a
+# key event. Exercise terminal selection first, matching the host interaction
+# smoke, so the first workflow shortcut cannot be swallowed while focus settles.
+for _ in $(seq 1 5); do
+  xdotool key --clearmodifiers shift+Right
+done
+wait_for_marker ROOTGLASS_EMBEDDED_TUI_SELECTION 30
+
 # Open the signed sample through the embedded TUI and boot a real guest.
 xdotool key --clearmodifiers o
 xdotool type --clearmodifiers --delay 5 "$sample"
