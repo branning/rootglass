@@ -216,13 +216,19 @@ fn import_snapshot(
             let _ = fs::remove_dir_all(&stage);
             return Err(error.into());
         }
-        if let Err(error) = make_tree_readonly(&stage) {
+        if let Err(error) = make_tree_contents_readonly(&stage) {
             make_tree_writable(&stage);
             let _ = fs::remove_dir_all(&stage);
             return Err(error);
         }
         match fs::rename(&stage, &final_path) {
-            Ok(()) => {}
+            Ok(()) => {
+                if let Err(error) = make_path_readonly(&final_path) {
+                    make_tree_writable(&final_path);
+                    let _ = fs::remove_dir_all(&final_path);
+                    return Err(error);
+                }
+            }
             Err(_error) if final_path.is_dir() => {
                 make_tree_writable(&stage);
                 let _ = fs::remove_dir_all(&stage);
@@ -585,7 +591,7 @@ fn ensure_no_symlink_components(root: &Path, relative: &Path) -> Result<(), Impo
     Ok(())
 }
 
-fn make_tree_readonly(root: &Path) -> Result<(), ImportError> {
+fn make_tree_contents_readonly(root: &Path) -> Result<(), ImportError> {
     for entry in fs::read_dir(root).map_err(|source| io_at(root, source))? {
         let entry = entry.map_err(|source| io_at(root, source))?;
         let path = entry.path();
@@ -594,17 +600,25 @@ fn make_tree_readonly(root: &Path) -> Result<(), ImportError> {
             return Err(ImportError::UnsupportedFileType(path.display().to_string()));
         }
         if metadata.is_dir() {
-            make_tree_readonly(&path)?;
+            make_tree_contents_readonly(&path)?;
         }
-        let mut permissions = metadata.permissions();
-        permissions.set_readonly(true);
-        fs::set_permissions(&path, permissions).map_err(|source| io_at(&path, source))?;
     }
-    let metadata = fs::metadata(root).map_err(|source| io_at(root, source))?;
+
+    for entry in fs::read_dir(root).map_err(|source| io_at(root, source))? {
+        let entry = entry.map_err(|source| io_at(root, source))?;
+        make_path_readonly(&entry.path())?;
+    }
+    Ok(())
+}
+
+fn make_path_readonly(path: &Path) -> Result<(), ImportError> {
+    let metadata = fs::symlink_metadata(path).map_err(|source| io_at(path, source))?;
+    if metadata.file_type().is_symlink() {
+        return Err(ImportError::UnsupportedFileType(path.display().to_string()));
+    }
     let mut permissions = metadata.permissions();
     permissions.set_readonly(true);
-    fs::set_permissions(root, permissions).map_err(|source| io_at(root, source))?;
-    Ok(())
+    fs::set_permissions(path, permissions).map_err(|source| io_at(path, source))
 }
 
 fn make_tree_writable(root: &Path) {
@@ -780,6 +794,29 @@ mod tests {
             writer.write_all(bytes).unwrap();
         }
         writer.finish().unwrap();
+    }
+
+    #[test]
+    fn keeps_staging_root_writable_until_atomic_publish() {
+        let parent = temp_file("readonly-publish").with_extension("dir");
+        let stage = parent.join("stage");
+        let published = parent.join("published");
+        fs::create_dir_all(&stage).unwrap();
+        fs::write(stage.join("payload"), b"verified package").unwrap();
+
+        make_tree_contents_readonly(&stage).unwrap();
+        assert!(fs::metadata(stage.join("payload"))
+            .unwrap()
+            .permissions()
+            .readonly());
+        assert!(!fs::metadata(&stage).unwrap().permissions().readonly());
+
+        fs::rename(&stage, &published).unwrap();
+        make_path_readonly(&published).unwrap();
+        assert!(fs::metadata(&published).unwrap().permissions().readonly());
+
+        make_tree_writable(&published);
+        fs::remove_dir_all(parent).unwrap();
     }
 
     #[test]

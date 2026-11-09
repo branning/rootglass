@@ -7,6 +7,8 @@ use rootglass_signature::{verify_glass_dir, SignatureError, TrustStore, Verifica
 use runtime_assets::{RuntimeAssetsError, RuntimeAssetsResolver};
 use runtime_profile::{ResolvedRuntimeAssets, RuntimeAssetResolver, RuntimeProfileError};
 use std::path::{Path, PathBuf};
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use std::sync::OnceLock;
 use storage::{OverlayStore, StorageSelection};
 use thiserror::Error;
 
@@ -163,7 +165,7 @@ impl HostCapabilities {
         let platform = HostPlatform::current();
         Self {
             platform,
-            hvf_available: platform == HostPlatform::MacOs,
+            hvf_available: platform == HostPlatform::MacOs && detect_hvf_available(),
             whpx_available: platform == HostPlatform::Windows,
             kvm_available: platform == HostPlatform::Linux
                 && cfg!(target_arch = "aarch64")
@@ -179,6 +181,38 @@ impl HostCapabilities {
             kvm_available: false,
         }
     }
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn detect_hvf_available() -> bool {
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(probe_hvf_available)
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn probe_hvf_available() -> bool {
+    use std::ffi::c_void;
+
+    #[link(name = "Hypervisor", kind = "framework")]
+    extern "C" {
+        fn hv_vm_create(config: *const c_void, flags: u64) -> u32;
+        fn hv_vm_destroy() -> u32;
+    }
+
+    // Creating and destroying a probe VM checks that Hypervisor.framework is
+    // usable by this process, which an OS-version check cannot establish on
+    // hosted or otherwise virtualized macOS systems.
+    unsafe {
+        if hv_vm_create(std::ptr::null(), 0) != 0 {
+            return false;
+        }
+        hv_vm_destroy() == 0
+    }
+}
+
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+fn detect_hvf_available() -> bool {
+    false
 }
 
 #[derive(Debug, Error)]
@@ -613,6 +647,18 @@ mod tests {
             .expect("sample glass can use available KVM");
 
         assert_eq!(request.accelerator, Some(HostAccelerator::Kvm));
+    }
+
+    #[test]
+    fn uses_tcg_when_macos_hvf_is_unavailable_and_acceleration_is_optional() {
+        let mut runtime = RootglassRuntime::new();
+        let capabilities = HostCapabilities::without_acceleration(HostPlatform::MacOs);
+
+        let request = runtime
+            .prepare_launch_with_host("../../examples/hello-world.glass", &capabilities)
+            .expect("sample glass can use software emulation");
+
+        assert_eq!(request.accelerator, None);
     }
 
     #[test]

@@ -1614,7 +1614,7 @@ fn preflight_for_summary(
         memory_mb: summary.memory_mb,
         cpus: summary.cpus,
         qemu: "Resolved by runtime preparation; see launch command".to_string(),
-        acceleration: "Selected during host preflight".to_string(),
+        acceleration: summary.acceleration.clone(),
         runtime_assets,
         blockers,
     }
