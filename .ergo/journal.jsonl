@@ -299,3 +299,5 @@
 {"version":1,"task_id":"LES477","kind":"result","at":"2026-11-09T15:36:51.613868409Z","agent":"codex@worker-1","text":"Validation: fmt; 53 core/manifest/app tests passed; clippy --all-targets passed."}
 {"version":1,"task_id":"LES477","kind":"result","at":"2026-11-09T15:37:34.358666551Z","agent":"codex@worker-1","text":"The missing-rootfs test now uses an isolated temp fixture, not the materialized local example image."}
 {"version":1,"task_id":"LES477","kind":"done","at":"2026-11-09T15:42:40.431331505Z","agent":"codex@worker-1","text":"Merged PR #109 at 923ab63; runtime inventory recorded and issue #20 closed."}
+{"version":1,"task_id":"E6SUUH","kind":"claim","at":"2026-11-09T15:49:45.369619947Z","agent":"codex@worker-1"}
+{"version":1,"task_id":"E6SUUH","kind":"result","at":"2026-11-09T16:17:46.260696809Z","agent":"codex@worker-1","text":"Added Linux embedded guest smoke for shared TUI workflows; awaiting CI evidence."}

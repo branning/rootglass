@@ -1,6 +1,6 @@
 # Rootglass delivery roadmap
 
-**Status:** Updated 2026-11-07 against the merged `main` implementation. This roadmap tracks delivery and acceptance; the detailed product and technical contract remains in [app-spec.md](app-spec.md).
+**Status:** Updated 2026-11-09 against the merged `main` implementation and observed v0.0.3 package smoke. This roadmap tracks delivery and acceptance; the detailed product and technical contract remains in [app-spec.md](app-spec.md).
 
 Rootglass is a native Rust desktop app built with GPUI Kit `=0.9.0`, backed by a shared Rust application service and CLI. CI is the functioning test environment for the reference guest: hosted x64 and arm64 TCG jobs materialize and boot it through the CLI. A developer machine run is useful, but not a merge gate.
 
@@ -16,36 +16,34 @@ The merged work packages S00–S11 establish the CLI reference path and the firs
 
 These are implementation milestones, not a claim that every v1 acceptance test has passed. In particular, see the open gates below and [desktop-packages.md](desktop-packages.md).
 
-## Current milestone — GPUI v1 qualification
+## Completed milestone — GPUI workflow smoke (A-08)
 
-**Goal:** turn the merged GPUI vertical slice into a user-verified desktop workflow and close acceptance A-08.
+**Result:** the A-08 desktop workflow smoke is recorded in [s13-desktop-smoke-evidence.md](s13-desktop-smoke-evidence.md).
 
-S13.1 has merged headless model tests for action availability, errors, and asynchronous lifecycle behavior. S13.2 remains blocked until an interactive desktop host is available for real GUI evidence.
+Linux 24.04 x86_64 Xvfb exercised the GPUI application through open/import, trust and verification states, preflight, guest start, serial input/output, restart, stop, resize, window exit, and child cleanup. The maintainer also installed the exact v0.0.3 macOS arm64 DMG, booted Hello World in the GUI, and ran `uname -a` over serial, confirming Alpine aarch64.
 
-1. Exercise open/import, trust and manifest details, preflight, boot, serial input/output, stop, restart, and failure recovery using the real application service.
-2. Check focus, native dialogs, resizing, responsiveness, cleanup on close and accessible labels; have a human review usability and accessibility.
-3. Record per-platform results and any narrower supported-host claims in the app spec.
+Native focus, dialogs, accessibility, and usability review are deferred to subsequent Figma-led work. This evidence does not qualify GPUI on every OS or establish the final support matrix.
 
-**Exit gate:** A-08 passes on supported desktop runners or has a documented, evidence-backed platform limitation. Core behavior remains covered by deterministic service/supervisor tests; GUI automation is reserved for user-visible integration.
+**Evidence:** [Linux Xvfb screenshots and logs](https://github.com/branning/rootglass/actions/runs/42482916674/artifacts/13618535851); [exact-tag macOS installed TUI smoke](https://github.com/branning/rootglass/actions/runs/42560261893/artifacts/13648873558); maintainer's manual macOS GUI and serial confirmation.
 
 ## Current milestone — GPUI terminal bridge
 
 **Goal:** host the merged Ratatui session in the existing GPUI desktop through public libghostty-vt and a custom GPUI view.
 
-S16.1–S16.5, S16.9 and S16.10 are merged: the TUI has a headless controller and renderer, CLI terminal lifecycle, verified library workflows, guest serial interaction, state/trust controls and signing/package flows. The maintainer approved public libghostty-vt with a custom renderer and PTY/session adapter. The Ghostty GUI apps use native SwiftUI (macOS) and GTK (Linux), not GPUI Kit; libghostty-vt is the terminal core, not a ready-made view.
+S16.1–S16.6, S16.9 and S16.10 are merged: the TUI has a headless controller and renderer, CLI terminal lifecycle, verified library workflows, guest serial interaction, state/trust controls and signing/package flows. The Linux Xvfb smoke exercises PTY keyboard input, ANSI output, selection, clipboard paste, resize and orderly cleanup. The full optional `embedded-terminal` guest workflow now passes on Linux x86_64, including import, validation/preflight, state/trust, signing/package, guest login and serial commands, restart, stop and cleanup; see [the S16.8 evidence record](s16-cross-surface-acceptance-evidence.md). Current release package builds do not enable or bundle this feature, and native macOS/Windows GPUI hosts have not been qualified. The maintainer approved public libghostty-vt with a custom renderer and PTY/session adapter. The Ghostty GUI apps use native SwiftUI (macOS) and GTK (Linux), not GPUI Kit; libghostty-vt is the terminal core, not a ready-made view.
 
 1. Keep the signed Linux x86_64 PTY smoke reproducible in focused CI and record upstream ABI, license and packaging boundaries in [tui-architecture.md](tui-architecture.md).
-2. Implement the GPUI view and terminal/PTY adapter using the same standalone TUI session, with keyboard, resize, clipboard, focus and orderly cleanup.
-3. Qualify each supported Rootglass package target on its native host before claiming it: Linux x86_64, macOS arm64 and Windows x86_64 are candidates, not yet proven embedded-host platforms.
-4. Publish the cross-surface acceptance record after the host evidence exists.
+2. Exercise real guest boot, serial login/input/output, restart, stop, and cleanup through the embedded Rootglass TUI session. **Complete for Linux x86_64;** evidence and limitations are recorded in [S16.8 evidence](s16-cross-surface-acceptance-evidence.md).
+3. Decide which package targets should include and ship the embedded-terminal feature; qualify each target before claiming it.
+4. Publish the cross-surface acceptance record with exact host/surface evidence and remaining limitations.
 
-**Exit gate:** headless tests exercise the same TUI controller and screens used by the standalone command; supported GPUI host platforms have evidence for the embedded terminal and real guest-console interaction. A host that lacks GUI automation remains blocked for that acceptance item; headless success does not substitute for it. This milestone is separate from A-08 desktop smoke and does not close app release gates.
+**Exit gate:** headless tests exercise the same TUI controller and screens used by the standalone command; every claimed GPUI host has evidence for the embedded terminal and real guest-console interaction. The Linux optional-feature objective is complete with explicit package and host limits in the S16.8 record. Release package enablement and native-host qualification remain separate gates. Native UI polish and accessibility review are subsequent work.
 
 ## Next milestone — installed app works on a clean host
 
 **Goal:** close A-09 for each shipping operating system.
 
-1. Decide and implement the installed-app QEMU and versioned runtime asset inventory. The current packages do not include a versioned QEMU/runtime set.
+1. Use the completed v0.0.3 QEMU/runtime inventory in [ADR-0002](adr/0002-versioned-desktop-qemu-runtime.md); verify clean installation and runtime behavior per platform.
 2. Install each package on a clean OS image without developer tools, open a `.glass` through the app and through the OS file association, then boot and stop the guest.
 3. Verify missing prerequisites and unsupported acceleration produce clear, truthful errors.
 4. Record clean-install and file-open evidence by OS in [desktop-packages.md](desktop-packages.md).

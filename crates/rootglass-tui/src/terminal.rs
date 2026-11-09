@@ -29,7 +29,7 @@ const TICK_RATE: Duration = Duration::from_millis(50);
 const MAX_PENDING_SERVICE_REQUESTS: usize = 64;
 const MAX_INPUT_BYTES: usize = 8_192;
 
-fn trace_tui(message: impl AsRef<str>) {
+pub(crate) fn trace_tui(message: impl AsRef<str>) {
     static TRACE_FILE: OnceLock<Option<Mutex<std::fs::File>>> = OnceLock::new();
     let Some(file) = TRACE_FILE.get_or_init(|| {
         let path = std::env::var_os("ROOTGLASS_TUI_TRACE_FILE")?;
@@ -259,6 +259,28 @@ fn handle_key(
     key: KeyEvent,
     worker: &mut ServiceWorker,
 ) -> Result<bool, String> {
+    if key.code == KeyCode::Char('b') {
+        trace_tui(format!(
+            "shortcut input: action=boot, mode={:?}, developer_panel_open={}, operations_panel_open={}, boot_enabled={}",
+            input.mode,
+            model.developer_is_open(),
+            model.operations_panel_open,
+            model.actions().boot,
+        ));
+    }
+    if matches!(key.code, KeyCode::Char('v') | KeyCode::Char('p')) {
+        let shortcut = match key.code {
+            KeyCode::Char('v') => "validate",
+            _ => "plan",
+        };
+        trace_tui(format!(
+            "shortcut input: action={shortcut}, mode={:?}, operations_panel_open={}, validate_enabled={}, plan_enabled={}",
+            input.mode,
+            model.operations_panel_open,
+            model.actions().validate,
+            model.actions().plan,
+        ));
+    }
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
         return Ok(true);
     }
@@ -327,6 +349,7 @@ fn handle_developer_panel_key(
     }
     match key.code {
         KeyCode::Esc => {
+            trace_tui("developer panel closed");
             model.close_developer();
         }
         KeyCode::Char('s') | KeyCode::Char('p') => {
@@ -585,6 +608,7 @@ fn handle_operations_panel_key(
         KeyCode::Up => model.move_state_cursor(false),
         KeyCode::Down => model.move_state_cursor(true),
         KeyCode::Char('c') if model.actions().state_create => {
+            trace_tui("state create prompt opened");
             input.text.clear();
             input.mode = InputMode::StateCreateName;
         }
@@ -848,6 +872,10 @@ fn open_path(model: &mut UiModel, path: PathBuf, worker: &mut ServiceWorker) -> 
 }
 
 fn start_guest(model: &mut UiModel, worker: &mut ServiceWorker) -> Result<(), String> {
+    trace_tui(format!(
+        "boot action dispatched: boot_enabled={}",
+        model.actions().boot,
+    ));
     if let Some((ticket, path)) = model.begin_start() {
         let state_id = model
             .state_loaded
@@ -943,7 +971,11 @@ enum OpenedBundle {
 enum WorkerCompletion {
     Library(Result<Vec<InstalledGlass>, AppError>),
     Trust(Result<rootglass_app::TrustPolicyStatus, AppError>),
-    States(PathBuf, Result<crate::StateSnapshot, AppError>),
+    States(
+        PathBuf,
+        StateOperation,
+        Result<crate::StateSnapshot, AppError>,
+    ),
     Opened(OperationTicket, OpenedBundle),
     Validated(
         OperationTicket,
@@ -968,6 +1000,19 @@ enum StateOperation {
     Clone { source_id: String, new_name: String },
     Reset(String),
     Delete(String),
+}
+
+impl StateOperation {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Refresh => "refresh",
+            Self::Select(_) => "select",
+            Self::Create(_) => "create",
+            Self::Clone { .. } => "clone",
+            Self::Reset(_) => "reset",
+            Self::Delete(_) => "delete",
+        }
+    }
 }
 
 struct ServiceWorker {
@@ -1166,20 +1211,36 @@ impl ServiceWorker {
         match completion {
             WorkerCompletion::Library(result) => model.finish_library_refresh(result),
             WorkerCompletion::Trust(result) => model.finish_trust_policy(result),
-            WorkerCompletion::States(path, result) => {
-                if model.selected_path.as_ref() == Some(&path) {
+            WorkerCompletion::States(path, operation, result) => {
+                let successful = result.is_ok();
+                let applied = model.selected_path.as_ref() == Some(&path);
+                if applied {
                     model.finish_state_operation(result);
                 }
+                trace_tui(format!(
+                    "state completion: operation={}, successful={successful}, applied={applied}",
+                    operation.label()
+                ));
             }
-            WorkerCompletion::Opened(_, OpenedBundle::Cancelled) => {}
+            WorkerCompletion::Opened(_, OpenedBundle::Cancelled) => {
+                trace_tui("open completion: cancelled");
+            }
             WorkerCompletion::Opened(ticket, OpenedBundle::Inspected(result)) => {
-                if model.finish_inspection(&ticket, *result) {
+                let ready = matches!(&*result, InspectionOutcome::Ready(_));
+                let applied = model.finish_inspection(&ticket, *result);
+                trace_tui(format!(
+                    "open completion: inspected_ready={ready}, applied={applied}"
+                ));
+                if applied {
                     refresh_state_selection(model, self)?;
                 }
             }
             WorkerCompletion::Opened(ticket, OpenedBundle::Imported(result)) => {
                 let imported = result.is_ok();
                 let applied = model.finish_import(&ticket, *result);
+                trace_tui(format!(
+                    "open completion: imported={imported}, applied={applied}"
+                ));
                 if !applied && imported {
                     self.refresh_library()?;
                 } else if applied {
@@ -1187,10 +1248,18 @@ impl ServiceWorker {
                 }
             }
             WorkerCompletion::Validated(ticket, result) => {
-                model.finish_validation(&ticket, result);
+                let successful = result.is_ok();
+                let applied = model.finish_validation(&ticket, result);
+                trace_tui(format!(
+                    "validate completion: successful={successful}, applied={applied}"
+                ));
             }
             WorkerCompletion::Planned(ticket, result) => {
-                model.finish_plan(&ticket, result);
+                let successful = result.is_ok();
+                let applied = model.finish_plan(&ticket, result);
+                trace_tui(format!(
+                    "plan completion: successful={successful}, applied={applied}"
+                ));
             }
             WorkerCompletion::Removed(ticket, result) => {
                 model.finish_remove(&ticket, result);
@@ -1296,6 +1365,10 @@ fn service_worker_loop(
                 })))
             }
             WorkerRequest::StateAction(path, operation) => {
+                trace_tui(format!(
+                    "state worker started: operation={}",
+                    operation.label()
+                ));
                 let result = with_service(&service, |service| match &operation {
                     StateOperation::Refresh => service.list_states(&path),
                     StateOperation::Select(id) => service.select_state(&path, id),
@@ -1307,9 +1380,18 @@ fn service_worker_loop(
                     StateOperation::Reset(id) => service.reset_state(&path, id),
                     StateOperation::Delete(id) => service.delete_state(&path, id),
                 });
-                Some(WorkerCompletion::States(path, result))
+                trace_tui(format!(
+                    "state worker returned: operation={}, outcome={}",
+                    operation.label(),
+                    if result.is_ok() { "ok" } else { "error" }
+                ));
+                Some(WorkerCompletion::States(path, operation, result))
             }
             WorkerRequest::Open(ticket, path) => {
+                trace_tui(format!(
+                    "open worker started: path_is_directory={}",
+                    path.is_dir()
+                ));
                 let opened = if ticket.is_cancelled() {
                     OpenedBundle::Cancelled
                 } else if path.is_dir() {
@@ -1324,16 +1406,27 @@ fn service_worker_loop(
                         service.import_and_inspect(&path)
                     })))
                 };
+                trace_tui("open worker returned");
                 Some(WorkerCompletion::Opened(ticket, opened))
             }
-            WorkerRequest::ValidateManifest(ticket, path) => Some(WorkerCompletion::Validated(
-                ticket,
-                with_service(&service, |service| service.validate_manifest(&path)),
-            )),
-            WorkerRequest::PlanBundle(ticket, path) => Some(WorkerCompletion::Planned(
-                ticket,
-                with_service(&service, |service| service.plan_bundle(&path)),
-            )),
+            WorkerRequest::ValidateManifest(ticket, path) => {
+                trace_tui("validate worker started");
+                let result = with_service(&service, |service| service.validate_manifest(&path));
+                trace_tui(format!(
+                    "validate worker returned: {}",
+                    if result.is_ok() { "ok" } else { "error" }
+                ));
+                Some(WorkerCompletion::Validated(ticket, result))
+            }
+            WorkerRequest::PlanBundle(ticket, path) => {
+                trace_tui("plan worker started");
+                let result = with_service(&service, |service| service.plan_bundle(&path));
+                trace_tui(format!(
+                    "plan worker returned: {}",
+                    if result.is_ok() { "ok" } else { "error" }
+                ));
+                Some(WorkerCompletion::Planned(ticket, result))
+            }
             WorkerRequest::RemoveInstalled(ticket, digest) => Some(WorkerCompletion::Removed(
                 ticket,
                 with_service(&service, |service| service.remove_installed(&digest)),
@@ -1401,9 +1494,22 @@ fn service_worker_loop(
                 run.clone(),
                 with_service(&service, |service| service.write_serial(&run, &bytes)),
             )),
-            WorkerRequest::Developer(request) => Some(WorkerCompletion::Developer(
-                execute_developer_request(request),
-            )),
+            WorkerRequest::Developer(request) => {
+                let action = request.action;
+                trace_tui(format!(
+                    "developer worker started: action={action:?}, source_is_directory={}, manifest_exists={}, key_file_exists={}, output_requested={}",
+                    request.source.is_dir(),
+                    request.source.join("rootglass.toml").is_file(),
+                    request.key_file.is_file(),
+                    request.output.is_some(),
+                ));
+                let result = execute_developer_request(request);
+                trace_tui(format!(
+                    "developer worker returned: action={action:?}, successful={}",
+                    result.is_ok(),
+                ));
+                Some(WorkerCompletion::Developer(result))
+            }
             WorkerRequest::StopOrphan(run) => Some(WorkerCompletion::OrphanStopped(
                 run.clone(),
                 with_service(&service, |service| service.stop(&run)),
