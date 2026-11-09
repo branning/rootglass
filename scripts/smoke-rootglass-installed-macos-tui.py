@@ -210,9 +210,10 @@ def run(binary: Path, glass: Path, output: Path) -> None:
         session.send(b"p")
         session.wait_for_terminal(b"Verified launch plan", 30, after)
         plan_output = clean_terminal(session.capture[after:])
-        if b"TCG (software emulation)" not in plan_output:
+        if not re.search(rb"TCG\s*\(software\s*emulation\)", plan_output):
             raise SmokeFailure("macOS runner did not select the expected TCG fallback")
-        if b"-accel hvf" in plan_output:
+        normalized_plan_output = re.sub(rb"\s+", b"", plan_output).lower()
+        if b"-accelhvf" in normalized_plan_output:
             raise SmokeFailure("launch plan selected HVF on a runner that cannot use it")
         after = len(session.capture)
         session.send(b"b")
