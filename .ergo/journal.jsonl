@@ -294,3 +294,7 @@
 {"version":1,"task_id":"GOMUP3","kind":"result","at":"2026-11-09T15:09:57.11045083Z","agent":"codex@worker-1","text":"Evidence: Linux Xvfb GPUI run 42482916674; macOS v0.0.3 TUI run 42560261893 with artifact 13648873558."}
 {"version":1,"task_id":"GOMUP3","kind":"result","at":"2026-11-09T15:09:57.123243575Z","agent":"codex@worker-1","text":"Maintainer confirmed v0.0.3 GUI guest boot and serial uname -a (Alpine aarch64); native UX deferred."}
 {"version":1,"task_id":"GOMUP3","kind":"done","at":"2026-11-09T15:14:42.888923443Z","agent":"codex@worker-1","text":"Merged PR #107 at 4aed6c0; desktop evidence recorded; native UX deferred."}
+{"version":1,"task_id":"LES477","kind":"claim","at":"2026-11-09T15:19:57.790412081Z","agent":"codex@worker-1"}
+{"version":1,"task_id":"LES477","kind":"result","at":"2026-11-09T15:36:51.600157017Z","agent":"codex@worker-1","text":"Inventory: v0.0.3 per-target QEMU versions, binary/guest hashes, and runtime archive checksums recorded."}
+{"version":1,"task_id":"LES477","kind":"result","at":"2026-11-09T15:36:51.613868409Z","agent":"codex@worker-1","text":"Validation: fmt; 53 core/manifest/app tests passed; clippy --all-targets passed."}
+{"version":1,"task_id":"LES477","kind":"result","at":"2026-11-09T15:37:34.358666551Z","agent":"codex@worker-1","text":"The missing-rootfs test now uses an isolated temp fixture, not the materialized local example image."}

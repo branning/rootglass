@@ -662,6 +662,42 @@ mod tests {
     }
 
     #[test]
+    fn fails_preflight_when_required_host_acceleration_is_unavailable() {
+        let mut glass =
+            Glass::load("../../examples/hello-world.glass").expect("sample glass loads");
+        glass.manifest.runtime.requires_hardware_acceleration = true;
+
+        assert!(matches!(
+            select_accelerator(
+                &glass,
+                &HostCapabilities::without_acceleration(HostPlatform::MacOs)
+            ),
+            Err(HostPreflightError::MissingHvf)
+        ));
+        assert!(matches!(
+            select_accelerator(
+                &glass,
+                &HostCapabilities::without_acceleration(HostPlatform::Windows)
+            ),
+            Err(HostPreflightError::MissingWhpx)
+        ));
+        assert!(matches!(
+            select_accelerator(
+                &glass,
+                &HostCapabilities::without_acceleration(HostPlatform::Linux)
+            ),
+            Err(HostPreflightError::MissingKvm)
+        ));
+        assert!(matches!(
+            select_accelerator(
+                &glass,
+                &HostCapabilities::without_acceleration(HostPlatform::Other)
+            ),
+            Err(HostPreflightError::AccelerationRequiredButUnavailable)
+        ));
+    }
+
+    #[test]
     fn selected_local_overlay_replaces_bundled_overlay() {
         let mut runtime =
             RootglassRuntime::with_overlay_store(OverlayStore::new("/tmp/rootglass/overlays"));
