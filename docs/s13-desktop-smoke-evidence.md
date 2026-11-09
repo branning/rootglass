@@ -42,6 +42,28 @@ xattr -dr com.apple.quarantine /Applications/Rootglass.app
 
 Quarantine must be removed recursively because clearing only the top-level app attribute can leave nested files quarantined. The maintainer then confirmed the v0.0.2 bundled arm64 QEMU is killed with signal 9 and `codesign --verify --strict --verbose=4` reports `invalid signature (code or signature have been modified)`. The packaging script had modified QEMU's Mach-O rpaths without re-signing it. PR [#102](https://github.com/branning/rootglass/pull/102) re-signs and verifies the relocated binary and libraries. macOS package run [42553442626](https://github.com/branning/rootglass/actions/runs/42553442626) and installed TUI smoke [42553738230](https://github.com/branning/rootglass/actions/runs/42553738230) then passed: the installed app verified the QEMU signature, booted the signed example under TCG, accepted guest login and `uname -a`, stopped, and left no QEMU process. The smoke [artifact](https://github.com/branning/rootglass/actions/runs/42553738230/artifacts/13646302229) includes the TUI screenshot and diagnostic logs. This is macOS hosted-runner evidence for the TUI flow; native GPUI interaction, focus, accessibility, and clean-host qualification remain open.
 
+## v0.0.3 tagged preview
+
+PR [#104](https://github.com/branning/rootglass/pull/104) bumped the desktop
+package to v0.0.3 and documented the v0.0.2 signature failure. The all-platform
+package run [42556684965](https://github.com/branning/rootglass/actions/runs/42556684965)
+passed from tag `v0.0.3` at `6cf2239f49cabf1689e19ada1aa76b3ee7faacc1`; the
+draft prerelease now has all 14 expected release assets: three installers,
+three runtime archives, checksums, and the signed example.
+
+The exact tagged macOS package then passed the installed TUI smoke in run
+[42560261893](https://github.com/branning/rootglass/actions/runs/42560261893).
+It verified the bundled QEMU executable and libraries, installed the DMG app
+into `/Applications`, checked the sample checksum, selected the expected TCG
+fallback, booted and logged in to the signed Hello World guest, confirmed
+`uname -a` reported Alpine aarch64, and verified Stop left no QEMU process. The
+[smoke evidence artifact](https://github.com/branning/rootglass/actions/runs/42560261893/artifacts/13648873558)
+contains the TUI screenshot, serial output, QEMU logs, and guest `uname` output.
+The maintainer also manually opened the downloaded v0.0.3 DMG, booted Hello
+World in the GUI, and confirmed the guest kernel from the serial console. The
+draft remains unpublished pending maintainer approval; the app is unsigned and
+not notarized.
+
 ## Remaining acceptance
 
 The GUI workflow ran on Linux under Xvfb; the macOS and Windows runs were PTY smoke, not native GUI qualification. A maintainer still needs to review native-host interaction, focus, accessibility, and overall usability, then approve or narrow the supported platform set. Keep GOMUP3 open until those decisions and any required host evidence are recorded. Screenshot artifacts have a 14-day retention period; the package section lists artifact-specific expiry dates.
