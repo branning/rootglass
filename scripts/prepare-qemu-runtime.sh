@@ -45,6 +45,17 @@ if [[ "${platform}" == linux-x86_64 ]]; then
     exit 1
   fi
   cp -aL /usr/share/qemu/. "${share_dir}/"
+  ipxe_qemu_dir=/usr/lib/ipxe/qemu
+  if [[ ! -f "${ipxe_qemu_dir}/efi-virtio.rom" ]]; then
+    echo "the required EFI virtio ROM is missing at ${ipxe_qemu_dir}/efi-virtio.rom" >&2
+    echo "install the ipxe-qemu package before preparing the Linux runtime" >&2
+    exit 1
+  fi
+  cp -aL "${ipxe_qemu_dir}/." "${share_dir}/"
+  if [[ -f /usr/share/doc/ipxe-qemu/copyright ]]; then
+    install -m 0644 /usr/share/doc/ipxe-qemu/copyright \
+      "${runtime_root}/licenses/ipxe-qemu-copyright.txt"
+  fi
   multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH)"
   qemu_module_dir="/usr/lib/${multiarch}/qemu"
   if [[ -d "${qemu_module_dir}" ]]; then

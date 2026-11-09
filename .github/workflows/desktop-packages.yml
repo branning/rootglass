@@ -233,7 +233,7 @@ jobs:
             libasound2-dev libfontconfig-dev libssl-dev libvulkan1 \
             libwayland-dev libwebkit2gtk-4.1-dev libx11-xcb-dev \
             libxkbcommon-x11-dev libzstd-dev vulkan-validationlayers \
-            qemu-system-arm pax-utils
+            ipxe-qemu qemu-system-arm pax-utils
 
       - name: Install QEMU on macOS
         if: runner.os == 'macOS'
