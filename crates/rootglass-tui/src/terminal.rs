@@ -372,6 +372,7 @@ fn handle_developer_menu_key(
             input.clear();
         }
         KeyCode::Char('s') => {
+            trace_tui("developer form opened: action=SignDirectory");
             input.developer_form = Some(DeveloperForm {
                 action: DeveloperAction::SignDirectory,
                 source: None,
@@ -382,6 +383,7 @@ fn handle_developer_menu_key(
             input.mode = InputMode::DeveloperSource;
         }
         KeyCode::Char('p') => {
+            trace_tui("developer form opened: action=PackageArchive");
             input.developer_form = Some(DeveloperForm {
                 action: DeveloperAction::PackageArchive,
                 source: None,
@@ -418,7 +420,13 @@ fn handle_developer_form_key(
                 .ok_or_else(|| "the developer workflow form was lost".to_string())?;
             match input.mode {
                 InputMode::DeveloperSource if !value.trim().is_empty() => {
-                    form.source = Some(PathBuf::from(value));
+                    let source = PathBuf::from(value);
+                    trace_tui(format!(
+                        "developer source accepted: directory={}, manifest_exists={}",
+                        source.is_dir(),
+                        source.join("rootglass.toml").is_file(),
+                    ));
+                    form.source = Some(source);
                     input.mode = InputMode::DeveloperKeyFile;
                 }
                 InputMode::DeveloperKeyFile if !value.trim().is_empty() => {
