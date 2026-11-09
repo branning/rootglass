@@ -259,6 +259,19 @@ fn handle_key(
     key: KeyEvent,
     worker: &mut ServiceWorker,
 ) -> Result<bool, String> {
+    if matches!(key.code, KeyCode::Char('v') | KeyCode::Char('p')) {
+        let shortcut = match key.code {
+            KeyCode::Char('v') => "validate",
+            _ => "plan",
+        };
+        trace_tui(format!(
+            "shortcut input: action={shortcut}, mode={:?}, operations_panel_open={}, validate_enabled={}, plan_enabled={}",
+            input.mode,
+            model.operations_panel_open,
+            model.actions().validate,
+            model.actions().plan,
+        ));
+    }
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
         return Ok(true);
     }
@@ -1200,7 +1213,11 @@ impl ServiceWorker {
                 model.finish_validation(&ticket, result);
             }
             WorkerCompletion::Planned(ticket, result) => {
-                model.finish_plan(&ticket, result);
+                let successful = result.is_ok();
+                let applied = model.finish_plan(&ticket, result);
+                trace_tui(format!(
+                    "plan completion: successful={successful}, applied={applied}"
+                ));
             }
             WorkerCompletion::Removed(ticket, result) => {
                 model.finish_remove(&ticket, result);
@@ -1345,10 +1362,15 @@ fn service_worker_loop(
                 ticket,
                 with_service(&service, |service| service.validate_manifest(&path)),
             )),
-            WorkerRequest::PlanBundle(ticket, path) => Some(WorkerCompletion::Planned(
-                ticket,
-                with_service(&service, |service| service.plan_bundle(&path)),
-            )),
+            WorkerRequest::PlanBundle(ticket, path) => {
+                trace_tui("plan worker started");
+                let result = with_service(&service, |service| service.plan_bundle(&path));
+                trace_tui(format!(
+                    "plan worker returned: {}",
+                    if result.is_ok() { "ok" } else { "error" }
+                ));
+                Some(WorkerCompletion::Planned(ticket, result))
+            }
             WorkerRequest::RemoveInstalled(ticket, digest) => Some(WorkerCompletion::Removed(
                 ticket,
                 with_service(&service, |service| service.remove_installed(&digest)),
