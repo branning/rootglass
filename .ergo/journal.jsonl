@@ -265,3 +265,4 @@
 {"version":1,"task_id":"GOMUP3","kind":"result","at":"2026-11-09T00:09:54.155315396Z","text":"codesign confirms bundled QEMU signature invalid; recursive quarantine removal does not fix the SIGKILL."}
 {"version":1,"task_id":"GOMUP3","kind":"result","at":"2026-11-09T00:09:54.164706976Z","text":"Published v0.0.2 release notes now disclose the invalid-signature QEMU startup issue."}
 {"version":1,"task_id":"7VLKAS","kind":"result","at":"2026-11-09T00:22:13.237250275Z","agent":"codex@worker-1","text":"User requested opt-in macOS TUI install-to-boot smoke; it reuses package artifacts to limit runner minutes."}
+{"version":1,"task_id":"7VLKAS","kind":"result","at":"2026-11-09T00:45:46.003884711Z","agent":"codex@worker-1","text":"Manual package dispatch exposed omitted optional run ID skipping build jobs; fixing guards before TUI smoke."}

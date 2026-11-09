@@ -17,10 +17,12 @@ on:
         description: Successful package workflow run ID to attach to a release without rebuilding
         type: string
         required: false
+        default: ""
       release_tag:
         description: Existing mutable draft prerelease to receive all-platform assets before publication
         type: string
         required: false
+        default: ""
 
 permissions:
   contents: read
@@ -32,7 +34,7 @@ concurrency:
 jobs:
   validate-release:
     name: Validate mutable draft prerelease
-    if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag }}
     runs-on: ubuntu-latest
     # GitHub hides draft releases from tokens with contents:read.
     permissions:
@@ -109,7 +111,7 @@ jobs:
   runtime_assets:
     name: Materialize pinned guest boot assets
     needs: [select-platforms]
-    if: github.event_name != 'workflow_dispatch' || inputs.artifact_run_id == ''
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.artifact_run_id }}
     runs-on: ubuntu-24.04
     outputs:
       runtime_version: ${{ steps.version.outputs.runtime_version }}
@@ -179,7 +181,7 @@ jobs:
 
   package:
     name: ${{ matrix.name }} package
-    if: github.event_name != 'workflow_dispatch' || inputs.artifact_run_id == ''
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.artifact_run_id }}
     needs: [select-platforms, runtime_assets]
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -337,7 +339,7 @@ jobs:
 
   attach-current-release-assets:
     name: Attach current build artifacts to a draft prerelease
-    if: github.event_name == 'workflow_dispatch' && inputs.release_tag != '' && inputs.artifact_run_id == ''
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag && !inputs.artifact_run_id }}
     needs: [package, runtime_assets]
     runs-on: ubuntu-24.04
     permissions:
@@ -361,7 +363,7 @@ jobs:
 
   attach-existing-release-assets:
     name: Attach artifacts from an existing package run
-    if: github.event_name == 'workflow_dispatch' && inputs.artifact_run_id != ''
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact_run_id }}
     needs: [select-platforms]
     runs-on: ubuntu-24.04
     permissions:
