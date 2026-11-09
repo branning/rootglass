@@ -16,6 +16,7 @@ use ratatui::Terminal;
 use rootglass_app::registry::InstalledGlass;
 use rootglass_app::{AppError, RunId, RuntimeEvent};
 use rootglass_core::LifecycleState;
+use std::fs::OpenOptions;
 use std::io::{self, IsTerminal, Stdout, Write};
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
@@ -26,6 +27,16 @@ use std::time::Duration;
 const TICK_RATE: Duration = Duration::from_millis(50);
 const MAX_PENDING_SERVICE_REQUESTS: usize = 64;
 const MAX_INPUT_BYTES: usize = 8_192;
+
+fn trace_tui(message: impl AsRef<str>) {
+    let Some(path) = std::env::var_os("ROOTGLASS_TUI_TRACE_FILE") else {
+        return;
+    };
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    let _ = writeln!(file, "{}", message.as_ref());
+}
 
 /// Run the same Rootglass TUI session in a real terminal or a full-duplex PTY.
 /// The controller and renderer remain independent of this terminal adapter.
@@ -114,6 +125,10 @@ fn run_event_loop(
         }
 
         if model.run_id.is_some() && !*poll_pending {
+            trace_tui(format!(
+                "queue poll for run {}",
+                model.run_id.as_ref().map(|run| run.0).unwrap_or_default()
+            ));
             worker.poll_events()?;
             *poll_pending = true;
         }
@@ -830,6 +845,7 @@ fn start_guest(model: &mut UiModel, worker: &mut ServiceWorker) -> Result<(), St
             .then_some(model.selected_state_id.clone())
             .filter(|_| model.state_error.is_none());
         worker.start(ticket, path, state_id)?;
+        trace_tui("queued start operation");
     }
     Ok(())
 }
@@ -1171,7 +1187,13 @@ impl ServiceWorker {
                 model.finish_remove(&ticket, result);
             }
             WorkerCompletion::Started(ticket, result) => {
-                if let StartEffect::StopOrphan(run) = model.finish_start(&ticket, result) {
+                let result_ok = result.is_ok();
+                let effect = model.finish_start(&ticket, result);
+                trace_tui(format!(
+                    "start completion: result_ok={result_ok}, applied={}",
+                    matches!(&effect, StartEffect::Applied)
+                ));
+                if let StartEffect::StopOrphan(run) = effect {
                     if let Err(error) = self.stop_orphan(run.clone()) {
                         model.run_id = Some(run);
                         return Err(error);
@@ -1193,6 +1215,23 @@ impl ServiceWorker {
             }
             WorkerCompletion::Polled(result) => {
                 *poll_pending = false;
+                match &result {
+                    Ok(events) => {
+                        let serial = events
+                            .iter()
+                            .filter(|event| matches!(event, RuntimeEvent::SerialChunk { .. }))
+                            .count();
+                        let ready = events
+                            .iter()
+                            .filter(|event| matches!(event, RuntimeEvent::GuestReady { .. }))
+                            .count();
+                        trace_tui(format!(
+                            "poll completion: events={}, serial={serial}, guest_ready={ready}",
+                            events.len()
+                        ));
+                    }
+                    Err(_) => trace_tui("poll completion: application error"),
+                }
                 model.apply_poll_result(result);
             }
             WorkerCompletion::Written(run, result) => model.finish_input(&run, result),
@@ -1284,6 +1323,7 @@ fn service_worker_loop(
                 with_service(&service, |service| service.remove_installed(&digest)),
             )),
             WorkerRequest::Start(ticket, path, state_id) => {
+                trace_tui("service start request began");
                 let result = if ticket.is_cancelled() {
                     Err(AppError {
                         phase: LifecycleState::Starting,
@@ -1295,6 +1335,10 @@ fn service_worker_loop(
                         service.start_with_state(&path, state_id.as_deref())
                     })
                 };
+                trace_tui(format!(
+                    "service start request returned: {}",
+                    if result.is_ok() { "ok" } else { "error" }
+                ));
                 Some(WorkerCompletion::Started(ticket, result))
             }
             WorkerRequest::Stop(ticket, run) => Some(WorkerCompletion::Stopped(
@@ -1309,10 +1353,27 @@ fn service_worker_loop(
                     }),
                 ))
             }
-            WorkerRequest::PollEvents => Some(WorkerCompletion::Polled(with_service(
-                &service,
-                |service| service.poll_events(),
-            ))),
+            WorkerRequest::PollEvents => {
+                let result = with_service(&service, |service| service.poll_events());
+                match &result {
+                    Ok(events) => {
+                        let serial = events
+                            .iter()
+                            .filter(|event| matches!(event, RuntimeEvent::SerialChunk { .. }))
+                            .count();
+                        let ready = events
+                            .iter()
+                            .filter(|event| matches!(event, RuntimeEvent::GuestReady { .. }))
+                            .count();
+                        trace_tui(format!(
+                            "service poll returned: events={}, serial={serial}, guest_ready={ready}",
+                            events.len()
+                        ));
+                    }
+                    Err(_) => trace_tui("service poll returned an application error"),
+                }
+                Some(WorkerCompletion::Polled(result))
+            }
             WorkerRequest::WriteSerial(run, bytes) => Some(WorkerCompletion::Written(
                 run.clone(),
                 with_service(&service, |service| service.write_serial(&run, &bytes)),

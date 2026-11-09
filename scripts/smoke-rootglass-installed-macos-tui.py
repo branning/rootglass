@@ -91,6 +91,7 @@ class TuiSession:
         environment = os.environ.copy()
         environment["TERM"] = "xterm-256color"
         environment["LC_ALL"] = "C"
+        environment["ROOTGLASS_TUI_TRACE_FILE"] = str(output / "tui-trace.log")
         self.child = subprocess.Popen(
             [str(binary), "tui", str(glass)],
             stdin=slave,

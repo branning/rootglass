@@ -273,3 +273,4 @@
 {"version":1,"task_id":"7VLKAS","kind":"result","at":"2026-11-09T01:46:57.057251924Z","agent":"codex@worker-1","text":"macOS probe confirmed EACCES renaming a read-only stage; keep its root writable through publish."}
 {"version":1,"task_id":"7VLKAS","kind":"result","at":"2026-11-09T01:59:50.802697902Z","agent":"codex@worker-1","text":"Smoke 42547895331 passed import and QEMU signature checks; log identifies HV_UNSUPPORTED."}
 {"version":1,"task_id":"7VLKAS","kind":"result","at":"2026-11-09T02:08:28.138528169Z","agent":"codex@worker-1","text":"Smoke 42549090562: installed app selected TCG; PTY assertion missed whitespace collapsed by Ratatui."}
+{"version":1,"task_id":"7VLKAS","kind":"result","at":"2026-11-09T02:22:36.211184961Z","agent":"codex@worker-1","text":"Smoke 42549606169: QEMU TCG guest reaches serial login, but TUI remains at Starting guest."}
