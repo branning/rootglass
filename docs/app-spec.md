@@ -500,7 +500,7 @@ Use the defaults below for remaining implementation unless an ADR changes them.
 | Bundle contents | One read-only rootfs, optional state template; canonical ZIP | S01/S05 |
 | State behavior | Prefer OverlayFS upper/work on local state disk; signed root immutable | S06 |
 | Publisher trust | Explicit offline trusted keys, default deny unknown | S07 / issue #18 |
-| QEMU distribution | Bundled when legally/operationally feasible; system override for developers | S10 / issue #20 |
+| QEMU distribution | Bundle a versioned, verified runtime per desktop target; PATH is development-only | ADR-0002; S14 clean-host evidence remains |
 | Guest networking | None unless manifest explicitly requests user networking; no unsolicited inbound | S04/S10 |
 | Host arch acceleration | Real capability-tested HVF/KVM/WHPX, otherwise disclosed TCG | S03/S10 |
 | Platform support | Advertise only OS + CPU combinations verified by installer and guest tests | S11/S12 |

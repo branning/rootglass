@@ -322,12 +322,26 @@ mod tests {
 
     #[test]
     fn launch_readiness_fails_when_rootfs_is_missing() {
-        let glass = Glass::load("../../examples/hello-world.glass").expect("sample glass loads");
+        let source_manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/hello-world.glass/rootglass.toml");
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock is after unix epoch")
+            .as_nanos();
+        let fixture_root = std::env::temp_dir().join(format!(
+            "rootglass-manifest-missing-rootfs-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&fixture_root).expect("fixture directory is created");
+        std::fs::copy(source_manifest, fixture_root.join(MANIFEST_FILE_NAME))
+            .expect("sample manifest is copied into an isolated fixture");
+        let glass = Glass::load(&fixture_root).expect("fixture manifest loads");
         let error = glass
             .validate_launch_ready()
             .expect_err("fixture intentionally omits rootfs.img");
 
         assert!(matches!(error, ManifestError::MissingRootfs { .. }));
+        std::fs::remove_dir_all(fixture_root).expect("fixture directory is removed");
     }
 
     #[test]

@@ -342,6 +342,21 @@ mod tests {
     }
 
     #[test]
+    fn rejects_missing_asset_before_returning_runtime() {
+        let fixture = Fixture::new();
+        let k = fixture.put("kernel", b"kernel bytes");
+        let i = fixture.put("initrd", b"initrd bytes");
+        let q = fixture.put("qemu", b"qemu bytes");
+        fixture.manifest(&k, &i, &q);
+        std::fs::remove_file(fixture.0.join("runtime-assets/v1/kernel")).unwrap();
+
+        assert!(matches!(
+            RuntimeAssetsResolver::new(&fixture.0, "").resolve("v1"),
+            Err(RuntimeAssetsError::MissingAsset(_))
+        ));
+    }
+
+    #[test]
     fn rejects_manifest_path_traversal() {
         let fixture = Fixture::new();
         let k = fixture.put("kernel", b"kernel bytes");
