@@ -59,6 +59,35 @@ wait_for_trace_marker() {
   exit 1
 }
 
+wait_for_trace_count() {
+  local marker="$1"
+  local expected_count="$2"
+  local timeout_seconds="${3:-30}"
+  local count="0"
+  for _ in $(seq 1 "$((timeout_seconds * 10))"); do
+    count="$(grep -Fc "$marker" "$work_dir/tui-trace.log" 2>/dev/null || true)"
+    count="${count//[[:space:]]/}"
+    if (( ${count:-0} >= expected_count )); then
+      return 0
+    fi
+    if [[ -n "$app_pid" ]] && ! kill -0 "$app_pid" 2>/dev/null; then
+      cat "$log_file"
+      cat "$work_dir/tui-trace.log" 2>/dev/null || true
+      echo "Rootglass desktop exited while waiting for TUI trace count: $marker" >&2
+      exit 1
+    fi
+    sleep 0.1
+  done
+  if [[ -n "$window_id" ]]; then
+    import -window "$window_id" "$artifact_dir/timeout-trace-count-${marker//[^A-Za-z0-9_-]/_}.png" \
+      >/dev/null 2>&1 || true
+  fi
+  cat "$log_file"
+  cat "$work_dir/tui-trace.log" 2>/dev/null || true
+  echo "Timed out after ${timeout_seconds}s waiting for TUI trace count $expected_count: $marker" >&2
+  exit 1
+}
+
 cleanup() {
   if [[ -n "$app_pid" ]] && kill -0 "$app_pid" 2>/dev/null; then
     if [[ -n "$window_id" ]]; then
@@ -174,6 +203,8 @@ wait_for_marker ROOTGLASS_EMBEDDED_TUI_OPEN_PATH_TYPED 15
 xdotool key --clearmodifiers Return
 wait_for_trace_marker "imported bundle inspection completed: outcome=ready" 180
 wait_for_marker ROOTGLASS_EMBEDDED_TUI_BUNDLE_READY 30
+state_refresh_marker="state completion: operation=refresh, successful=true, applied=true"
+wait_for_trace_count "$state_refresh_marker" 1 30
 xdotool key --clearmodifiers v
 wait_for_trace_marker "validate completion: successful=true, applied=true" 30
 wait_for_marker ROOTGLASS_EMBEDDED_TUI_MANIFEST_VALID 30
@@ -181,9 +212,13 @@ xdotool key --clearmodifiers p
 wait_for_marker ROOTGLASS_EMBEDDED_TUI_LAUNCH_PLAN 60
 
 # Exercise state creation and trust diagnostics in the same TUI session.
+state_refreshes_before="$(grep -Fc "$state_refresh_marker" "$work_dir/tui-trace.log" 2>/dev/null || true)"
+state_refreshes_before="${state_refreshes_before//[[:space:]]/}"
 xdotool key --clearmodifiers t
 wait_for_marker ROOTGLASS_EMBEDDED_TUI_STATE_TRUST 30
+wait_for_trace_count "$state_refresh_marker" "$(( ${state_refreshes_before:-0} + 1 ))" 30
 xdotool key --clearmodifiers c
+wait_for_trace_marker "state create prompt opened" 15
 xdotool type --clearmodifiers --delay 10 embedded-smoke
 xdotool key --clearmodifiers Return
 wait_for_marker ROOTGLASS_EMBEDDED_TUI_STATE_CREATED 30

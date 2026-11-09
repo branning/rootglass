@@ -598,6 +598,7 @@ fn handle_operations_panel_key(
         KeyCode::Up => model.move_state_cursor(false),
         KeyCode::Down => model.move_state_cursor(true),
         KeyCode::Char('c') if model.actions().state_create => {
+            trace_tui("state create prompt opened");
             input.text.clear();
             input.mode = InputMode::StateCreateName;
         }
@@ -956,7 +957,11 @@ enum OpenedBundle {
 enum WorkerCompletion {
     Library(Result<Vec<InstalledGlass>, AppError>),
     Trust(Result<rootglass_app::TrustPolicyStatus, AppError>),
-    States(PathBuf, Result<crate::StateSnapshot, AppError>),
+    States(
+        PathBuf,
+        StateOperation,
+        Result<crate::StateSnapshot, AppError>,
+    ),
     Opened(OperationTicket, OpenedBundle),
     Validated(
         OperationTicket,
@@ -981,6 +986,19 @@ enum StateOperation {
     Clone { source_id: String, new_name: String },
     Reset(String),
     Delete(String),
+}
+
+impl StateOperation {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Refresh => "refresh",
+            Self::Select(_) => "select",
+            Self::Create(_) => "create",
+            Self::Clone { .. } => "clone",
+            Self::Reset(_) => "reset",
+            Self::Delete(_) => "delete",
+        }
+    }
 }
 
 struct ServiceWorker {
@@ -1179,10 +1197,16 @@ impl ServiceWorker {
         match completion {
             WorkerCompletion::Library(result) => model.finish_library_refresh(result),
             WorkerCompletion::Trust(result) => model.finish_trust_policy(result),
-            WorkerCompletion::States(path, result) => {
-                if model.selected_path.as_ref() == Some(&path) {
+            WorkerCompletion::States(path, operation, result) => {
+                let successful = result.is_ok();
+                let applied = model.selected_path.as_ref() == Some(&path);
+                if applied {
                     model.finish_state_operation(result);
                 }
+                trace_tui(format!(
+                    "state completion: operation={}, successful={successful}, applied={applied}",
+                    operation.label()
+                ));
             }
             WorkerCompletion::Opened(_, OpenedBundle::Cancelled) => {
                 trace_tui("open completion: cancelled");
@@ -1327,6 +1351,10 @@ fn service_worker_loop(
                 })))
             }
             WorkerRequest::StateAction(path, operation) => {
+                trace_tui(format!(
+                    "state worker started: operation={}",
+                    operation.label()
+                ));
                 let result = with_service(&service, |service| match &operation {
                     StateOperation::Refresh => service.list_states(&path),
                     StateOperation::Select(id) => service.select_state(&path, id),
@@ -1338,7 +1366,12 @@ fn service_worker_loop(
                     StateOperation::Reset(id) => service.reset_state(&path, id),
                     StateOperation::Delete(id) => service.delete_state(&path, id),
                 });
-                Some(WorkerCompletion::States(path, result))
+                trace_tui(format!(
+                    "state worker returned: operation={}, outcome={}",
+                    operation.label(),
+                    if result.is_ok() { "ok" } else { "error" }
+                ));
+                Some(WorkerCompletion::States(path, operation, result))
             }
             WorkerRequest::Open(ticket, path) => {
                 trace_tui(format!(
