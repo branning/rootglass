@@ -89,8 +89,8 @@ jobs:
             python3 python3-xlib x11-utils xauth xdg-desktop-portal \
             xdg-desktop-portal-gtk xdg-utils xdotool xvfb
 
-      - name: Verify artifacts, install package, and record inventory
-        timeout-minutes: 8
+      - name: Verify artifact checksums and package metadata
+        timeout-minutes: 4
         env:
           PACKAGE_DIR: ${{ runner.temp }}/rootglass-package
           EXAMPLE_DIR: ${{ runner.temp }}/rootglass-example
@@ -119,7 +119,8 @@ jobs:
           JSON
           chmod 600 "$TEST_HOME/.config/rootglass/trust.json"
 
-          python3 - "$PACKAGE_DIR" "$EXAMPLE_DIR" <<'PY'
+          if timeout --signal=TERM --kill-after=5s 120s \
+            python3 - "$PACKAGE_DIR" "$EXAMPLE_DIR" > "$EVIDENCE_DIR/checksums.log" 2>&1 <<'PY'
           import hashlib
           import sys
           from pathlib import Path
@@ -160,25 +161,56 @@ jobs:
           (package_dir / "package-path.txt").write_text(str(debs[0]) + "\n", encoding="utf-8")
           (example_dir / "glass-path.txt").write_text(str(glasses[0]) + "\n", encoding="utf-8")
           PY
+          then
+            cat "$EVIDENCE_DIR/checksums.log"
+          else
+            checksum_status=$?
+            cat "$EVIDENCE_DIR/checksums.log"
+            exit "$checksum_status"
+          fi
           progress "checksums verified"
 
           deb=$(cat "$PACKAGE_DIR/package-path.txt")
-          glass=$(cat "$EXAMPLE_DIR/glass-path.txt")
           package_name=$(dpkg-deb -f "$deb" Package)
           package_depends=$(dpkg-deb -f "$deb" Depends)
-          echo "Package: $package_name" | tee "$EVIDENCE_DIR/package.txt"
-          dpkg-deb -f "$deb" Package Version Architecture | tee -a "$EVIDENCE_DIR/package.txt"
-          echo "Depends: $package_depends" | tee -a "$EVIDENCE_DIR/package.txt"
+          {
+            echo "Package: $package_name"
+            dpkg-deb -f "$deb" Package Version Architecture
+            echo "Depends: $package_depends"
+          } | tee "$EVIDENCE_DIR/package.txt"
           for dependency in libxcb1 libxkbcommon0 libxkbcommon-x11-0; do
             if [[ "$package_depends" != *"$dependency"* ]]; then
               echo "Debian package is missing runtime dependency: $dependency" >&2
               exit 1
             fi
           done
+          printf '%s\n' "$package_name" > "$EVIDENCE_DIR/package-name.txt"
+          progress "package checksums and metadata verified"
+
+      - name: Install package and record host
+        timeout-minutes: 5
+        env:
+          PACKAGE_DIR: ${{ runner.temp }}/rootglass-package
+          TEST_HOME: ${{ runner.temp }}/rootglass-user-home
+          EVIDENCE_DIR: ${{ runner.temp }}/rootglass-install-evidence
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR" "$TEST_HOME/.config/rootglass" "$TEST_HOME/.local/share"
+          deb=$(cat "$PACKAGE_DIR/package-path.txt")
+          package_name=$(cat "$EVIDENCE_DIR/package-name.txt")
+          progress() {
+            printf '%s\n' "$1" | tee -a "$EVIDENCE_DIR/progress.txt"
+          }
           progress "installing Linux package with a 180-second limit"
-          sudo timeout --signal=TERM --kill-after=10s 180s \
+          if sudo timeout --signal=TERM --kill-after=10s 180s \
             env DEBIAN_FRONTEND=noninteractive apt-get install -y "$deb" \
-            2>&1 | tee "$EVIDENCE_DIR/package-install.log"
+            > "$EVIDENCE_DIR/package-install.log" 2>&1; then
+            cat "$EVIDENCE_DIR/package-install.log"
+          else
+            install_status=$?
+            cat "$EVIDENCE_DIR/package-install.log"
+            exit "$install_status"
+          fi
           progress "Linux package installed"
           rootglass_binary="$(command -v rootglass)"
           [[ -x "$rootglass_binary" ]] || { echo "Installed rootglass binary is missing" >&2; exit 1; }
@@ -192,14 +224,24 @@ jobs:
           fi
           progress "host and installed package recorded"
 
-          runtime_info=$(dpkg-query -L "$package_name" | grep '/runtime-info.json$' | head -n 1)
+      - name: Verify installed runtime inventory
+        timeout-minutes: 4
+        env:
+          EVIDENCE_DIR: ${{ runner.temp }}/rootglass-install-evidence
+        run: |
+          set -euo pipefail
+          progress() {
+            printf '%s\n' "$1" | tee -a "$EVIDENCE_DIR/progress.txt"
+          }
+          runtime_info=$(awk '/\/runtime-info\.json$/ { print; exit }' "$EVIDENCE_DIR/installed-files.txt")
           [[ -n "$runtime_info" && -f "$runtime_info" ]] || {
             echo "The installed package has no runtime inventory" >&2
             exit 1
           }
           runtime_root="$(dirname "$runtime_info")"
           progress "verifying installed runtime inventory with a 120-second limit"
-          timeout --signal=TERM --kill-after=5s 120s python3 - "$runtime_root" <<'PY' | tee "$EVIDENCE_DIR/runtime-inventory.txt"
+          if timeout --signal=TERM --kill-after=5s 120s \
+            python3 - "$runtime_root" > "$EVIDENCE_DIR/runtime-inventory.txt" 2>&1 <<'PY'
           import hashlib
           import json
           import pathlib
@@ -236,8 +278,28 @@ jobs:
           print(f"efi_virtio_rom={rom}")
           print(f"verified_asset_count={len(manifest['assets'])}")
           PY
+          then
+            cat "$EVIDENCE_DIR/runtime-inventory.txt"
+          else
+            inventory_status=$?
+            cat "$EVIDENCE_DIR/runtime-inventory.txt"
+            exit "$inventory_status"
+          fi
           progress "installed runtime inventory verified"
 
+      - name: Verify installed rootglass plan
+        timeout-minutes: 4
+        env:
+          EXAMPLE_DIR: ${{ runner.temp }}/rootglass-example
+          TEST_HOME: ${{ runner.temp }}/rootglass-user-home
+          EVIDENCE_DIR: ${{ runner.temp }}/rootglass-install-evidence
+        run: |
+          set -euo pipefail
+          progress() {
+            printf '%s\n' "$1" | tee -a "$EVIDENCE_DIR/progress.txt"
+          }
+          rootglass_binary=$(cat "$EVIDENCE_DIR/binary-path.txt")
+          glass=$(cat "$EXAMPLE_DIR/glass-path.txt")
           mkdir -p "$RUNNER_TEMP/rootglass-shims"
           for tool in cargo rustc qemu-system-aarch64; do
             cat > "$RUNNER_TEMP/rootglass-shims/$tool" <<EOF
@@ -251,7 +313,7 @@ jobs:
 
           plan_output="$RUNNER_TEMP/rootglass-plan.txt"
           progress "running installed rootglass plan with a 90-second limit"
-          (
+          if (
             cd "$RUNNER_TEMP"
             timeout --signal=TERM --kill-after=5s 90s env \
               PATH="$RUNNER_TEMP/rootglass-shims:$PATH" \
@@ -259,7 +321,14 @@ jobs:
               XDG_CONFIG_HOME="$TEST_HOME/.config" \
               XDG_DATA_HOME="$TEST_HOME/.local/share" \
               "$rootglass_binary" plan "$glass"
-          ) | tee "$plan_output" | tee "$EVIDENCE_DIR/package-plan.txt"
+          ) > "$plan_output" 2>&1; then
+            cat "$plan_output"
+            cp "$plan_output" "$EVIDENCE_DIR/package-plan.txt"
+          else
+            plan_status=$?
+            cat "$plan_output"
+            exit "$plan_status"
+          fi
           python3 - "$plan_output" <<'PY'
           import pathlib
           import shlex
