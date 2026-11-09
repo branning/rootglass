@@ -84,6 +84,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install terminal capture dependencies
+        run: python -m pip install --disable-pip-version-check pyte==0.8.2 Pillow==13.0.0
+
       - name: Verify sample checksum and install the app
         env:
           PACKAGE_DIR: ${{ runner.temp }}/rootglass-package
@@ -226,6 +229,7 @@ jobs:
             python3 scripts/smoke-rootglass-installed-macos-tui.py \
               /Applications/Rootglass.app/Contents/MacOS/rootglass \
               "$glass" "$EVIDENCE_DIR"
+          test -s "$EVIDENCE_DIR/tui-terminal-screenshot.png"
 
       - name: Upload TUI, serial, and QEMU evidence
         if: always()

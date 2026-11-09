@@ -275,3 +275,5 @@
 {"version":1,"task_id":"7VLKAS","kind":"result","at":"2026-11-09T02:08:28.138528169Z","agent":"codex@worker-1","text":"Smoke 42549090562: installed app selected TCG; PTY assertion missed whitespace collapsed by Ratatui."}
 {"version":1,"task_id":"7VLKAS","kind":"result","at":"2026-11-09T02:22:36.211184961Z","agent":"codex@worker-1","text":"Smoke 42549606169: QEMU TCG guest reaches serial login, but TUI remains at Starting guest."}
 {"version":1,"task_id":"7VLKAS","kind":"result","at":"2026-11-09T02:35:05.351036559Z","agent":"codex@worker-1","text":"Smoke 42551265598: start completes and polls serial; TUI timeout occurs while draining 32-chunk batches."}
+{"version":1,"task_id":"7VLKAS","kind":"result","at":"2026-11-09T02:46:58.000133151Z","agent":"codex@worker-1","text":"Smoke 42552177929: TUI reached Running and showed login; ANSI flattening broke the screen assertion."}
+{"version":1,"task_id":"7VLKAS","kind":"result","at":"2026-11-09T02:47:45.873454905Z","agent":"codex@worker-1","text":"Local PTY replay: pyte confirms Running/login; screenshot PNG renders from the TUI screen."}
