@@ -29,7 +29,7 @@ const TICK_RATE: Duration = Duration::from_millis(50);
 const MAX_PENDING_SERVICE_REQUESTS: usize = 64;
 const MAX_INPUT_BYTES: usize = 8_192;
 
-fn trace_tui(message: impl AsRef<str>) {
+pub(crate) fn trace_tui(message: impl AsRef<str>) {
     static TRACE_FILE: OnceLock<Option<Mutex<std::fs::File>>> = OnceLock::new();
     let Some(file) = TRACE_FILE.get_or_init(|| {
         let path = std::env::var_os("ROOTGLASS_TUI_TRACE_FILE")?;

@@ -172,7 +172,8 @@ wait_for_marker ROOTGLASS_EMBEDDED_TUI_OPEN_PATH_PROMPT 15
 xdotool type --clearmodifiers --delay 5 "$sample"
 wait_for_marker ROOTGLASS_EMBEDDED_TUI_OPEN_PATH_TYPED 15
 xdotool key --clearmodifiers Return
-wait_for_marker ROOTGLASS_EMBEDDED_TUI_BUNDLE_READY 60
+wait_for_trace_marker "imported bundle inspection completed: outcome=ready" 180
+wait_for_marker ROOTGLASS_EMBEDDED_TUI_BUNDLE_READY 30
 xdotool key --clearmodifiers v
 wait_for_trace_marker "validate completion: successful=true, applied=true" 30
 wait_for_marker ROOTGLASS_EMBEDDED_TUI_MANIFEST_VALID 30

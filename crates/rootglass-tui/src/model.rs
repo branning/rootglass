@@ -276,8 +276,18 @@ pub trait TuiService: Send {
     }
 
     fn import_and_inspect(&mut self, source: &Path) -> Result<ImportCompletion, AppError> {
+        crate::terminal::trace_tui("archive import started");
         let installed = self.import_archive(source)?;
+        crate::terminal::trace_tui("archive import completed");
         let inspection = self.inspect_bundle(&installed.package_path);
+        let outcome = match &inspection {
+            InspectionOutcome::Ready(_) => "ready",
+            InspectionOutcome::Blocked(_) => "blocked",
+            InspectionOutcome::Failed(_) => "failed",
+        };
+        crate::terminal::trace_tui(format!(
+            "imported bundle inspection completed: outcome={outcome}"
+        ));
         Ok(ImportCompletion {
             installed,
             inspection,
