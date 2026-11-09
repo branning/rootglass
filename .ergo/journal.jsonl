@@ -252,3 +252,16 @@
 {"version":1,"task_id":"RN2PXH","kind":"result","at":"2026-11-08T23:32:08.101861197Z","agent":"codex@worker-1","text":"Checks: trust JSON parses, key fingerprint matches, doc links exist, and diff check passes."}
 {"version":1,"task_id":"RN2PXH","kind":"result","at":"2026-11-08T23:36:16.205566953Z","agent":"codex@worker-1","text":"PR #94 merged; all 7 CI checks passed; docs cover sample trust without changing default deny."}
 {"version":1,"task_id":"RN2PXH","kind":"done","at":"2026-11-08T23:36:16.216658638Z","agent":"codex@worker-1","text":"Merged PR #94; CI run 42535702354 passed 7/7; sample trust instructions include fingerprint/key and public-key warning."}
+{"version":1,"task_id":"7VLKAS","kind":"created","at":"2026-11-08T23:53:23.599662892Z"}
+{"version":1,"task_id":"7VLKAS","kind":"claim","at":"2026-11-08T23:53:32.080319222Z","agent":"codex@worker-1"}
+{"version":1,"task_id":"7VLKAS","kind":"result","at":"2026-11-08T23:53:32.090788011Z","agent":"codex@worker-1","text":"v0.0.2 macOS arm64 Boot failed: QMP at 127.0.0.1:61080 refused."}
+{"version":1,"task_id":"GOMUP3","kind":"result","at":"2026-11-08T23:53:32.100749393Z","text":"v0.0.2 Boot fails before QMP readiness; macOS app reports loopback connection refused."}
+{"version":1,"task_id":"7VLKAS","kind":"result","at":"2026-11-09T00:03:05.774509179Z","agent":"codex@worker-1","text":"270 nested quarantine entries explain blank QEMU logs; recursive removal and retest pending."}
+{"version":1,"task_id":"GOMUP3","kind":"result","at":"2026-11-09T00:03:05.786853361Z","text":"v0.0.2 QEMU logs are empty; 270 quarantine-attribute lines remain inside app bundle."}
+{"version":1,"task_id":"7VLKAS","kind":"result","at":"2026-11-09T00:04:20.186708317Z","agent":"codex@worker-1","text":"grep -B1 printed 270 lines; nested quarantine remains, but exact attribute count is unknown."}
+{"version":1,"task_id":"GOMUP3","kind":"result","at":"2026-11-09T00:04:20.198896069Z","text":"xattr output confirms nested quarantine remains after top-level removal; recursive removal and boot retest pending."}
+{"version":1,"task_id":"7VLKAS","kind":"result","at":"2026-11-09T00:09:54.135239224Z","agent":"codex@worker-1","text":"Confirmed invalid Mach-O signature; QEMU direct launch is killed with signal 9."}
+{"version":1,"task_id":"7VLKAS","kind":"result","at":"2026-11-09T00:09:54.144914379Z","agent":"codex@worker-1","text":"Mac runtime build now ad-hoc signs and verifies relocated QEMU and dylibs."}
+{"version":1,"task_id":"GOMUP3","kind":"result","at":"2026-11-09T00:09:54.155315396Z","text":"codesign confirms bundled QEMU signature invalid; recursive quarantine removal does not fix the SIGKILL."}
+{"version":1,"task_id":"GOMUP3","kind":"result","at":"2026-11-09T00:09:54.164706976Z","text":"Published v0.0.2 release notes now disclose the invalid-signature QEMU startup issue."}
+{"version":1,"task_id":"7VLKAS","kind":"result","at":"2026-11-09T00:22:13.237250275Z","agent":"codex@worker-1","text":"User requested opt-in macOS TUI install-to-boot smoke; it reuses package artifacts to limit runner minutes."}

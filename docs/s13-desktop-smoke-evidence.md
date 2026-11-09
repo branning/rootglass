@@ -37,10 +37,10 @@ Manual package run [42520653157](https://github.com/branning/rootglass/actions/r
 The DMG is unsigned and not notarized. To install it, download and extract the DMG artifact ZIP, open the DMG, and drag `Rootglass.app` to Applications. If macOS reports that the installed app is damaged, use the documented [quarantine workaround](../README.md#macos-preview-first-launch-caveat):
 
 ```sh
-xattr -d com.apple.quarantine /Applications/Rootglass.app
+xattr -dr com.apple.quarantine /Applications/Rootglass.app
 ```
 
-This is an installable review package, not native macOS GUI qualification: the job built and packaged the app but did not launch it or check native interaction, focus, or accessibility.
+Quarantine must be removed recursively because clearing only the top-level app attribute can leave nested files quarantined. The maintainer then confirmed the v0.0.2 bundled arm64 QEMU is killed with signal 9 and `codesign --verify --strict --verbose=4` reports `invalid signature (code or signature have been modified)`. The packaging script had modified QEMU's Mach-O rpaths without re-signing it; a corrected runtime package is being prepared. This is an installable review package, not native macOS GUI qualification: the job built and packaged the app but did not launch it or check native interaction, focus, or accessibility.
 
 ## Remaining acceptance
 
