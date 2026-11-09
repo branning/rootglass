@@ -2,7 +2,12 @@
 
 The desktop package workflow builds on hosted Linux x64, macOS arm64, and Windows x64 runners. Manual builds upload review artifacts to Actions for 14 days. To create a release, build from a new draft prerelease's tag with `platform=all` and `release_tag` set to that same tag; the workflow materializes and verifies the example `.glass`, builds all three installers and matching QEMU runtimes, then attaches the full asset set while the release is still mutable. Publish the draft only after the attachment job succeeds. Pull requests and pushes do not run package builds.
 
-GitHub does not trigger `release.created` for draft releases, and publishing an immutable release is too late to add assets. The published `v0.0.1` release remains unchanged. Prepare a version-matched draft prerelease before publication; the `v0.0.2` preview used this flow, and the corrected `v0.0.3` preview is being prepared the same way.
+GitHub does not trigger `release.created` for draft releases, and publishing an
+immutable release is too late to add assets. The published `v0.0.1` release
+remains unchanged. Prepare a version-matched draft prerelease before
+publication; the `v0.0.2` preview used this flow. The `v0.0.3` draft has the
+complete asset set and passed the installed macOS TUI smoke against its exact
+tag; it remains unpublished pending maintainer approval.
 
 Each installer declares the `.glass` association and includes the repository license, notices, and a versioned offline runtime. Runtime manifests contain SHA-256 hashes for the QEMU executable, its bundled shared libraries and data files, and the Alpine kernel and initramfs. The app verifies those files before launching a guest and resolves them independently of the current working directory. Standalone runtime archives are also attached so reviewers can inspect the exact per-platform inventory.
 
