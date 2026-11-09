@@ -151,8 +151,16 @@ jobs:
           deb=$(cat "$PACKAGE_DIR/package-path.txt")
           glass=$(cat "$EXAMPLE_DIR/glass-path.txt")
           package_name=$(dpkg-deb -f "$deb" Package)
+          package_depends=$(dpkg-deb -f "$deb" Depends)
           echo "Package: $package_name" | tee "$EVIDENCE_DIR/package.txt"
           dpkg-deb -f "$deb" Package Version Architecture | tee -a "$EVIDENCE_DIR/package.txt"
+          echo "Depends: $package_depends" | tee -a "$EVIDENCE_DIR/package.txt"
+          for dependency in libxcb1 libxkbcommon0 libxkbcommon-x11-0; do
+            if [[ "$package_depends" != *"$dependency"* ]]; then
+              echo "Debian package is missing runtime dependency: $dependency" >&2
+              exit 1
+            fi
+          done
           sudo apt-get install -y "$deb"
           rootglass_binary="$(command -v rootglass)"
           [[ -x "$rootglass_binary" ]] || { echo "Installed rootglass binary is missing" >&2; exit 1; }

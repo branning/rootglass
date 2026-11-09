@@ -125,6 +125,8 @@ The **Installed Ubuntu clean-install smoke** workflow checks the Linux x64
 package on a fresh Ubuntu 24.04 Actions runner. First run **Desktop packages**
 with `platform=linux` on the commit under review, then dispatch the install
 smoke on that same commit and provide the package run ID as `package_run_id`.
+The `.deb` declares its required X11/XKB runtime libraries, and the smoke checks
+that dependency metadata before installing it through APT.
 It installs the `.deb`, checks its runtime inventory and `.glass` MIME handler,
 opens the signed example through `xdg-open`, and exercises the installed GUI and
 guest lifecycle with outbound networking blocked. The application processes run

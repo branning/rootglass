@@ -45,5 +45,8 @@ file-associations = [
   { extensions = ["glass"], mime-type = "application/vnd.rootglass.glass", description = "Rootglass guest package", name = "Rootglass Glass", role = "editor" }
 ]
 
+[package.metadata.packager.deb]
+depends = ["libxcb1", "libxkbcommon0", "libxkbcommon-x11-0"]
+
 [dev-dependencies]
 libc = "0.2"
