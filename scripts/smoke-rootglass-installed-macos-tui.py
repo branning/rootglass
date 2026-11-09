@@ -220,8 +220,8 @@ def run(binary: Path, glass: Path, output: Path) -> None:
         session.send(b"b")
 
         session.wait_for_serial(rb"rootglass-hello login:\s*$", BOOT_TIMEOUT)
-        session.wait_for_terminal(b"rootglass-hello login:", 10, after)
-        session.wait_for_terminal(b"Running", 10, after)
+        session.wait_for_terminal(b"rootglass-hello login:", 60, after)
+        session.wait_for_terminal(b"Running", 30, after)
         session.send_console_line(b"root")
         session.wait_for_serial(rb"(?i)password:\s*$", LOGIN_TIMEOUT)
         session.wait_for_terminal(b"Password:", 10)

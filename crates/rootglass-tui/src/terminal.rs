@@ -21,6 +21,7 @@ use std::io::{self, IsTerminal, Stdout, Write};
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError};
+use std::sync::{Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -29,13 +30,21 @@ const MAX_PENDING_SERVICE_REQUESTS: usize = 64;
 const MAX_INPUT_BYTES: usize = 8_192;
 
 fn trace_tui(message: impl AsRef<str>) {
-    let Some(path) = std::env::var_os("ROOTGLASS_TUI_TRACE_FILE") else {
+    static TRACE_FILE: OnceLock<Option<Mutex<std::fs::File>>> = OnceLock::new();
+    let Some(file) = TRACE_FILE.get_or_init(|| {
+        let path = std::env::var_os("ROOTGLASS_TUI_TRACE_FILE")?;
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .ok()
+            .map(Mutex::new)
+    }) else {
         return;
     };
-    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
-        return;
-    };
-    let _ = writeln!(file, "{}", message.as_ref());
+    if let Ok(mut file) = file.lock() {
+        let _ = writeln!(file, "{}", message.as_ref());
+    }
 }
 
 /// Run the same Rootglass TUI session in a real terminal or a full-duplex PTY.
@@ -1221,13 +1230,20 @@ impl ServiceWorker {
                             .iter()
                             .filter(|event| matches!(event, RuntimeEvent::SerialChunk { .. }))
                             .count();
+                        let serial_bytes = events
+                            .iter()
+                            .map(|event| match event {
+                                RuntimeEvent::SerialChunk { bytes, .. } => bytes.len(),
+                                _ => 0,
+                            })
+                            .sum::<usize>();
                         let ready = events
                             .iter()
                             .filter(|event| matches!(event, RuntimeEvent::GuestReady { .. }))
                             .count();
                         trace_tui(format!(
-                            "poll completion: events={}, serial={serial}, guest_ready={ready}",
-                            events.len()
+                            "poll completion: events={}, serial={serial}, serial_bytes={serial_bytes}, guest_ready={ready}",
+                            events.len(),
                         ));
                     }
                     Err(_) => trace_tui("poll completion: application error"),
@@ -1361,13 +1377,20 @@ fn service_worker_loop(
                             .iter()
                             .filter(|event| matches!(event, RuntimeEvent::SerialChunk { .. }))
                             .count();
+                        let serial_bytes = events
+                            .iter()
+                            .map(|event| match event {
+                                RuntimeEvent::SerialChunk { bytes, .. } => bytes.len(),
+                                _ => 0,
+                            })
+                            .sum::<usize>();
                         let ready = events
                             .iter()
                             .filter(|event| matches!(event, RuntimeEvent::GuestReady { .. }))
                             .count();
                         trace_tui(format!(
-                            "service poll returned: events={}, serial={serial}, guest_ready={ready}",
-                            events.len()
+                            "service poll returned: events={}, serial={serial}, serial_bytes={serial_bytes}, guest_ready={ready}",
+                            events.len(),
                         ));
                     }
                     Err(_) => trace_tui("service poll returned an application error"),
