@@ -32,13 +32,13 @@ The native desktop shell uses [GPUI Kit](https://github.com/longbridge/gpui-kit)
 
 ### macOS preview first-launch caveat
 
-The macOS preview DMGs, including v0.0.2, are unsigned and not notarized. After mounting the DMG, drag `Rootglass.app` to the Applications folder. If macOS reports that the app is damaged, recursively remove quarantine from the installed app bundle in Terminal:
+The macOS preview DMGs, including v0.0.2 and v0.0.3, are unsigned and not notarized. After mounting the DMG, drag `Rootglass.app` to the Applications folder. If macOS reports that the app is damaged, recursively remove quarantine from the installed app bundle in Terminal:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/Rootglass.app
 ```
 
-The recursive form is needed because downloaded app bundles can retain quarantine on nested files even after the app's top-level attribute is removed. It clears quarantine attributes from this app bundle; it does not sign or notarize the app. Only use it for a Rootglass app downloaded from the official release. The v0.0.2 macOS runtime has a separate invalid QEMU signature that causes macOS to kill QEMU at startup; clearing quarantine does not fix that release. See the [preview release notes](CHANGELOG.md) and [desktop package limits](docs/desktop-packages.md).
+The recursive form is needed because downloaded app bundles can retain quarantine on nested files even after the app's top-level attribute is removed. It clears quarantine attributes from this app bundle; it does not sign or notarize the app. Only use it for a Rootglass app downloaded from the official release. The v0.0.2 macOS runtime has a separate invalid QEMU signature that causes macOS to kill QEMU at startup; clearing quarantine does not fix that release. The fix is in the v0.0.3 preview and passed an installed-app boot smoke on a macOS CI runner. See the [preview release notes](CHANGELOG.md) and [desktop package limits](docs/desktop-packages.md).
 
 ## Quickstart
 
