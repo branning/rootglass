@@ -258,8 +258,19 @@ fi
 wait_for_marker ROOTGLASS_EMBEDDED_TUI_DEVELOPER_PACKAGED 30
 test -s "$developer_package"
 xdotool key --clearmodifiers Escape
+wait_for_trace_marker "developer panel closed" 15
 
 xdotool key --clearmodifiers b
+wait_for_trace_marker "shortcut input: action=boot" 15
+if ! awk '/shortcut input: action=boot/ && /boot_enabled=true/ { found=1 } END { exit !found }' \
+  "$work_dir/tui-trace.log"; then
+  import -window "$window_id" "$artifact_dir/boot-not-enabled.png" \
+    >/dev/null 2>&1 || true
+  cat "$work_dir/tui-trace.log"
+  echo "The embedded TUI did not enable guest boot after package completion" >&2
+  exit 1
+fi
+wait_for_trace_marker "queued start operation" 30
 wait_for_marker ROOTGLASS_EMBEDDED_TUI_GUEST_LOGIN 180
 import -window "$window_id" "$artifact_dir/01-guest-login.png"
 

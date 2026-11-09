@@ -259,6 +259,15 @@ fn handle_key(
     key: KeyEvent,
     worker: &mut ServiceWorker,
 ) -> Result<bool, String> {
+    if key.code == KeyCode::Char('b') {
+        trace_tui(format!(
+            "shortcut input: action=boot, mode={:?}, developer_panel_open={}, operations_panel_open={}, boot_enabled={}",
+            input.mode,
+            model.developer_is_open(),
+            model.operations_panel_open,
+            model.actions().boot,
+        ));
+    }
     if matches!(key.code, KeyCode::Char('v') | KeyCode::Char('p')) {
         let shortcut = match key.code {
             KeyCode::Char('v') => "validate",
@@ -340,6 +349,7 @@ fn handle_developer_panel_key(
     }
     match key.code {
         KeyCode::Esc => {
+            trace_tui("developer panel closed");
             model.close_developer();
         }
         KeyCode::Char('s') | KeyCode::Char('p') => {
@@ -862,6 +872,10 @@ fn open_path(model: &mut UiModel, path: PathBuf, worker: &mut ServiceWorker) -> 
 }
 
 fn start_guest(model: &mut UiModel, worker: &mut ServiceWorker) -> Result<(), String> {
+    trace_tui(format!(
+        "boot action dispatched: boot_enabled={}",
+        model.actions().boot,
+    ));
     if let Some((ticket, path)) = model.begin_start() {
         let state_id = model
             .state_loaded
