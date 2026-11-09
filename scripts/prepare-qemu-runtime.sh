@@ -112,11 +112,97 @@ elif [[ "${platform}" == macos-arm64 ]]; then
     done < <(find "${formula_prefix}" -maxdepth 6 -type f \
       \( -iname 'LICENSE*' -o -iname 'COPYING*' -o -iname 'COPYRIGHT*' -o -iname 'NOTICE*' \) -print)
   done <<< "${dependency_formulas}"
-  install_name_tool -add_rpath "@executable_path/../lib" \
-    "${bin_dir}/qemu-system-aarch64"
+
+  # Homebrew QEMU and its dependencies carry absolute /opt/homebrew load
+  # commands. Copying the dylibs is not enough: dyld still tries the original
+  # build-machine paths unless each Mach-O image is rewritten to use the
+  # bundled runtime directory.
+  macho_images=("${bin_dir}/qemu-system-aarch64")
+  while IFS= read -r image; do
+    macho_images+=("${image}")
+  done < <(find "${lib_dir}" -type f \( -name '*.dylib' -o -name '*.so' \) -print)
+
+  read_macho_load_paths() {
+    otool -L "$1" | awk '
+      NR > 1 {
+        sub(/^[[:space:]]*/, "")
+        sub(/[[:space:]]+\(compatibility version.*$/, "")
+        print
+      }
+    '
+  }
+
+  read_macho_rpaths() {
+    otool -l "$1" | awk '
+      /cmd LC_RPATH/ {
+        getline
+        getline
+        sub(/^[[:space:]]*path[[:space:]]+/, "")
+        sub(/[[:space:]]+\(offset [0-9]+\)$/, "")
+        print
+      }
+    '
+  }
+
+  for image in "${macho_images[@]}"; do
+    if [[ "${image}" == "${bin_dir}/qemu-system-aarch64" ]]; then
+      bundled_rpath='@executable_path/../lib'
+    elif [[ "${image}" == "${lib_dir}/qemu/"* ]]; then
+      bundled_rpath='@loader_path/..'
+    else
+      bundled_rpath='@loader_path'
+    fi
+
+    # Remove build-machine search paths, then give dyld a path to the copied
+    # libraries relative to this image's location in the app bundle.
+    existing_rpaths="$(read_macho_rpaths "${image}")"
+    while IFS= read -r existing_rpath; do
+      [[ -n "${existing_rpath}" ]] || continue
+      case "${existing_rpath}" in
+        @*|/usr/lib/*|/System/Library/*) continue ;;
+        /*) install_name_tool -delete_rpath "${existing_rpath}" "${image}" ;;
+      esac
+    done <<< "${existing_rpaths}"
+    if ! grep -Fqx "${bundled_rpath}" <<< "${existing_rpaths}"; then
+      install_name_tool -add_rpath "${bundled_rpath}" "${image}"
+    fi
+
+    load_paths="$(read_macho_load_paths "${image}")"
+    while IFS= read -r load_path; do
+      [[ -n "${load_path}" ]] || continue
+      case "${load_path}" in
+        @*|/usr/lib/*|/System/Library/*) continue ;;
+        /*)
+          library_name="$(basename "${load_path}")"
+          if [[ ! -f "${lib_dir}/${library_name}" ]]; then
+            echo "QEMU dependency ${load_path} was not copied into ${lib_dir}" >&2
+            exit 1
+          fi
+          install_name_tool -change "${load_path}" "@rpath/${library_name}" "${image}"
+          ;;
+        *)
+          echo "QEMU has an unsupported non-relative dependency ${load_path} in ${image}" >&2
+          exit 1
+          ;;
+      esac
+    done <<< "${load_paths}"
+
+    remaining_external_loads="$(read_macho_load_paths "${image}" | awk '
+      $0 !~ /^@/ && $0 !~ /^\/usr\/lib\// && $0 !~ /^\/System\/Library\// { print }
+    ')"
+    if [[ -n "${remaining_external_loads}" ]]; then
+      echo "QEMU image ${image} still has external load commands:" >&2
+      printf '%s\n' "${remaining_external_loads}" >&2
+      exit 1
+    fi
+  done
+
   while IFS= read -r library; do
-    install_name_tool -add_rpath "@loader_path" "${library}"
-  done < <(find "${lib_dir}" -maxdepth 1 -type f -name '*.dylib' -print)
+    library_id="$(otool -D "${library}" | awk 'NR > 1 && NF { print; exit }')"
+    if [[ -n "${library_id}" ]]; then
+      install_name_tool -id "@rpath/$(basename "${library}")" "${library}"
+    fi
+  done < <(find "${lib_dir}" -type f -name '*.dylib' -print)
 
   # install_name_tool changes the Mach-O load commands and invalidates any
   # upstream code signature. Re-sign every bundled runtime image ad hoc so
