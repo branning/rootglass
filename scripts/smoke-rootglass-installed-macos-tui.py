@@ -260,7 +260,7 @@ class TuiSession:
             self.check_for_startup_failure(screen)
             self.check_child()
             output = read_serial(Path(os.environ["TMPDIR"]))
-            if re.search(pattern, output):
+            if re.search(pattern, clean_terminal(output)):
                 return output
             time.sleep(0.05)
         raise SmokeFailure(f"timed out waiting for serial output matching: {pattern!r}")
@@ -280,11 +280,17 @@ class TuiSession:
         self.drain_terminal()
         self.terminal_log.write_bytes(self.capture)
         (self.output / "tui-terminal.txt").write_bytes(clean_terminal(self.capture))
+        screenshot = self.output / "tui-terminal-screenshot.png"
+        if not screenshot.exists():
+            save_terminal_screenshot(bytes(self.capture), screenshot)
+        for index, path in enumerate(serial_logs(Path(os.environ["TMPDIR"]))):
+            shutil.copy2(path, self.output / f"qemu-{index}.log")
+
+    def save_screenshot(self) -> None:
+        self.drain_terminal()
         save_terminal_screenshot(
             bytes(self.capture), self.output / "tui-terminal-screenshot.png"
         )
-        for index, path in enumerate(serial_logs(Path(os.environ["TMPDIR"]))):
-            shutil.copy2(path, self.output / f"qemu-{index}.log")
 
     def quit_cleanly(self) -> None:
         if self.child.poll() is None:
@@ -369,6 +375,7 @@ def run(binary: Path, glass: Path, output: Path) -> None:
         if uname is None or b"aarch64" not in uname:
             raise SmokeFailure("guest uname output did not identify the expected aarch64 guest")
 
+        session.save_screenshot()
         session.send(b"s")
         deadline = time.monotonic() + STOP_TIMEOUT
         while time.monotonic() < deadline and qemu_processes(qemu_binary):

@@ -277,3 +277,4 @@
 {"version":1,"task_id":"7VLKAS","kind":"result","at":"2026-11-09T02:35:05.351036559Z","agent":"codex@worker-1","text":"Smoke 42551265598: start completes and polls serial; TUI timeout occurs while draining 32-chunk batches."}
 {"version":1,"task_id":"7VLKAS","kind":"result","at":"2026-11-09T02:46:58.000133151Z","agent":"codex@worker-1","text":"Smoke 42552177929: TUI reached Running and showed login; ANSI flattening broke the screen assertion."}
 {"version":1,"task_id":"7VLKAS","kind":"result","at":"2026-11-09T02:47:45.873454905Z","agent":"codex@worker-1","text":"Local PTY replay: pyte confirms Running/login; screenshot PNG renders from the TUI screen."}
+{"version":1,"task_id":"7VLKAS","kind":"result","at":"2026-11-09T02:54:08.270139486Z","agent":"codex@worker-1","text":"Smoke 42553201617: parsed Running/login, typed into guest; shell prompt check saw ANSI DSR bytes."}
