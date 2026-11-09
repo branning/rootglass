@@ -85,6 +85,30 @@ Different platform selections can run independently. A newer run for the same
 ref, event, and selection cancels the superseded run. Routine CI still runs
 formatting, Clippy, tests, the Linux desktop compile check, and CLI/boot smoke checks.
 
+## Manual installed macOS TUI smoke
+
+The **Installed macOS TUI smoke** workflow verifies a packaged app without
+adding a macOS job to every push or pull request. First run **Desktop packages**
+with `platform=macos`, then dispatch **Installed macOS TUI smoke** on the same
+commit and pass the successful package workflow's run ID as `package_run_id`.
+The smoke downloads that run's DMG and signed example, copies `Rootglass.app`
+into `/Applications`, configures the public example trust key in a temporary
+runner home, and drives the installed Ratatui TUI through planning, guest boot,
+serial login, an `uname -a` check, and stop. It verifies the bundled QEMU
+signature before boot and uploads terminal, serial, and QEMU logs as a 14-day
+artifact.
+
+For example, after the macOS package run succeeds on the current `main` commit,
+dispatch the smoke with its run ID:
+
+```sh
+gh workflow run installed-macos-tui-smoke.yml --repo branning/rootglass \
+  --ref main -f package_run_id=123456789
+```
+
+The smoke rejects artifacts built from a different commit. Its only trigger is
+`workflow_dispatch`, so the additional macOS runner minutes are opt-in.
+
 ## Remaining release limits
 
 - App and installer signing, macOS notarization, and release provenance are not configured. No signing credentials are stored in the repository.
