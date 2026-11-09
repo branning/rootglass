@@ -161,6 +161,41 @@ jobs:
           JSON
           chmod 600 "$TEST_HOME/Library/Application Support/Rootglass/trust.json"
 
+      - name: Check isolated macOS package-store permissions
+        env:
+          TEST_HOME: ${{ runner.temp }}/rootglass-home
+        run: |
+          set -euo pipefail
+          app_data_root="$TEST_HOME/Library/Application Support/Rootglass"
+          packages_dir="$app_data_root/library/packages"
+          printf 'Runner identity: '
+          id
+          printf 'Runner umask: '
+          umask
+          ls -ldeO "$TEST_HOME" "$TEST_HOME/Library" \
+            "$TEST_HOME/Library/Application Support" "$app_data_root"
+          mkdir -p "$packages_dir"
+          ls -ldeO "$app_data_root/library" "$packages_dir"
+          python3 - "$packages_dir" <<'PY'
+          import os
+          import shutil
+          import sys
+          from pathlib import Path
+
+          parent = Path(sys.argv[1])
+          stage = parent / f".rootglass-rename-probe-{os.getpid()}"
+          published = parent / f".rootglass-rename-probe-{os.getpid()}-published"
+          stage.mkdir()
+          (stage / "file").write_text("probe", encoding="ascii")
+          (stage / "file").chmod(0o444)
+          stage.chmod(0o555)
+          os.rename(stage, published)
+          print(f"Read-only directory rename succeeded: {published}")
+          published.chmod(0o755)
+          shutil.rmtree(published)
+          PY
+          rmdir "$packages_dir" "$app_data_root/library"
+
       - name: Verify installed QEMU signature and boot through the TUI
         env:
           EXAMPLE_DIR: ${{ runner.temp }}/rootglass-example

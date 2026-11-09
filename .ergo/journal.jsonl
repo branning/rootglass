@@ -269,3 +269,4 @@
 {"version":1,"task_id":"7VLKAS","kind":"result","at":"2026-11-09T00:52:28.169898576Z","agent":"codex@worker-1","text":"Post-merge macOS dispatch still skipped jobs; deriving build mode from the validated shell input instead."}
 {"version":1,"task_id":"7VLKAS","kind":"result","at":"2026-11-09T00:58:50.102688508Z","agent":"codex@worker-1","text":"Build mode logs true, but downstream jobs still skip; changing output binding and guard evaluation."}
 {"version":1,"task_id":"7VLKAS","kind":"result","at":"2026-11-09T01:04:37.277770128Z","agent":"codex@worker-1","text":"Normal package dispatch skips release validation; downstream jobs need always() plus explicit dependency checks."}
+{"version":1,"task_id":"7VLKAS","kind":"result","at":"2026-11-09T01:41:02.234267837Z","agent":"codex@worker-1","text":"Installed TUI smoke launches QEMU; example import fails EACCES during package-store publication."}
