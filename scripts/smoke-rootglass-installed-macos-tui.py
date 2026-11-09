@@ -163,6 +163,7 @@ class TuiSession:
     def save_evidence(self) -> None:
         self.drain_terminal()
         self.terminal_log.write_bytes(self.capture)
+        (self.output / "tui-terminal.txt").write_bytes(clean_terminal(self.capture))
         for index, path in enumerate(serial_logs(Path(os.environ["TMPDIR"]))):
             shutil.copy2(path, self.output / f"qemu-{index}.log")
 
@@ -181,6 +182,7 @@ class TuiSession:
                     self.child.wait()
         self.drain_terminal()
         self.terminal_log.write_bytes(self.capture)
+        (self.output / "tui-terminal.txt").write_bytes(clean_terminal(self.capture))
         os.close(self.master)
 
 
