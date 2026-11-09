@@ -27,6 +27,12 @@ The workflow supplies `GHOSTTY_VT_PREFIX` and `LD_LIBRARY_PATH` from its cached 
 
 The TUI controller and Ratatui renderer are covered by the 52 tests in `rootglass-tui`, including real service validation/preflight, bundle inspection, trust and named-state controls, serial interaction, lifecycle transitions, signing/package verification, and cleanup. The desktop CI also runs the CLI TUI terminal-lifecycle tests.
 
+| Workflow | Standalone Ratatui session | GPUI/libghostty embedded session |
+|---|---|---|
+| Open/import, verify, validate and plan | Controller/service tests; the installed v0.0.3 TUI smoke opens and plans the signed example | Linux artifact run: import, manifest validation, verified plan and trust diagnostics |
+| Named state and developer sign/package | State/controller tests and developer signing/package tests | Linux artifact run: create a named state, sign a directory, package and verify a `.glass` archive using an external key-file path |
+| Guest boot, serial I/O, restart and stop | v0.0.3 macOS standalone TUI smoke: boot, login, run `uname -a`, stop, and QEMU cleanup | Linux artifact run: boot, login, run `uname -a`, restart, stop, and cleanup |
+
 The focused headless suite passed on this change with:
 
 ```sh
