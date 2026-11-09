@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       package_run_id:
-        description: Successful Desktop packages run ID for this exact commit (Linux x64 only)
+        description: Successful Linux x64 package run for this commit, or an ancestor changed only in this workflow
         type: string
         required: true
 
@@ -47,10 +47,22 @@ jobs:
             echo "Package run $PACKAGE_RUN_ID must have completed successfully" >&2
             exit 1
           }
-          [[ "$(jq -r '.head_sha' <<< "$run_json")" == "$GITHUB_SHA" ]] || {
-            echo "Package run $PACKAGE_RUN_ID was built from a different commit" >&2
-            exit 1
-          }
+          package_sha=$(jq -r '.head_sha' <<< "$run_json")
+          if [[ "$package_sha" != "$GITHUB_SHA" ]]; then
+            comparison=$(gh api "repos/$GITHUB_REPOSITORY/compare/$package_sha...$GITHUB_SHA")
+            [[ "$(jq -r '.status' <<< "$comparison")" == ahead && \
+               "$(jq -r '.merge_base_commit.sha' <<< "$comparison")" == "$package_sha" ]] || {
+              echo "Package run $PACKAGE_RUN_ID is not an ancestor of $GITHUB_SHA" >&2
+              exit 1
+            }
+            changed_files=$(jq -r '[.files[].filename] | unique | join("\n")' <<< "$comparison")
+            [[ "$changed_files" == ".github/workflows/installed-ubuntu-smoke.yml" ]] || {
+              echo "Package source $package_sha differs outside the installed Ubuntu smoke workflow" >&2
+              printf '%s\n' "$changed_files" >&2
+              exit 1
+            }
+            echo "Package source $package_sha matches current product code; only the smoke workflow changed"
+          fi
           jobs_json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PACKAGE_RUN_ID/jobs?per_page=100")
           for required_job in "Materialize pinned guest boot assets" "Linux x64 package"; do
             conclusion=$(jq -r --arg name "$required_job" \
@@ -290,7 +302,7 @@ jobs:
       - name: Verify installed rootglass plan
         timeout-minutes: 4
         env:
-          EXAMPLE_DIR: ${{ runner.temp }}/rootglass-example
+          PLAN_GLASS: ${{ github.workspace }}/examples/hello-world.glass
           TEST_HOME: ${{ runner.temp }}/rootglass-user-home
           EVIDENCE_DIR: ${{ runner.temp }}/rootglass-install-evidence
         run: |
@@ -299,7 +311,7 @@ jobs:
             printf '%s\n' "$1" | tee -a "$EVIDENCE_DIR/progress.txt"
           }
           rootglass_binary=$(cat "$EVIDENCE_DIR/binary-path.txt")
-          glass=$(cat "$EXAMPLE_DIR/glass-path.txt")
+          glass="$PLAN_GLASS"
           mkdir -p "$RUNNER_TEMP/rootglass-shims"
           for tool in cargo rustc qemu-system-aarch64; do
             cat > "$RUNNER_TEMP/rootglass-shims/$tool" <<EOF
