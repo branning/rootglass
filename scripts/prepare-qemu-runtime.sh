@@ -117,6 +117,19 @@ elif [[ "${platform}" == macos-arm64 ]]; then
   while IFS= read -r library; do
     install_name_tool -add_rpath "@loader_path" "${library}"
   done < <(find "${lib_dir}" -maxdepth 1 -type f -name '*.dylib' -print)
+
+  # install_name_tool changes the Mach-O load commands and invalidates any
+  # upstream code signature. Re-sign every bundled runtime image ad hoc so
+  # macOS will execute QEMU and load its relocated libraries.
+  codesign --force --sign - --timestamp=none "${bin_dir}/qemu-system-aarch64"
+  while IFS= read -r image; do
+    codesign --force --sign - --timestamp=none "${image}"
+  done < <(find "${lib_dir}" -type f \( -name '*.dylib' -o -name '*.so' \) -print)
+
+  codesign --verify --strict --verbose=2 "${bin_dir}/qemu-system-aarch64"
+  while IFS= read -r image; do
+    codesign --verify --strict --verbose=2 "${image}"
+  done < <(find "${lib_dir}" -type f \( -name '*.dylib' -o -name '*.so' \) -print)
 fi
 
 if [[ -z "$(find "${share_dir}" -mindepth 1 -print -quit)" ]]; then

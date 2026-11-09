@@ -27,6 +27,14 @@ pub enum QemuError {
     #[error("failed to connect to QMP at {address}: {detail}")]
     QmpConnect { address: String, detail: String },
 
+    #[error("{source}; QEMU {process_state}; startup diagnostics: {diagnostic_log}")]
+    QmpStartup {
+        #[source]
+        source: Box<QemuError>,
+        process_state: String,
+        diagnostic_log: String,
+    },
+
     #[error("QMP command failed: {0}")]
     QmpCommand(String),
 
@@ -520,10 +528,24 @@ impl QemuProcess {
         let qmp = match QmpClient::connect(port, Duration::from_secs(5)) {
             Ok(qmp) => qmp,
             Err(error) => {
-                let _ = child.kill();
+                let process_state = match child.try_wait() {
+                    Ok(Some(status)) => format!("exited with status {status:?}"),
+                    Ok(None) => {
+                        let _ = child.kill();
+                        "was still running when QMP initialization failed".to_string()
+                    }
+                    Err(status_error) => {
+                        let _ = child.kill();
+                        format!("status could not be read ({status_error})")
+                    }
+                };
                 let _ = child.wait();
                 serial.close();
-                return Err(error);
+                return Err(QemuError::QmpStartup {
+                    source: Box::new(error),
+                    process_state,
+                    diagnostic_log: diagnostic_log.display().to_string(),
+                });
             }
         };
         Ok(Self {

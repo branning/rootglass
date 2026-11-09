@@ -8,7 +8,16 @@ Each installer declares the `.glass` association and includes the repository lic
 
 The Linux runtime uses Ubuntu 24.04's `qemu-system-arm` package, macOS uses the Homebrew `qemu` formula, and Windows uses the Chocolatey QEMU package. The exact QEMU version, distribution source, and executable hash are recorded in each platform's `runtime-info.json`. Alpine Linux 3.23.8 aarch64 netboot assets are shared across targets. Runtime copyright files, QEMU's GPL-2.0 license text, and the Alpine source notice ship in the runtime bundle.
 
-These are preview review artifacts. They are unsigned, have not passed complete native clean-host qualification, and make no claim that HVF, KVM, or WHPX acceleration is available on every host.
+On macOS, runtime preparation relocates QEMU's library search paths with
+`install_name_tool`. That invalidates upstream Mach-O signatures, so the build
+ad-hoc signs the relocated QEMU executable and bundled dynamic libraries and
+verifies those signatures before archiving the runtime. The Rootglass app itself
+remains unsigned and not notarized in preview builds.
+
+These are preview review artifacts. The desktop apps and installers are not
+Developer ID signed or notarized and have not passed complete native clean-host
+qualification. They make no claim that HVF, KVM, or WHPX acceleration is
+available on every host.
 
 ## Manual package builds
 
