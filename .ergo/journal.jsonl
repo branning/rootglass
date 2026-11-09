@@ -287,3 +287,5 @@
 {"version":1,"task_id":"Q7PKAZ","kind":"result","at":"2026-11-09T04:10:09.4673694Z","agent":"codex@worker-1","text":"All-platform run 42556684965 passed; 14 assets attached; tag smoke 42560261893 running."}
 {"version":1,"task_id":"Q7PKAZ","kind":"result","at":"2026-11-09T06:30:24.140525585Z","agent":"codex@worker-1","text":"Tag smoke 42560261893 passed; QEMU signatures, guest uname, clean stop."}
 {"version":1,"task_id":"Q7PKAZ","kind":"result","at":"2026-11-09T06:30:44.651459577Z","agent":"codex@worker-1","text":"Docs record all-platform run 42556684965 and tagged installed macOS smoke 42560261893."}
+{"version":1,"task_id":"Q7PKAZ","kind":"result","at":"2026-11-09T06:34:36.393448957Z","agent":"codex@worker-1","text":"PR #105 merged as 29eb921; docs and draft release record exact-tag smoke evidence."}
+{"version":1,"task_id":"Q7PKAZ","kind":"done","at":"2026-11-09T06:34:36.406068728Z","agent":"codex@worker-1","text":"Merged #104 and #105; all 14 assets verified; tag smoke 42560261893 passed.\n\nv0.0.3 remains a draft pending maintainer approval."}
