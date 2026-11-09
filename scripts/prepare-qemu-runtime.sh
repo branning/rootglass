@@ -144,6 +144,13 @@ elif [[ "${platform}" == macos-arm64 ]]; then
     '
   }
 
+  while IFS= read -r library; do
+    library_id="$(otool -D "${library}" | awk 'NR > 1 && NF { print; exit }')"
+    if [[ -n "${library_id}" ]]; then
+      install_name_tool -id "@rpath/$(basename "${library}")" "${library}"
+    fi
+  done < <(find "${lib_dir}" -type f -name '*.dylib' -print)
+
   for image in "${macho_images[@]}"; do
     if [[ "${image}" == "${bin_dir}/qemu-system-aarch64" ]]; then
       bundled_rpath='@executable_path/../lib'
@@ -196,13 +203,6 @@ elif [[ "${platform}" == macos-arm64 ]]; then
       exit 1
     fi
   done
-
-  while IFS= read -r library; do
-    library_id="$(otool -D "${library}" | awk 'NR > 1 && NF { print; exit }')"
-    if [[ -n "${library_id}" ]]; then
-      install_name_tool -id "@rpath/$(basename "${library}")" "${library}"
-    fi
-  done < <(find "${lib_dir}" -type f -name '*.dylib' -print)
 
   # install_name_tool changes the Mach-O load commands and invalidates any
   # upstream code signature. Re-sign every bundled runtime image ad hoc so
