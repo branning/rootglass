@@ -120,7 +120,7 @@ jobs:
   runtime_assets:
     name: Materialize pinned guest boot assets
     needs: [select_platforms]
-    if: ${{ fromJSON(needs.select_platforms.outputs.build_packages) }}
+    if: ${{ always() && needs.select_platforms.result == 'success' && fromJSON(needs.select_platforms.outputs.build_packages) }}
     runs-on: ubuntu-24.04
     outputs:
       runtime_version: ${{ steps.version.outputs.runtime_version }}
@@ -190,7 +190,7 @@ jobs:
 
   package:
     name: ${{ matrix.name }} package
-    if: ${{ fromJSON(needs.select_platforms.outputs.build_packages) }}
+    if: ${{ always() && needs.select_platforms.result == 'success' && needs.runtime_assets.result == 'success' && fromJSON(needs.select_platforms.outputs.build_packages) }}
     needs: [select_platforms, runtime_assets]
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -348,7 +348,7 @@ jobs:
 
   attach-current-release-assets:
     name: Attach current build artifacts to a draft prerelease
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag && fromJSON(needs.select_platforms.outputs.build_packages) }}
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.release_tag && needs.select_platforms.result == 'success' && needs.package.result == 'success' && needs.runtime_assets.result == 'success' && fromJSON(needs.select_platforms.outputs.build_packages) }}
     needs: [select_platforms, package, runtime_assets]
     runs-on: ubuntu-24.04
     permissions:
@@ -372,7 +372,7 @@ jobs:
 
   attach-existing-release-assets:
     name: Attach artifacts from an existing package run
-    if: ${{ !fromJSON(needs.select_platforms.outputs.build_packages) }}
+    if: ${{ always() && needs.select_platforms.result == 'success' && !fromJSON(needs.select_platforms.outputs.build_packages) }}
     needs: [select_platforms]
     runs-on: ubuntu-24.04
     permissions:
