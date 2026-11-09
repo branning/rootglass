@@ -278,3 +278,4 @@
 {"version":1,"task_id":"7VLKAS","kind":"result","at":"2026-11-09T02:46:58.000133151Z","agent":"codex@worker-1","text":"Smoke 42552177929: TUI reached Running and showed login; ANSI flattening broke the screen assertion."}
 {"version":1,"task_id":"7VLKAS","kind":"result","at":"2026-11-09T02:47:45.873454905Z","agent":"codex@worker-1","text":"Local PTY replay: pyte confirms Running/login; screenshot PNG renders from the TUI screen."}
 {"version":1,"task_id":"7VLKAS","kind":"result","at":"2026-11-09T02:54:08.270139486Z","agent":"codex@worker-1","text":"Smoke 42553201617: parsed Running/login, typed into guest; shell prompt check saw ANSI DSR bytes."}
+{"version":1,"task_id":"7VLKAS","kind":"done","at":"2026-11-09T03:02:54.288493097Z","agent":"codex@worker-1","text":"Merged PR #102 (c232c61); macOS 15 smoke 42553738230 booted the signed sample, ran uname -a, and stopped QEMU cleanly."}
