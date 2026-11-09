@@ -537,6 +537,7 @@ impl TerminalPty {
         let executable = std::env::current_exe()?;
         let mut command = portable_pty::CommandBuilder::new(executable);
         command.arg("--rootglass-tui-session");
+        command.cwd(std::env::current_dir()?);
         command.env("TERM", "xterm-256color");
         command.env_remove("NO_COLOR");
         let child = pair
