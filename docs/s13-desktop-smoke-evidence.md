@@ -64,6 +64,18 @@ World in the GUI, and confirmed the guest kernel from the serial console. The
 draft remains unpublished pending maintainer approval; the app is unsigned and
 not notarized.
 
-## Remaining acceptance
+## Scope decision and follow-on
 
-The GUI workflow ran on Linux under Xvfb; the macOS and Windows runs were PTY smoke, not native GUI qualification. A maintainer still needs to review native-host interaction, focus, accessibility, and overall usability, then approve or narrow the supported platform set. Keep GOMUP3 open until those decisions and any required host evidence are recorded. Screenshot artifacts have a 14-day retention period; the package section lists artifact-specific expiry dates.
+On 2026-11-09, the maintainer accepted the evidence above as sufficient to close
+GOMUP3: the Linux Xvfb run exercises the full GPUI workflow, the exact v0.0.3
+macOS arm64 package passes the installed TUI guest boot, and the maintainer
+manually confirmed that the v0.0.3 GUI boots Hello World and accepts serial
+input (`uname -a` reported Alpine aarch64). The Xvfb screenshots and macOS TUI,
+serial, QEMU, and guest evidence are linked above.
+
+This closes the desktop workflow smoke objective. Native interaction and
+usability work—including focus, native dialogs, accessibility, resizing, and
+additional host review—moves to subsequent Figma-led work. This evidence does
+not qualify native GUI behavior on every supported operating system or decide
+the final platform support matrix. Screenshot artifacts have a 14-day
+retention period; the package section lists artifact-specific expiry dates.
