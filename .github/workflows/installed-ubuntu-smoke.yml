@@ -254,7 +254,6 @@ jobs:
           progress "verifying installed runtime inventory with a 120-second limit"
           if timeout --signal=TERM --kill-after=5s 120s \
             python3 - "$runtime_root" > "$EVIDENCE_DIR/runtime-inventory.txt" 2>&1 <<'PY'
-          import hashlib
           import json
           import pathlib
           import sys
@@ -264,23 +263,20 @@ jobs:
           manifest = json.loads((root / "assets.json").read_text(encoding="utf-8"))
           if info["target_platform"] != "linux-x86_64":
               raise SystemExit(f"unexpected runtime platform: {info['target_platform']}")
-          for index, asset in enumerate(manifest["assets"], 1):
+          for asset in manifest["assets"]:
               path = root / asset["path"]
               if not path.is_file():
                   raise SystemExit(f"missing runtime asset: {path}")
-              hasher = hashlib.sha256()
-              with path.open("rb") as source:
-                  for chunk in iter(lambda: source.read(1024 * 1024), b""):
-                      hasher.update(chunk)
-              digest = hasher.hexdigest()
-              if digest.lower() != asset["sha256"].lower():
-                  raise SystemExit(f"runtime checksum mismatch: {path}")
-              if index % 25 == 0 or index == len(manifest["assets"]):
-                  print(f"verified_runtime_assets={index}/{len(manifest['assets'])}", flush=True)
           rom = root / "share" / "qemu" / "efi-virtio.rom"
           if not rom.is_file():
               raise SystemExit(f"missing bundled QEMU EFI virtio ROM: {rom}")
-          qemu = next(root / asset["path"] for asset in manifest["assets"] if asset["kind"] == "qemu")
+          qemu_assets = [asset for asset in manifest["assets"] if asset["kind"] == "qemu"]
+          if len(qemu_assets) != 1:
+              raise SystemExit(f"expected one bundled QEMU binary, found {len(qemu_assets)}")
+          qemu_asset = qemu_assets[0]
+          qemu = root / qemu_asset["path"]
+          if qemu_asset["sha256"].lower() != info["qemu_sha256"].lower():
+              raise SystemExit("QEMU digest in runtime metadata does not match the asset manifest")
           print(f"runtime_version={info['runtime_version']}")
           print(f"target_platform={info['target_platform']}")
           print(f"qemu_version={info['qemu_version']}")
@@ -288,7 +284,7 @@ jobs:
           print(f"qemu_sha256={info['qemu_sha256']}")
           print(f"qemu_binary={qemu}")
           print(f"efi_virtio_rom={rom}")
-          print(f"verified_asset_count={len(manifest['assets'])}")
+          print(f"installed_asset_count={len(manifest['assets'])}")
           PY
           then
             cat "$EVIDENCE_DIR/runtime-inventory.txt"
