@@ -181,7 +181,7 @@ fn resolve_glass_root(service: &AppService, glass_path: PathBuf) -> Result<PathB
 }
 
 fn print_launch_plan(glass_path: PathBuf) -> Result<(), String> {
-    let mut service = AppService::new();
+    let mut service = AppService::new().with_packaged_runtime_assets();
     let glass_root = resolve_glass_root(&service, glass_path)?;
     let (summary, command) = service
         .launch_plan(&glass_root)
@@ -192,7 +192,7 @@ fn print_launch_plan(glass_path: PathBuf) -> Result<(), String> {
 }
 
 fn boot_glass(glass_path: PathBuf) -> Result<(), String> {
-    let mut service = AppService::new();
+    let mut service = AppService::new().with_packaged_runtime_assets();
     let glass_root = resolve_glass_root(&service, glass_path)?;
     let report = service
         .preflight(&glass_root)
