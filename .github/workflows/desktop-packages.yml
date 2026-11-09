@@ -60,7 +60,7 @@ jobs:
           [[ "$release_prerelease" == true ]] || { echo "Release $RELEASE_TAG must be a prerelease" >&2; exit 1; }
           echo "Validated mutable draft prerelease $RELEASE_TAG (release ID $release_id)"
 
-  select-platforms:
+  select_platforms:
     name: Select package platforms
     needs: [validate-release]
     if: always() && (needs.validate-release.result == 'success' || needs.validate-release.result == 'skipped')
@@ -119,8 +119,8 @@ jobs:
 
   runtime_assets:
     name: Materialize pinned guest boot assets
-    needs: [select-platforms]
-    if: needs.select-platforms.outputs.build_packages == 'true'
+    needs: [select_platforms]
+    if: ${{ fromJSON(needs.select_platforms.outputs.build_packages) }}
     runs-on: ubuntu-24.04
     outputs:
       runtime_version: ${{ steps.version.outputs.runtime_version }}
@@ -190,12 +190,12 @@ jobs:
 
   package:
     name: ${{ matrix.name }} package
-    if: needs.select-platforms.outputs.build_packages == 'true'
-    needs: [select-platforms, runtime_assets]
+    if: ${{ fromJSON(needs.select_platforms.outputs.build_packages) }}
+    needs: [select_platforms, runtime_assets]
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.select-platforms.outputs.matrix) }}
+      matrix: ${{ fromJSON(needs.select_platforms.outputs.matrix) }}
 
     steps:
       - name: Checkout
@@ -348,8 +348,8 @@ jobs:
 
   attach-current-release-assets:
     name: Attach current build artifacts to a draft prerelease
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag && needs.select-platforms.outputs.build_packages == 'true' }}
-    needs: [select-platforms, package, runtime_assets]
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag && fromJSON(needs.select_platforms.outputs.build_packages) }}
+    needs: [select_platforms, package, runtime_assets]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -372,8 +372,8 @@ jobs:
 
   attach-existing-release-assets:
     name: Attach artifacts from an existing package run
-    if: needs.select-platforms.outputs.build_packages == 'false'
-    needs: [select-platforms]
+    if: ${{ !fromJSON(needs.select_platforms.outputs.build_packages) }}
+    needs: [select_platforms]
     runs-on: ubuntu-24.04
     permissions:
       actions: read

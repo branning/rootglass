@@ -267,3 +267,4 @@
 {"version":1,"task_id":"7VLKAS","kind":"result","at":"2026-11-09T00:22:13.237250275Z","agent":"codex@worker-1","text":"User requested opt-in macOS TUI install-to-boot smoke; it reuses package artifacts to limit runner minutes."}
 {"version":1,"task_id":"7VLKAS","kind":"result","at":"2026-11-09T00:45:46.003884711Z","agent":"codex@worker-1","text":"Manual package dispatch exposed omitted optional run ID skipping build jobs; fixing guards before TUI smoke."}
 {"version":1,"task_id":"7VLKAS","kind":"result","at":"2026-11-09T00:52:28.169898576Z","agent":"codex@worker-1","text":"Post-merge macOS dispatch still skipped jobs; deriving build mode from the validated shell input instead."}
+{"version":1,"task_id":"7VLKAS","kind":"result","at":"2026-11-09T00:58:50.102688508Z","agent":"codex@worker-1","text":"Build mode logs true, but downstream jobs still skip; changing output binding and guard evaluation."}
