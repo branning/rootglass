@@ -25,6 +25,10 @@ wait_for_marker() {
     fi
     sleep 0.1
   done
+  if [[ -n "$window_id" ]]; then
+    import -window "$window_id" "$artifact_dir/timeout-${marker}.png" \
+      >/dev/null 2>&1 || true
+  fi
   cat "$log_file"
   echo "Timed out after ${timeout_seconds}s waiting for $marker" >&2
   exit 1
@@ -135,7 +139,9 @@ wait_for_marker ROOTGLASS_EMBEDDED_TUI_SELECTION 30
 
 # Open the signed sample through the embedded TUI and boot a real guest.
 xdotool key --clearmodifiers o
+wait_for_marker ROOTGLASS_EMBEDDED_TUI_OPEN_PATH_PROMPT 15
 xdotool type --clearmodifiers --delay 5 "$sample"
+wait_for_marker ROOTGLASS_EMBEDDED_TUI_OPEN_PATH_TYPED 15
 xdotool key --clearmodifiers Return
 wait_for_marker ROOTGLASS_EMBEDDED_TUI_BUNDLE_READY 60
 xdotool key --clearmodifiers v

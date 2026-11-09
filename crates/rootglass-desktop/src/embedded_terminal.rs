@@ -35,6 +35,8 @@ pub struct EmbeddedTerminal {
     guest_password_reported: bool,
     guest_shell_reported: bool,
     guest_uname_reported: bool,
+    open_path_prompt_reported: bool,
+    open_path_sample_reported: bool,
     bundle_ready_reported: bool,
     manifest_valid_reported: bool,
     launch_plan_reported: bool,
@@ -112,6 +114,8 @@ impl EmbeddedTerminal {
             guest_password_reported: false,
             guest_shell_reported: false,
             guest_uname_reported: false,
+            open_path_prompt_reported: false,
+            open_path_sample_reported: false,
             bundle_ready_reported: false,
             manifest_valid_reported: false,
             launch_plan_reported: false,
@@ -200,6 +204,14 @@ impl EmbeddedTerminal {
             {
                 self.guest_uname_reported = true;
                 eprintln!("ROOTGLASS_EMBEDDED_TUI_GUEST_UNAME");
+            }
+            if !self.open_path_prompt_reported && self.screen.contains("Bundle path:") {
+                self.open_path_prompt_reported = true;
+                eprintln!("ROOTGLASS_EMBEDDED_TUI_OPEN_PATH_PROMPT");
+            }
+            if !self.open_path_sample_reported && self.screen.contains("hello-world.sample.glass") {
+                self.open_path_sample_reported = true;
+                eprintln!("ROOTGLASS_EMBEDDED_TUI_OPEN_PATH_TYPED");
             }
             if !self.bundle_ready_reported
                 && self.screen.contains("Hello World")
