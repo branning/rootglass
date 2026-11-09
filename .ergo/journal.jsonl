@@ -271,3 +271,4 @@
 {"version":1,"task_id":"7VLKAS","kind":"result","at":"2026-11-09T01:04:37.277770128Z","agent":"codex@worker-1","text":"Normal package dispatch skips release validation; downstream jobs need always() plus explicit dependency checks."}
 {"version":1,"task_id":"7VLKAS","kind":"result","at":"2026-11-09T01:41:02.234267837Z","agent":"codex@worker-1","text":"Installed TUI smoke launches QEMU; example import fails EACCES during package-store publication."}
 {"version":1,"task_id":"7VLKAS","kind":"result","at":"2026-11-09T01:46:57.057251924Z","agent":"codex@worker-1","text":"macOS probe confirmed EACCES renaming a read-only stage; keep its root writable through publish."}
+{"version":1,"task_id":"7VLKAS","kind":"result","at":"2026-11-09T01:59:50.802697902Z","agent":"codex@worker-1","text":"Smoke 42547895331 passed import and QEMU signature checks; log identifies HV_UNSUPPORTED."}

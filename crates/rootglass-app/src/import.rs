@@ -813,10 +813,7 @@ mod tests {
 
         fs::rename(&stage, &published).unwrap();
         make_path_readonly(&published).unwrap();
-        assert!(fs::metadata(&published)
-            .unwrap()
-            .permissions()
-            .readonly());
+        assert!(fs::metadata(&published).unwrap().permissions().readonly());
 
         make_tree_writable(&published);
         fs::remove_dir_all(parent).unwrap();

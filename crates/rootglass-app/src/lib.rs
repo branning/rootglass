@@ -32,6 +32,7 @@ pub struct GlassSummary {
     pub description: String,
     pub architecture: String,
     pub profile: String,
+    pub acceleration: String,
     pub memory_mb: u32,
     pub cpus: u32,
     pub publisher_name: String,
@@ -1054,6 +1055,10 @@ fn summarize(source: &Path, launch: &LaunchRequest) -> Result<GlassSummary, AppE
         description: glass.manifest.description.unwrap_or_default(),
         architecture: launch.architecture.clone(),
         profile: launch.runtime_profile.clone(),
+        acceleration: launch
+            .accelerator
+            .map(|accelerator| accelerator.qemu_name().to_ascii_uppercase())
+            .unwrap_or_else(|| "TCG (software emulation)".to_string()),
         memory_mb: launch.memory_mb,
         cpus: launch.cpus,
         publisher_name: launch.signature.publisher_name.clone(),
