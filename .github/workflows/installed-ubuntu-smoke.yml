@@ -90,6 +90,7 @@ jobs:
             xdg-desktop-portal-gtk xdg-utils xdotool xvfb
 
       - name: Verify artifacts, install package, and record inventory
+        timeout-minutes: 8
         env:
           PACKAGE_DIR: ${{ runner.temp }}/rootglass-package
           EXAMPLE_DIR: ${{ runner.temp }}/rootglass-example
@@ -98,6 +99,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$EVIDENCE_DIR" "$TEST_HOME/.config/rootglass" "$TEST_HOME/.local/share"
+          progress_file="$EVIDENCE_DIR/progress.txt"
+          progress() {
+            printf '%s\n' "$1" | tee -a "$progress_file"
+          }
           cat > "$TEST_HOME/.config/rootglass/trust.json" <<'JSON'
           {
             "schemaVersion": 1,
@@ -119,6 +124,13 @@ jobs:
           import sys
           from pathlib import Path
 
+          def sha256_file(path: Path) -> str:
+              digest = hashlib.sha256()
+              with path.open("rb") as source:
+                  for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                      digest.update(chunk)
+              return digest.hexdigest()
+
           def verify(checksum_file: Path, root: Path) -> None:
               for line in checksum_file.read_text(encoding="ascii").splitlines():
                   if not line.strip():
@@ -128,12 +140,13 @@ jobs:
                   matches = list(root.rglob(name))
                   if len(matches) != 1:
                       raise SystemExit(f"expected one artifact named {name}, found {len(matches)}")
-                  actual = hashlib.sha256(matches[0].read_bytes()).hexdigest()
+                  actual = sha256_file(matches[0])
                   if actual.lower() != expected.lower():
                       raise SystemExit(f"SHA-256 mismatch for {matches[0]}")
                   print(f"verified {name}: {actual}")
 
           package_dir, example_dir = map(Path, sys.argv[1:])
+          print("verifying downloaded package and example checksums", flush=True)
           package_checks = list(package_dir.rglob("SHA256SUMS-linux.txt"))
           example_checks = list(example_dir.rglob("SHA256SUMS-example.txt"))
           debs = list(package_dir.rglob("*.deb"))
@@ -147,6 +160,7 @@ jobs:
           (package_dir / "package-path.txt").write_text(str(debs[0]) + "\n", encoding="utf-8")
           (example_dir / "glass-path.txt").write_text(str(glasses[0]) + "\n", encoding="utf-8")
           PY
+          progress "checksums verified"
 
           deb=$(cat "$PACKAGE_DIR/package-path.txt")
           glass=$(cat "$EXAMPLE_DIR/glass-path.txt")
@@ -161,7 +175,11 @@ jobs:
               exit 1
             fi
           done
-          sudo apt-get install -y "$deb"
+          progress "installing Linux package with a 180-second limit"
+          sudo timeout --signal=TERM --kill-after=10s 180s \
+            env DEBIAN_FRONTEND=noninteractive apt-get install -y "$deb" \
+            2>&1 | tee "$EVIDENCE_DIR/package-install.log"
+          progress "Linux package installed"
           rootglass_binary="$(command -v rootglass)"
           [[ -x "$rootglass_binary" ]] || { echo "Installed rootglass binary is missing" >&2; exit 1; }
           echo "$rootglass_binary" > "$EVIDENCE_DIR/binary-path.txt"
@@ -172,6 +190,7 @@ jobs:
           else
             echo "/dev/kvm is unavailable; TCG will be used" | tee -a "$EVIDENCE_DIR/host.txt"
           fi
+          progress "host and installed package recorded"
 
           runtime_info=$(dpkg-query -L "$package_name" | grep '/runtime-info.json$' | head -n 1)
           [[ -n "$runtime_info" && -f "$runtime_info" ]] || {
@@ -179,7 +198,8 @@ jobs:
             exit 1
           }
           runtime_root="$(dirname "$runtime_info")"
-          python3 - "$runtime_root" <<'PY' | tee "$EVIDENCE_DIR/runtime-inventory.txt"
+          progress "verifying installed runtime inventory with a 120-second limit"
+          timeout --signal=TERM --kill-after=5s 120s python3 - "$runtime_root" <<'PY' | tee "$EVIDENCE_DIR/runtime-inventory.txt"
           import hashlib
           import json
           import pathlib
@@ -190,13 +210,22 @@ jobs:
           manifest = json.loads((root / "assets.json").read_text(encoding="utf-8"))
           if info["target_platform"] != "linux-x86_64":
               raise SystemExit(f"unexpected runtime platform: {info['target_platform']}")
-          for asset in manifest["assets"]:
+          for index, asset in enumerate(manifest["assets"], 1):
               path = root / asset["path"]
               if not path.is_file():
                   raise SystemExit(f"missing runtime asset: {path}")
-              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              hasher = hashlib.sha256()
+              with path.open("rb") as source:
+                  for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                      hasher.update(chunk)
+              digest = hasher.hexdigest()
               if digest.lower() != asset["sha256"].lower():
                   raise SystemExit(f"runtime checksum mismatch: {path}")
+              if index % 25 == 0 or index == len(manifest["assets"]):
+                  print(f"verified_runtime_assets={index}/{len(manifest['assets'])}", flush=True)
+          rom = root / "share" / "qemu" / "efi-virtio.rom"
+          if not rom.is_file():
+              raise SystemExit(f"missing bundled QEMU EFI virtio ROM: {rom}")
           qemu = next(root / asset["path"] for asset in manifest["assets"] if asset["kind"] == "qemu")
           print(f"runtime_version={info['runtime_version']}")
           print(f"target_platform={info['target_platform']}")
@@ -204,8 +233,10 @@ jobs:
           print(f"qemu_source={info['qemu_source']}")
           print(f"qemu_sha256={info['qemu_sha256']}")
           print(f"qemu_binary={qemu}")
+          print(f"efi_virtio_rom={rom}")
           print(f"verified_asset_count={len(manifest['assets'])}")
           PY
+          progress "installed runtime inventory verified"
 
           mkdir -p "$RUNNER_TEMP/rootglass-shims"
           for tool in cargo rustc qemu-system-aarch64; do
@@ -219,9 +250,11 @@ jobs:
           done
 
           plan_output="$RUNNER_TEMP/rootglass-plan.txt"
+          progress "running installed rootglass plan with a 90-second limit"
           (
             cd "$RUNNER_TEMP"
-            env PATH="$RUNNER_TEMP/rootglass-shims:$PATH" \
+            timeout --signal=TERM --kill-after=5s 90s env \
+              PATH="$RUNNER_TEMP/rootglass-shims:$PATH" \
               HOME="$TEST_HOME" \
               XDG_CONFIG_HOME="$TEST_HOME/.config" \
               XDG_DATA_HOME="$TEST_HOME/.local/share" \
@@ -241,6 +274,7 @@ jobs:
               raise SystemExit(f"plan did not resolve the installed bundled QEMU: {executable}")
           print(f"bundled_qemu={executable}")
           PY
+          progress "installed rootglass plan verified"
 
       - name: Run offline install, association, and guest smoke
         env:
