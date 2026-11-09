@@ -1480,9 +1480,22 @@ fn service_worker_loop(
                 run.clone(),
                 with_service(&service, |service| service.write_serial(&run, &bytes)),
             )),
-            WorkerRequest::Developer(request) => Some(WorkerCompletion::Developer(
-                execute_developer_request(request),
-            )),
+            WorkerRequest::Developer(request) => {
+                let action = request.action;
+                trace_tui(format!(
+                    "developer worker started: action={action:?}, source_is_directory={}, manifest_exists={}, key_file_exists={}, output_requested={}",
+                    request.source.is_dir(),
+                    request.source.join("rootglass.toml").is_file(),
+                    request.key_file.is_file(),
+                    request.output.is_some(),
+                ));
+                let result = execute_developer_request(request);
+                trace_tui(format!(
+                    "developer worker returned: action={action:?}, successful={}",
+                    result.is_ok(),
+                ));
+                Some(WorkerCompletion::Developer(result))
+            }
             WorkerRequest::StopOrphan(run) => Some(WorkerCompletion::OrphanStopped(
                 run.clone(),
                 with_service(&service, |service| service.stop(&run)),

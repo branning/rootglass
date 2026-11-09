@@ -226,6 +226,7 @@ xdotool key --clearmodifiers t
 
 # Sign and package through the TUI using only the external key-file path.
 developer_package="$work_dir/embedded-ui-package.glass"
+test -f "$glass_dir/rootglass.toml"
 xdotool type --clearmodifiers --delay 5 D
 xdotool key --clearmodifiers s
 xdotool type --clearmodifiers --delay 5 "$glass_dir"
@@ -233,7 +234,9 @@ xdotool key --clearmodifiers Return
 xdotool type --clearmodifiers --delay 5 "$trusted_key"
 xdotool key --clearmodifiers Return
 xdotool key --clearmodifiers Return
+wait_for_trace_marker "developer worker returned: action=SignDirectory, successful=true" 60
 wait_for_marker ROOTGLASS_EMBEDDED_TUI_DEVELOPER_SIGNED 60
+test -f "$glass_dir/rootglass.toml"
 xdotool key --clearmodifiers Escape
 xdotool type --clearmodifiers --delay 5 D
 xdotool key --clearmodifiers p
@@ -244,7 +247,15 @@ xdotool key --clearmodifiers Return
 xdotool key --clearmodifiers Return
 xdotool type --clearmodifiers --delay 5 "$developer_package"
 xdotool key --clearmodifiers Return
-wait_for_marker ROOTGLASS_EMBEDDED_TUI_DEVELOPER_PACKAGED 60
+wait_for_trace_marker "developer worker returned: action=PackageArchive" 180
+if ! grep -Fq "developer worker returned: action=PackageArchive, successful=true" "$work_dir/tui-trace.log"; then
+  import -window "$window_id" "$artifact_dir/developer-package-failed.png" \
+    >/dev/null 2>&1 || true
+  cat "$work_dir/tui-trace.log"
+  echo "The TUI developer package action failed" >&2
+  exit 1
+fi
+wait_for_marker ROOTGLASS_EMBEDDED_TUI_DEVELOPER_PACKAGED 30
 test -s "$developer_package"
 xdotool key --clearmodifiers Escape
 
