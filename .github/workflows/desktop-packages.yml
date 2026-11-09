@@ -67,6 +67,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.select.outputs.matrix }}
+      build_packages: ${{ steps.select.outputs.build_packages }}
     steps:
       - name: Validate release build selection
         env:
@@ -99,6 +100,7 @@ jobs:
         id: select
         env:
           PLATFORM: ${{ inputs.platform }}
+          ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
         run: |
           matrix=$(jq -cn --arg platform "$PLATFORM" '
             {include: ([
@@ -107,11 +109,18 @@ jobs:
               {config: "windows", name: "Windows x64", runner: "windows-2025", format: "nsis", extension: "exe"}
             ] | map(select($platform == "all" or .config == $platform)))}')
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          if [[ -n "$ARTIFACT_RUN_ID" ]]; then
+            echo "build_packages=false" >> "$GITHUB_OUTPUT"
+            echo "mode=attach existing artifacts from run $ARTIFACT_RUN_ID"
+          else
+            echo "build_packages=true" >> "$GITHUB_OUTPUT"
+            echo "mode=build selected package platforms"
+          fi
 
   runtime_assets:
     name: Materialize pinned guest boot assets
     needs: [select-platforms]
-    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.artifact_run_id }}
+    if: needs.select-platforms.outputs.build_packages == 'true'
     runs-on: ubuntu-24.04
     outputs:
       runtime_version: ${{ steps.version.outputs.runtime_version }}
@@ -181,7 +190,7 @@ jobs:
 
   package:
     name: ${{ matrix.name }} package
-    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.artifact_run_id }}
+    if: needs.select-platforms.outputs.build_packages == 'true'
     needs: [select-platforms, runtime_assets]
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -339,8 +348,8 @@ jobs:
 
   attach-current-release-assets:
     name: Attach current build artifacts to a draft prerelease
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag && !inputs.artifact_run_id }}
-    needs: [package, runtime_assets]
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag && needs.select-platforms.outputs.build_packages == 'true' }}
+    needs: [select-platforms, package, runtime_assets]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -363,7 +372,7 @@ jobs:
 
   attach-existing-release-assets:
     name: Attach artifacts from an existing package run
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact_run_id }}
+    if: needs.select-platforms.outputs.build_packages == 'false'
     needs: [select-platforms]
     runs-on: ubuntu-24.04
     permissions:
