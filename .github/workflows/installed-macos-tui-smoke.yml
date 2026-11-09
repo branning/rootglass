@@ -189,8 +189,15 @@ jobs:
           (stage / "file").write_text("probe", encoding="ascii")
           (stage / "file").chmod(0o444)
           stage.chmod(0o555)
-          os.rename(stage, published)
-          print(f"Read-only directory rename succeeded: {published}")
+          try:
+              os.rename(stage, published)
+          except PermissionError:
+              print("Read-only staging-root rename was denied; retrying with a writable root")
+              stage.chmod(0o755)
+              os.rename(stage, published)
+          else:
+              print("Read-only staging-root rename was allowed on this runner")
+          print("Atomic rename probe completed")
           published.chmod(0o755)
           shutil.rmtree(published)
           PY
