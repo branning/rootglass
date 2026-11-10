@@ -11,16 +11,18 @@ use gpui_kit::base::StyledExt;
 use gpui_kit::component::button::*;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::component::text::{SelectionFormat, TextView};
 use gpui_kit::component::*;
 use gpui_kit::*;
-use gpui_kit::component::{ActiveTheme as _, Theme, ThemeMode, ThemeRegistry};
+use gpui_kit::component::{Theme, ThemeMode, ThemeRegistry};
 use rootglass_app::registry::InstalledGlass;
+use rootglass_app::DiagnosticLogSnapshot;
 use rootglass_app::ManifestValidationReport;
 use rootglass_app::RuntimeEvent;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 actions!(rootglass, [OpenBundle, StopGlass, Quit]);
 const ROOTGLASS_CONTEXT: &str = "RootglassWindow";
@@ -28,6 +30,12 @@ const ROOTGLASS_CONTEXT: &str = "RootglassWindow";
 struct RootglassWindow {
     model: UiModel,
     input: Entity<InputState>,
+    running_tab: RunningTab,
+    qemu_diagnostics: String,
+    qemu_diagnostics_error: Option<String>,
+    qemu_diagnostics_truncated: bool,
+    qemu_diagnostics_loading: bool,
+    run_started_at: Option<Instant>,
     pending_file_drop: Option<PathBuf>,
     file_drop_active: bool,
     #[cfg(feature = "embedded-terminal")]
@@ -35,6 +43,14 @@ struct RootglassWindow {
     _library_task: Task<()>,
     _poll_task: Task<()>,
     _input_subscription: Subscription,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum RunningTab {
+    #[default]
+    Console,
+    Overview,
+    Logs,
 }
 
 enum ArchiveOpenResult {
@@ -91,10 +107,16 @@ impl Render for RootglassWindow {
             return root.child(terminal.clone());
         }
 
+        let is_active_run = matches!(
+            &self.model.state,
+            UiState::Running(_) | UiState::Booting(_) | UiState::Stopping(_)
+        );
         let main = if let UiState::PublisherReview(review) = &self.model.state {
             div()
                 .flex_1()
                 .child(publisher_review_view(review, &self.model.trust_policy, cx))
+        } else if is_active_run {
+            self.running_guest_view(actions, cx)
         } else {
             let mut main = div()
                 .v_flex()
@@ -178,11 +200,7 @@ impl Render for RootglassWindow {
             div().flex_1().child(main)
         };
         let mut layout = root.child(div().h_flex().flex_1().child(sidebar_view(cx)).child(main));
-        if matches!(
-            &self.model.state,
-            UiState::Running(_) | UiState::Booting(_) | UiState::Stopping(_)
-        ) || !self.model.console.is_empty()
-        {
+        if !is_active_run && !self.model.console.is_empty() {
             layout = layout.child(
                 div()
                     .v_flex()
@@ -224,17 +242,399 @@ impl Render for RootglassWindow {
     }
 }
 
+impl RootglassWindow {
+    fn running_guest_view(
+        &mut self,
+        actions: crate::ui_model::UiActions,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let (name, status, phase) = match &self.model.state {
+            UiState::Running(run) => (run.name.clone(), run.status.clone(), "RUNNING"),
+            UiState::Booting(run) => (run.name.clone(), run.status.clone(), "BOOTING"),
+            UiState::Stopping(run) => (run.name.clone(), run.status.clone(), "STOPPING"),
+            _ => unreachable!("running view only renders for an active run"),
+        };
+        let installed = self.model.selected_installed().cloned();
+        let preview = self.model.selected_preview().cloned();
+        let version = installed
+            .as_ref()
+            .map(|glass| glass.version.as_str())
+            .or_else(|| preview.as_ref().map(|glass| glass.version.as_str()))
+            .unwrap_or("Unknown version");
+        let publisher = installed
+            .as_ref()
+            .map(|glass| glass.publisher_name.as_str())
+            .or_else(|| preview.as_ref().map(|glass| glass.publisher.as_str()))
+            .unwrap_or("Unknown publisher");
+        let elapsed = self.run_started_at.map_or_else(
+            || "Elapsed: —".to_string(),
+            |started| {
+                let minutes = started.elapsed().as_secs() / 60;
+                if minutes == 0 {
+                    "Elapsed: <1 min".to_string()
+                } else {
+                    format!("Elapsed: {minutes} min")
+                }
+            },
+        );
+        let status_background = if phase == "RUNNING" {
+            cx.theme().accent
+        } else {
+            cx.theme().group_box
+        };
+        let status_foreground = if phase == "RUNNING" {
+            cx.theme().accent_foreground
+        } else {
+            cx.theme().muted_foreground
+        };
+        let mut content = div()
+            .v_flex()
+            .flex_1()
+            .gap_4()
+            .p_6()
+            .bg(cx.theme().background)
+            .child(
+                div()
+                    .h_flex()
+                    .items_start()
+                    .gap_4()
+                    .child(
+                        div()
+                            .v_flex()
+                            .flex_1()
+                            .gap_1()
+                            .child(eyebrow(format!("LIBRARY / {}", name.to_uppercase()), cx))
+                            .child(page_title(name.clone(), cx))
+                            .child(muted_text(
+                                format!("Version {version} · Publisher: {publisher}"),
+                                cx,
+                            )),
+                    )
+                    .child(
+                        div()
+                            .h_flex()
+                            .gap_2()
+                            .child(
+                                Button::new("running-restart")
+                                    .secondary()
+                                    .label("RESTART")
+                                    .disabled(!actions.restart)
+                                    .on_click(cx.listener(|this, _, _, cx| this.restart_guest(cx))),
+                            )
+                            .child(
+                                Button::new("running-stop")
+                                    .danger()
+                                    .label("STOP")
+                                    .disabled(!actions.stop)
+                                    .on_click(cx.listener(|this, _, _, cx| this.stop_guest(cx))),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .h_flex()
+                    .items_center()
+                    .gap_3()
+                    .p_3()
+                    .bg(status_background)
+                    .child(div().size(px(8.0)).rounded_full().bg(status_foreground))
+                    .child(
+                        div()
+                            .v_flex()
+                            .flex_1()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .child(phase)
+                                    .font_family(cx.theme().mono_font_family.clone())
+                                    .text_size(px(11.0))
+                                    .text_color(status_foreground),
+                            )
+                            .child(div().child(status).text_size(px(13.0))),
+                    )
+                    .child(muted_text(elapsed, cx)),
+            )
+            .child(
+                div()
+                    .h_flex()
+                    .gap_1()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        Button::new("running-tab-console")
+                            .ghost()
+                            .label("Console")
+                            .selected(self.running_tab == RunningTab::Console)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.set_running_tab(RunningTab::Console, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("running-tab-overview")
+                            .ghost()
+                            .label("Overview")
+                            .selected(self.running_tab == RunningTab::Overview)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.set_running_tab(RunningTab::Overview, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("running-tab-logs")
+                            .ghost()
+                            .label("Logs")
+                            .selected(self.running_tab == RunningTab::Logs)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.set_running_tab(RunningTab::Logs, cx)
+                            })),
+                    ),
+            );
+
+        match self.running_tab {
+            RunningTab::Console => {
+                let console = if self.model.visible_console().is_empty() {
+                    "No serial output received yet.".to_string()
+                } else {
+                    fenced_text(self.model.visible_console())
+                };
+                content = content.child(
+                    div()
+                        .v_flex()
+                        .flex_1()
+                        .min_h(px(0.0))
+                        .gap_3()
+                        .child(
+                            div()
+                                .h_flex()
+                                .items_center()
+                                .child(eyebrow("GUEST CONSOLE", cx))
+                                .child(div().flex_1())
+                                .child(muted_text("Live serial output", cx)),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_h(px(200.0))
+                                .p_4()
+                                .bg(cx.theme().group_box)
+                                .overflow_y_scrollbar()
+                                .child(
+                                    TextView::markdown("guest-console-output", console)
+                                        .selectable(true)
+                                        .selection_format(SelectionFormat::Plain),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .h_flex()
+                                .items_center()
+                                .gap_3()
+                                .child(Input::new(&self.input).disabled(!actions.console_input))
+                                .child(muted_text("Press Enter to send to the guest", cx)),
+                        ),
+                );
+            }
+            RunningTab::Overview => {
+                let mut cards = div().v_flex().gap_3();
+                if let Some(glass) = installed.as_ref() {
+                    cards = cards
+                        .child(section_heading("GLASS", cx))
+                        .child(info_row("Identifier", &glass.identifier, cx))
+                        .child(info_row("Version", &glass.version, cx))
+                        .child(info_row("Publisher", &glass.publisher_name, cx))
+                        .child(info_row("Content digest", &glass.content_sha256, cx));
+                }
+                if let Some(preview) = preview.as_ref() {
+                    cards = cards
+                        .child(section_heading("GUEST PROFILE", cx))
+                        .child(info_row(
+                            "Architecture",
+                            &preview.preflight.architecture,
+                            cx,
+                        ))
+                        .child(info_row(
+                            "Memory / CPUs",
+                            &format!(
+                                "{} MiB / {} CPUs",
+                                preview.preflight.memory_mb, preview.preflight.cpus
+                            ),
+                            cx,
+                        ))
+                        .child(info_row("QEMU", &preview.preflight.qemu, cx))
+                        .child(info_row(
+                            "Acceleration",
+                            &preview.preflight.acceleration,
+                            cx,
+                        ));
+                    if !preview.preflight.runtime_assets.is_empty() {
+                        cards = cards.child(info_row(
+                            "Runtime assets",
+                            &preview.preflight.runtime_assets.join(", "),
+                            cx,
+                        ));
+                    }
+                }
+                let state_name = self
+                    .model
+                    .state_records
+                    .iter()
+                    .find(|state| state.id == self.model.selected_state_id)
+                    .map(|state| state.name.as_str())
+                    .unwrap_or("Default state");
+                cards = cards
+                    .child(section_heading("SAVED DATA", cx))
+                    .child(info_row(
+                        "Selected state",
+                        &format!("{state_name} ({})", self.model.selected_state_id),
+                        cx,
+                    ));
+                content = content.child(
+                    div()
+                        .flex_1()
+                        .min_h(px(0.0))
+                        .p_4()
+                        .bg(cx.theme().group_box)
+                        .overflow_y_scrollbar()
+                        .child(cards),
+                );
+            }
+            RunningTab::Logs => {
+                let log_text = if self.qemu_diagnostics_loading {
+                    "Loading QEMU diagnostics…".to_string()
+                } else if let Some(error) = &self.qemu_diagnostics_error {
+                    format!("Unable to load QEMU diagnostics.\n{error}")
+                } else if self.qemu_diagnostics.is_empty() {
+                    "No QEMU diagnostic output was captured for this run.".to_string()
+                } else {
+                    fenced_text(&self.qemu_diagnostics)
+                };
+                let mut log_panel = div()
+                    .v_flex()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .gap_3()
+                    .child(
+                        div()
+                            .h_flex()
+                            .items_center()
+                            .gap_3()
+                            .child(eyebrow("QEMU DIAGNOSTICS", cx))
+                            .child(div().flex_1())
+                            .child(
+                                Button::new("refresh-qemu-diagnostics")
+                                    .secondary()
+                                    .label(if self.qemu_diagnostics_loading {
+                                        "LOADING…"
+                                    } else {
+                                        "REFRESH"
+                                    })
+                                    .disabled(self.qemu_diagnostics_loading)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.refresh_qemu_diagnostics(cx)
+                                    })),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_h(px(200.0))
+                            .p_4()
+                            .bg(cx.theme().group_box)
+                            .overflow_y_scrollbar()
+                            .child(
+                                TextView::markdown("qemu-diagnostics-output", log_text)
+                                    .selectable(true)
+                                    .selection_format(SelectionFormat::Plain),
+                            ),
+                    );
+                if self.qemu_diagnostics_truncated {
+                    log_panel = log_panel.child(muted_text(
+                        "Earlier diagnostic output was dropped; showing the latest 64 KiB.",
+                        cx,
+                    ));
+                }
+                content = content.child(log_panel);
+            }
+        }
+
+        content
+    }
+
+    fn set_running_tab(&mut self, tab: RunningTab, cx: &mut Context<Self>) {
+        self.running_tab = tab;
+        if tab == RunningTab::Logs {
+            self.refresh_qemu_diagnostics(cx);
+        }
+        cx.notify();
+    }
+
+    fn refresh_qemu_diagnostics(&mut self, cx: &mut Context<Self>) {
+        let Some(run) = self.model.run_id.clone() else {
+            self.qemu_diagnostics_error = Some("There is no active QEMU run.".to_string());
+            self.qemu_diagnostics.clear();
+            self.qemu_diagnostics_truncated = false;
+            self.qemu_diagnostics_loading = false;
+            cx.notify();
+            return;
+        };
+        if self.qemu_diagnostics_loading {
+            return;
+        }
+        self.qemu_diagnostics_loading = true;
+        self.qemu_diagnostics_error = None;
+        let service = self.model.shared_service();
+        let background_executor = cx.background_executor().clone();
+        let run_for_diagnostics = run.clone();
+        cx.notify();
+        cx.spawn(async move |view, cx| {
+            let service_for_diagnostics = service.clone();
+            let result = background_executor
+                .spawn(async move {
+                    lock_service(&service_for_diagnostics)
+                        .and_then(|mut service| service.qemu_diagnostics(&run_for_diagnostics))
+                })
+                .await;
+            let _ = view.update(cx, |view, cx| {
+                if view.model.run_id.as_ref() != Some(&run) {
+                    return;
+                }
+                match result {
+                    Ok(snapshot) => view.apply_diagnostics_snapshot(snapshot),
+                    Err(error) => {
+                        view.qemu_diagnostics.clear();
+                        view.qemu_diagnostics_truncated = false;
+                        view.qemu_diagnostics_error = Some(error.to_string());
+                    }
+                }
+                view.qemu_diagnostics_loading = false;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn apply_diagnostics_snapshot(&mut self, snapshot: DiagnosticLogSnapshot) {
+        self.qemu_diagnostics = snapshot.text;
+        self.qemu_diagnostics_truncated = snapshot.truncated;
+        self.qemu_diagnostics_error = None;
+    }
+}
+
 fn sidebar_view(cx: &App) -> Div {
     div()
         .v_flex()
-        .w(px(192.0))
+        .w(px(240.0))
         .h_full()
         .flex_shrink_0()
         .gap_2()
         .p_4()
         .bg(cx.theme().sidebar)
         .text_color(cx.theme().sidebar_foreground)
-        .child(div().child("rootglass").text_size(px(20.0)))
+        .child(
+            div()
+                .child("rootglass")
+                .text_size(px(20.0))
+                .font_weight(FontWeight::BOLD),
+        )
         .child(eyebrow("LOCAL WORKSPACE", cx))
         .child(
             div()
@@ -243,6 +643,9 @@ fn sidebar_view(cx: &App) -> Div {
                 .text_color(cx.theme().sidebar_accent_foreground)
                 .child("Library"),
         )
+        .child(muted_text("Activity", cx).p_2())
+        .child(muted_text("Publishers", cx).p_2())
+        .child(muted_text("Settings", cx).p_2())
         .child(div().flex_1())
         .child(eyebrow("ON THIS COMPUTER", cx))
         .child(muted_text("One glass at a time", cx))
@@ -250,6 +653,37 @@ fn sidebar_view(cx: &App) -> Div {
             format!("{} · {}", std::env::consts::OS, std::env::consts::ARCH),
             cx,
         ))
+}
+
+fn section_heading(label: impl Into<String>, cx: &App) -> Div {
+    div().pt_2().child(eyebrow(label, cx))
+}
+
+fn info_row(label: impl Into<String>, value: &str, cx: &App) -> Div {
+    div()
+        .h_flex()
+        .items_start()
+        .gap_4()
+        .py_2()
+        .border_b_1()
+        .border_color(cx.theme().border)
+        .child(div().w(px(160.0)).child(eyebrow(label, cx)))
+        .child(div().flex_1().child(value.to_string()).text_size(px(13.0)))
+}
+
+fn fenced_text(text: &str) -> String {
+    let mut longest_run = 0;
+    let mut current_run = 0;
+    for character in text.chars() {
+        if character == '`' {
+            current_run += 1;
+            longest_run = longest_run.max(current_run);
+        } else {
+            current_run = 0;
+        }
+    }
+    let fence = "`".repeat(longest_run.max(2) + 1);
+    format!("{fence}text\n{text}\n{fence}")
 }
 
 fn eyebrow(label: impl Into<String>, cx: &App) -> Div {
@@ -338,6 +772,11 @@ impl RootglassWindow {
                     lock_service(&service_for_poll).and_then(|mut service| service.poll_events())
                 })
                 .await;
+            let guest_ready = result.as_ref().is_ok_and(|events| {
+                events
+                    .iter()
+                    .any(|event| matches!(event, RuntimeEvent::GuestReady { .. }))
+            });
             if let Ok(events) = &result {
                 for event in events {
                     match event {
@@ -370,6 +809,18 @@ impl RootglassWindow {
             if view
                 .update(cx, |view, cx| {
                     view.model.apply_poll_result(result);
+                    if guest_ready && view.run_started_at.is_none() {
+                        if matches!(view.model.state, UiState::Running(_)) {
+                            view.run_started_at = Some(Instant::now());
+                        }
+                    }
+                    if !matches!(
+                        view.model.state,
+                        UiState::Running(_) | UiState::Booting(_) | UiState::Stopping(_)
+                    ) {
+                        view.run_started_at = None;
+                        view.qemu_diagnostics_loading = false;
+                    }
                     cx.notify();
                 })
                 .is_err()
@@ -422,6 +873,12 @@ impl RootglassWindow {
         Self {
             model,
             input,
+            running_tab: RunningTab::Console,
+            qemu_diagnostics: String::new(),
+            qemu_diagnostics_error: None,
+            qemu_diagnostics_truncated: false,
+            qemu_diagnostics_loading: false,
+            run_started_at: None,
             pending_file_drop: None,
             file_drop_active: false,
             #[cfg(feature = "embedded-terminal")]
@@ -734,6 +1191,11 @@ impl RootglassWindow {
     }
 
     fn start_guest(&mut self, cx: &mut Context<Self>) {
+        self.run_started_at = None;
+        self.qemu_diagnostics.clear();
+        self.qemu_diagnostics_error = None;
+        self.qemu_diagnostics_truncated = false;
+        self.qemu_diagnostics_loading = false;
         let Some((ticket, path)) = self.model.begin_start() else {
             return;
         };
@@ -815,6 +1277,11 @@ impl RootglassWindow {
     }
 
     fn restart_guest(&mut self, cx: &mut Context<Self>) {
+        self.run_started_at = None;
+        self.qemu_diagnostics.clear();
+        self.qemu_diagnostics_error = None;
+        self.qemu_diagnostics_truncated = false;
+        self.qemu_diagnostics_loading = false;
         let Some((ticket, run, path)) = self.model.begin_restart() else {
             return;
         };

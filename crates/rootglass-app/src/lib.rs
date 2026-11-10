@@ -101,6 +101,13 @@ pub struct TrustPolicyStatus {
     pub error: Option<String>,
 }
 
+/// A bounded snapshot of host-side QEMU stderr for the run Logs view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiagnosticLogSnapshot {
+    pub text: String,
+    pub truncated: bool,
+}
+
 /// One consistent snapshot of the selected bundle's writable states.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StateStoreSnapshot {
@@ -854,6 +861,30 @@ impl AppService {
                 summary: "Guest console input failed.".to_string(),
                 detail: error.to_string(),
             })
+    }
+
+    /// Return bounded QEMU stderr for an active run, kept separate from guest serial output.
+    pub fn qemu_diagnostics(&mut self, run: &RunId) -> Result<DiagnosticLogSnapshot, AppError> {
+        let active = self.require_active(run)?;
+        let tail = active.process.stderr_tail().map_err(|error| AppError {
+            phase: active.state,
+            summary: "QEMU diagnostics could not be read.".to_string(),
+            detail: error.to_string(),
+        })?;
+        let text = String::from_utf8_lossy(&tail.bytes)
+            .chars()
+            .map(|character| {
+                if character.is_control() && !matches!(character, '\n' | '\r' | '\t') {
+                    '\u{fffd}'
+                } else {
+                    character
+                }
+            })
+            .collect();
+        Ok(DiagnosticLogSnapshot {
+            text,
+            truncated: tail.truncated,
+        })
     }
 
     pub fn stop(&mut self, run: &RunId) -> Result<(), AppError> {
