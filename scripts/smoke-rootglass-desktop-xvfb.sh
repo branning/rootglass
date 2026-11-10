@@ -183,9 +183,9 @@ xdotool windowsize --sync "$window_id" 1280 800
 sleep 0.5
 import -window "$window_id" "${artifact_dir}/00-rootglass-library.png"
 
-# Confirm the real native chooser opens and returns a user-cancel result.
-# GPUI's `cmd` binding maps to Control on Linux.
-xdotool key --clearmodifiers ctrl+o
+# Confirm the real native chooser opens and returns a user-cancel result from
+# the current Library screen's IMPORT GLASS action.
+xdotool mousemove --window "$window_id" 1210 306 click 1
 wait_for_marker ROOTGLASS_DESKTOP_PICKER_OPEN
 dialog_window=""
 for _ in $(seq 1 100); do
