@@ -9,6 +9,7 @@ use crate::ui_model::{
 use gpui_kit::actions;
 use gpui_kit::base::StyledExt;
 use gpui_kit::component::button::*;
+use gpui_kit::component::{ActiveTheme as _, Theme, ThemeMode, ThemeRegistry};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::*;
@@ -39,60 +40,11 @@ struct RootglassWindow {
 impl Render for RootglassWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let actions = self.model.actions();
-        let mut toolbar = div()
-            .h_flex()
-            .items_center()
-            .gap_2()
-            .child("Rootglass")
-            .child(
-                Button::new("open-glass")
-                    .primary()
-                    .label("Open a .glass bundle…")
-                    .disabled(!actions.open)
-                    .on_click(cx.listener(|this, _, _, cx| this.open_bundle(cx))),
-            )
-            .child(
-                Button::new("boot-glass")
-                    .label("Boot")
-                    .disabled(!actions.boot)
-                    .on_click(cx.listener(|this, _, _, cx| this.start_guest(cx))),
-            )
-            .child(
-                Button::new("restart-glass")
-                    .label("Restart")
-                    .disabled(!actions.restart)
-                    .on_click(cx.listener(|this, _, _, cx| this.restart_guest(cx))),
-            )
-            .child(
-                Button::new("stop-glass")
-                    .label("Stop")
-                    .disabled(!actions.stop)
-                    .on_click(cx.listener(|this, _, _, cx| this.stop_guest(cx))),
-            );
-
-        #[cfg(feature = "embedded-terminal")]
-        {
-            let terminal_open = self.embedded_tui.is_some();
-            toolbar = toolbar.child(
-                Button::new("embedded-tui")
-                    .label(if terminal_open {
-                        "Close TUI"
-                    } else {
-                        "Open TUI"
-                    })
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        if this.embedded_tui.is_some() {
-                            this.close_embedded_tui(cx);
-                        } else {
-                            this.open_embedded_tui(window, cx);
-                        }
-                    })),
-            );
-        }
-
         let root = div()
             .v_flex()
             .size_full()
+            .bg(cx.theme().background)
+            .text_color(cx.theme().foreground)
             .key_context(ROOTGLASS_CONTEXT)
             .on_drag_move(
                 cx.listener(|this, event: &DragMoveEvent<ExternalPaths>, _, cx| {
@@ -127,58 +79,206 @@ impl Render for RootglassWindow {
             }))
             .on_action(cx.listener(Self::on_open_bundle))
             .on_action(cx.listener(Self::on_stop_shortcut))
-            .on_action(cx.listener(Self::on_quit))
-            .child(toolbar);
+            .on_action(cx.listener(Self::on_quit));
 
         #[cfg(feature = "embedded-terminal")]
         if let Some(terminal) = &self.embedded_tui {
             return root.child(terminal.clone());
         }
 
-        root.child(
+        let mut main = div()
+            .v_flex()
+            .flex_1()
+            .gap_2()
+            .p_4()
+            .bg(cx.theme().background)
+            .overflow_scrollbar()
+            .child(
+                div()
+                    .h_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .v_flex()
+                            .flex_1()
+                            .gap_2()
+                            .child(eyebrow("YOUR GLASSES", cx))
+                            .child(page_title("Library", cx))
+                            .child(muted_text(
+                                "Contained Linux worlds, ready when you are.",
+                                cx,
+                            )),
+                    )
+                    .child(
+                        Button::new("open-glass")
+                            .primary()
+                            .label("IMPORT GLASS")
+                            .disabled(!actions.open)
+                            .on_click(cx.listener(|this, _, _, cx| this.open_bundle(cx))),
+                    ),
+            )
+            .child(library_view(
+                &self.model.state,
+                &self.model.installed_glasses,
+                self.model.selected_path.as_ref(),
+                self.model.library_error.as_deref(),
+                actions.open,
+                self.file_drop_active,
+                cx,
+            ));
+        if !matches!(&self.model.state, UiState::Empty) {
+            main = main
+                .child(
+                    div()
+                        .v_flex()
+                        .gap_2()
+                        .p_4()
+                        .bg(cx.theme().group_box)
+                        .child(eyebrow("SELECTED GLASS", cx))
+                        .child(details_view(&self.model.state).text_size(px(14.0))),
+                )
+                .child(
+                    div()
+                        .h_flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            Button::new("boot-glass")
+                                .primary()
+                                .label("START GLASS")
+                                .disabled(!actions.boot)
+                                .on_click(cx.listener(|this, _, _, cx| this.start_guest(cx))),
+                        )
+                        .child(
+                            Button::new("restart-glass")
+                                .label("RESTART")
+                                .disabled(!actions.restart)
+                                .on_click(cx.listener(|this, _, _, cx| this.restart_guest(cx))),
+                        )
+                        .child(
+                            Button::new("stop-glass")
+                                .label("STOP GLASS")
+                                .disabled(!actions.stop)
+                                .on_click(cx.listener(|this, _, _, cx| this.stop_guest(cx))),
+                        ),
+                )
+                .child(status_view(&self.model.state).p_2().bg(cx.theme().sidebar));
+        }
+        let mut layout = root.child(
             div()
                 .h_flex()
                 .flex_1()
-                .gap_2()
-                .child(
-                    library_view(
-                        &self.model.state,
-                        &self.model.installed_glasses,
-                        self.model.library_error.as_deref(),
-                        actions.open,
-                        self.file_drop_active,
-                        cx,
-                    )
-                    .w(px(320.0))
+                .child(sidebar_view(cx))
+                .child(main),
+        );
+        if matches!(
+            &self.model.state,
+            UiState::Running(_) | UiState::Booting(_) | UiState::Stopping(_)
+        ) || !self.model.console.is_empty()
+        {
+            layout = layout.child(
+                div()
+                    .v_flex()
+                    .h(px(180.0))
                     .flex_shrink_0()
-                    .overflow_scrollbar(),
-                )
-                .child(
-                    details_view(&self.model.state)
-                        .flex_1()
-                        .overflow_scrollbar(),
-                ),
-        )
-        .child(status_view(&self.model.state).flex_shrink_0())
-        .child(
-            div()
-                .v_flex()
-                .h(px(144.0))
-                .flex_shrink_0()
-                .child("Serial console")
-                .child(self.model.console.clone())
-                .overflow_y_scrollbar(),
-        )
-        .child(
+                    .gap_2()
+                    .p_3()
+                    .bg(cx.theme().group_box)
+                    .child(eyebrow("GUEST CONSOLE", cx))
+                    .child(
+                        div()
+                            .flex_1()
+                            .overflow_y_scrollbar()
+                            .child(self.model.console.clone()),
+                    )
+                    .child(
+                        div()
+                            .h_flex()
+                            .items_center()
+                            .gap_2()
+                            .child(Input::new(&self.input).disabled(!actions.console_input))
+                            .child(muted_text("Press Enter to send", cx)),
+                    ),
+            );
+        }
+        layout.child(
             div()
                 .h_flex()
-                .flex_shrink_0()
                 .items_center()
                 .gap_2()
-                .child(Input::new(&self.input).disabled(!actions.console_input))
-                .child("Press Enter to send"),
+                .p_2()
+                .bg(cx.theme().status_bar)
+                .child(eyebrow("LOCAL ONLY", cx))
+                .child(muted_text("Your glass and saved data stay on this computer.", cx)),
         )
     }
+}
+
+fn sidebar_view(cx: &App) -> Div {
+    div()
+        .v_flex()
+        .w(px(192.0))
+        .h_full()
+        .flex_shrink_0()
+        .gap_2()
+        .p_4()
+        .bg(cx.theme().sidebar)
+        .text_color(cx.theme().sidebar_foreground)
+        .child(div().child("rootglass").text_size(px(20.0)))
+        .child(eyebrow("LOCAL WORKSPACE", cx))
+        .child(
+            div()
+                .p_2()
+                .bg(cx.theme().sidebar_accent)
+                .text_color(cx.theme().sidebar_accent_foreground)
+                .child("Library"),
+        )
+        .child(div().flex_1())
+        .child(eyebrow("ON THIS COMPUTER", cx))
+        .child(muted_text("One glass at a time", cx))
+        .child(muted_text(
+            format!("{} · {}", std::env::consts::OS, std::env::consts::ARCH),
+            cx,
+        ))
+}
+
+fn eyebrow(label: impl Into<String>, cx: &App) -> Div {
+    div()
+        .child(label.into())
+        .font_family(cx.theme().mono_font_family.clone())
+        .text_size(px(11.0))
+        .text_color(cx.theme().muted_foreground)
+}
+
+fn page_title(title: impl Into<String>, cx: &App) -> Div {
+    div()
+        .child(title.into())
+        .text_size(px(24.0))
+        .text_color(cx.theme().foreground)
+}
+
+fn muted_text(text: impl Into<String>, cx: &App) -> Div {
+    div()
+        .child(text.into())
+        .text_size(px(12.0))
+        .text_color(cx.theme().muted_foreground)
+}
+
+fn install_rootglass_theme(cx: &mut App) {
+    let dark_theme = {
+        let registry = ThemeRegistry::global_mut(cx);
+        registry
+            .load_themes_from_str(include_str!("../themes/rootglass.json"))
+            .expect("Rootglass theme configuration is valid");
+        registry
+            .themes()
+            .get("Rootglass Dark")
+            .cloned()
+            .expect("Rootglass dark theme is registered")
+    };
+    Theme::global_mut(cx).dark_theme = dark_theme;
+    Theme::change(ThemeMode::Dark, None, cx);
 }
 
 impl RootglassWindow {
@@ -198,6 +298,19 @@ impl RootglassWindow {
                 .await;
             let _ = view.update(cx, |view, cx| {
                 view.model.finish_library_refresh(result);
+                let first_installed = if matches!(&view.model.state, UiState::Empty)
+                    && view.model.selected_path.is_none()
+                {
+                    view.model
+                        .installed_glasses
+                        .first()
+                        .map(|glass| glass.package_path.clone())
+                } else {
+                    None
+                };
+                if let Some(path) = first_installed {
+                    view.select_bundle(path, cx);
+                }
                 cx.notify();
             });
         });
@@ -816,58 +929,116 @@ fn open_urls_in_view(app: &AsyncApp, view: &Entity<RootglassWindow>, urls: Vec<S
 fn library_view(
     state: &UiState,
     installed_glasses: &[InstalledGlass],
+    selected_path: Option<&PathBuf>,
     library_error: Option<&str>,
     can_select: bool,
     file_drop_active: bool,
     cx: &mut Context<RootglassWindow>,
 ) -> Div {
-    let mut view = div().v_flex().child("Library");
+    let mut view = div()
+        .v_flex()
+        .gap_2()
+        .p_2()
+        .bg(cx.theme().table)
+        .child(
+            div()
+                .h_flex()
+                .items_center()
+                .gap_2()
+                .p_2()
+                .bg(cx.theme().table_head)
+                .child(eyebrow("GLASS", cx).flex_1())
+                .child(eyebrow("VERSION", cx).w(px(84.0)))
+                .child(eyebrow("PUBLISHER", cx).w(px(160.0)))
+                .child(eyebrow("STATUS", cx).w(px(100.0))),
+        );
     if installed_glasses.is_empty() {
         view = view
-            .child("No glasses are installed.")
-            .child("Open an existing .glass bundle to inspect it.")
-            .child(if file_drop_active {
-                "Release the .glass bundle or folder to inspect it."
-            } else {
-                "Drop a .glass bundle or folder here to inspect it."
-            });
+            .child(div().p_3().child("No glasses are installed."))
+            .child(muted_text("Open a signed .glass bundle to inspect it.", cx))
+            .child(muted_text(
+                if file_drop_active {
+                    "Release the .glass bundle or folder to inspect it."
+                } else {
+                    "You can also drop a .glass bundle or folder here."
+                },
+                cx,
+            ));
     } else {
         for glass in installed_glasses {
             let path = glass.package_path.clone();
+            let selected = selected_path == Some(&glass.package_path);
+            let background = if selected {
+                cx.theme().accent
+            } else {
+                cx.theme().table
+            };
+            let foreground = if selected {
+                cx.theme().accent_foreground
+            } else {
+                cx.theme().foreground
+            };
             view = view
                 .child(
-                    Button::new(format!("installed-{}", glass.content_sha256))
-                        .label(format!("{} {}", glass.name, glass.version))
-                        .disabled(!can_select)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.select_bundle(path.clone(), cx);
-                        })),
-                )
-                .child(format!("Publisher: {}", glass.publisher_name))
-                .child(format!("Installed at: {}", glass.package_path.display()));
+                    div()
+                        .h_flex()
+                        .items_center()
+                        .gap_2()
+                        .p_2()
+                        .bg(background)
+                        .text_color(foreground)
+                        .child(div().flex_1().child(
+                            Button::new(format!("installed-{}", glass.content_sha256))
+                                .ghost()
+                                .label(glass.name.clone())
+                                .disabled(!can_select)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.select_bundle(path.clone(), cx);
+                                })),
+                        ))
+                        .child(div().w(px(84.0)).child(glass.version.clone()))
+                        .child(
+                            div()
+                                .w(px(160.0))
+                                .child(glass.publisher_name.clone()),
+                        )
+                        .child(
+                            div()
+                                .w(px(100.0))
+                                .text_color(if selected {
+                                    cx.theme().accent_foreground
+                                } else {
+                                    cx.theme().muted_foreground
+                                })
+                                .child(if selected { "Selected" } else { "Installed" }),
+                        ),
+                );
         }
     }
     if let Some(error) = library_error {
-        view = view.child(format!(
+        view = view.child(div().text_color(cx.theme().danger).child(format!(
             "The installed library could not be loaded: {error}"
-        ));
-    }
-    if let UiState::Ready(glass) = state {
-        view = view.child(format!("Selected: {} {}", glass.name, glass.version));
+        )));
     }
     match state {
         UiState::Opening(path) => {
-            view = view.child(format!("Opening {} in the background…", path.display()));
+            view = view.child(muted_text(
+                format!("Opening {} in the background…", path.display()),
+                cx,
+            ));
         }
         UiState::Importing(path) => {
-            view = view.child(format!("Verifying and importing {}…", path.display()));
+            view = view.child(muted_text(
+                format!("Verifying and importing {}…", path.display()),
+                cx,
+            ));
         }
         UiState::Imported(glass) => {
             view = view
-                .child(format!("Installed: {} {}", glass.name, glass.version))
-                .child(format!("Publisher: {}", glass.publisher))
-                .child(format!("Content digest: {}", glass.digest))
-                .child(format!("Installed at: {}", glass.path.display()));
+                .child(format!("Installed {} {}", glass.name, glass.version))
+                .child(muted_text(format!("Publisher: {}", glass.publisher), cx))
+                .child(muted_text(format!("Content digest: {}", glass.digest), cx))
+                .child(muted_text(format!("Installed at: {}", glass.path.display()), cx));
         }
         _ => {}
     }
@@ -1080,6 +1251,7 @@ pub fn run_gui(initial_glass: Option<PathBuf>) {
     }
     application.run(move |cx| {
         gpui_kit::init(cx);
+        install_rootglass_theme(cx);
         cx.bind_keys([
             KeyBinding::new("cmd-o", OpenBundle, Some(ROOTGLASS_CONTEXT)),
             KeyBinding::new("cmd-.", StopGlass, Some(ROOTGLASS_CONTEXT)),
