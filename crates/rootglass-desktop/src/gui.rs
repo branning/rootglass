@@ -170,7 +170,9 @@ impl Render for RootglassWindow {
                 .selected_preview()
                 .or(self.recovery_preview_context.as_ref());
             let guest_was_ready = self.failure_guest_was_ready;
-            let retry_available = failure.retry_path(self.model.selected_path.as_ref()).is_some();
+            let retry_available = failure
+                .retry_path(self.model.selected_path.as_ref())
+                .is_some();
             let failure_content = failure_view::content(
                 &failure,
                 &glass_name,
@@ -209,10 +211,7 @@ impl Render for RootglassWindow {
                             })),
                     ),
             );
-            div()
-                .flex_1()
-                .min_h(px(0.0))
-                .child(failure_content)
+            div().flex_1().min_h(px(0.0)).child(failure_content)
         } else {
             let mut main = div()
                 .v_flex()
@@ -1367,11 +1366,13 @@ impl RootglassWindow {
                     match lock_service(&service_for_retry) {
                         Ok(mut service) => {
                             let outcome = service.inspect_bundle(&path_for_check);
-                            let states = if matches!(&outcome, crate::ui_model::InspectionOutcome::Ready(_)) {
-                                Some(service.list_states(&path_for_check))
-                            } else {
-                                None
-                            };
+                            let states =
+                                if matches!(&outcome, crate::ui_model::InspectionOutcome::Ready(_))
+                                {
+                                    Some(service.list_states(&path_for_check))
+                                } else {
+                                    None
+                                };
                             (outcome, states)
                         }
                         Err(error) => (
