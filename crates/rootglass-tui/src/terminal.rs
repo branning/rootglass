@@ -747,6 +747,15 @@ fn handle_normal_key(
     key: KeyEvent,
     worker: &mut ServiceWorker,
 ) -> Result<bool, String> {
+    if matches!(model.state, UiState::PublisherReview(_))
+        && matches!(
+            key.code,
+            KeyCode::Esc | KeyCode::Char('c') | KeyCode::Char('C')
+        )
+    {
+        model.return_to_library();
+        return Ok(false);
+    }
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => return Ok(true),
         KeyCode::Char('o') if can_open(model) => input.mode = InputMode::OpenPath,
@@ -773,7 +782,11 @@ fn handle_normal_key(
         KeyCode::Char('t') => {
             model.operations_panel_open = true;
             worker.refresh_trust()?;
-            if let Some(path) = model.selected_path.clone() {
+            if let Some(path) = model
+                .selected_path
+                .clone()
+                .filter(|_| matches!(model.state, UiState::Ready(_) | UiState::Blocked(_)))
+            {
                 request_state_action(model, worker, path, StateOperation::Refresh)?;
             }
         }
@@ -1410,9 +1423,19 @@ fn service_worker_loop(
                             });
                     OpenedBundle::Inspected(Box::new(result))
                 } else {
-                    OpenedBundle::Imported(Box::new(with_service(&service, |service| {
-                        service.import_and_inspect(&path)
-                    })))
+                    match with_service(&service, |service| service.review_archive(&path)) {
+                        Ok(Some(review)) => OpenedBundle::Inspected(Box::new(
+                            InspectionOutcome::PublisherReview(review),
+                        )),
+                        Ok(None) => {
+                            OpenedBundle::Imported(Box::new(with_service(&service, |service| {
+                                service.import_and_inspect(&path)
+                            })))
+                        }
+                        Err(error) => OpenedBundle::Inspected(Box::new(InspectionOutcome::Failed(
+                            failure_from(&path, error),
+                        ))),
+                    }
                 };
                 trace_tui("open worker returned");
                 Some(WorkerCompletion::Opened(ticket, opened))

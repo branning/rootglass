@@ -41,6 +41,21 @@ pub struct GlassSummary {
     pub signed_subject_count: usize,
 }
 
+/// Manifest and envelope claims shown while a bundle's signing key is unknown.
+/// These fields are explicitly unverified until the key is trusted and the
+/// archive passes the normal signature verification path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UntrustedPublisherReview {
+    pub path: PathBuf,
+    pub name: String,
+    pub identifier: String,
+    pub version: String,
+    pub description: Option<String>,
+    pub publisher_name: String,
+    pub publisher_identity: String,
+    pub key_id: String,
+}
+
 /// Manifest-only validation output. Publisher fields are declarations from the manifest;
 /// this report does not verify a signature or establish trust.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -490,6 +505,34 @@ impl AppService {
         source: impl AsRef<Path>,
     ) -> Result<registry::InstalledGlass, AppError> {
         self.package_library().import_archive(source)
+    }
+
+    /// Inspect bounded archive metadata for a publisher review screen without
+    /// importing the bundle. A key listed as revoked remains a hard failure.
+    pub fn review_archive(
+        &self,
+        source: impl AsRef<Path>,
+    ) -> Result<Option<UntrustedPublisherReview>, AppError> {
+        let review = import::review_untrusted_glass_archive(
+            source,
+            &self.trust_store,
+            &import::ImportLimits::default(),
+        )
+        .map_err(|error| match &error {
+            import::ImportError::Signature(SignatureError::UnknownKey(key_id))
+                if self.revoked_key_ids.contains(key_id) =>
+            {
+                revoked_key_app_error(key_id)
+            }
+            _ => import_app_error("The .glass archive could not be reviewed.", error),
+        })?;
+        if let Some(review) = review
+            .as_ref()
+            .filter(|review| self.revoked_key_ids.contains(&review.key_id))
+        {
+            return Err(revoked_key_app_error(&review.key_id));
+        }
+        Ok(review)
     }
 
     /// Return the persisted verified releases in the local library.
@@ -1534,7 +1577,9 @@ mod publisher_trust_tests {
     use serde_json::{json, Value};
     use sha2::{Digest, Sha256};
     use std::fs;
+    use std::io::Write;
     use std::time::{SystemTime, UNIX_EPOCH};
+    use zip::write::SimpleFileOptions;
 
     const PUBLISHER_IDENTITY: &str = "rootglass.dev/examples";
     const TEST_RUNTIME: &str = "trust-policy-test";
@@ -1575,6 +1620,28 @@ mod publisher_trust_tests {
         .unwrap();
         fs::write(root.join("state.img"), b"synthetic signed test state image").unwrap();
         sign_glass_directory_at(root, key, "2026-11-07T00:00:00Z").unwrap();
+    }
+
+    fn untrusted_archive(path: &Path) -> String {
+        let example =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/hello-world.glass");
+        let manifest = fs::read(example.join("rootglass.toml")).unwrap();
+        let key_id = format!("ed25519:{}", "9".repeat(64));
+        let envelope = format!(
+            r#"{{"payloadType":"application/vnd.in-toto+json","payload":"e30","signatures":[{{"keyid":"{key_id}","sig":"AA"}}]}}"#
+        );
+        let file = fs::File::create(path).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        archive
+            .start_file("rootglass.toml", SimpleFileOptions::default())
+            .unwrap();
+        archive.write_all(&manifest).unwrap();
+        archive
+            .start_file("signatures/glass.dsse.json", SimpleFileOptions::default())
+            .unwrap();
+        archive.write_all(envelope.as_bytes()).unwrap();
+        archive.finish().unwrap();
+        key_id
     }
 
     fn write_trust_config(path: &Path, trusted: &[&SigningKey], revoked: &[String]) {
@@ -1626,6 +1693,41 @@ mod publisher_trust_tests {
         assert_eq!(failed.error.as_deref(), Some("unsupported schema"));
         assert!(failed.trusted_publishers.is_empty());
         assert!(failed.revoked_key_ids.is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn untrusted_archive_review_does_not_install_and_revoked_keys_stay_blocked() {
+        let root = temp_root();
+        fs::create_dir_all(&root).unwrap();
+        let archive = root.join("unknown-publisher.glass");
+        let key_id = untrusted_archive(&archive);
+        let library = root.join("library");
+        let service =
+            AppService::with_trust_store(TrustStore::default()).with_library_root(library.clone());
+
+        let review = service
+            .review_archive(&archive)
+            .unwrap()
+            .expect("unknown signing key should open review");
+        assert_eq!(review.key_id, key_id);
+        assert_eq!(review.publisher_name, "Rootglass Examples");
+        assert_eq!(review.publisher_identity, PUBLISHER_IDENTITY);
+        assert!(
+            !library.exists(),
+            "review must not create or install a package"
+        );
+
+        let config = root.join("revoked-trust.json");
+        write_trust_config(&config, &[], std::slice::from_ref(&key_id));
+        let revoked = AppService::from_trust_config(&config)
+            .unwrap()
+            .with_library_root(library.clone());
+        let error = revoked
+            .review_archive(&archive)
+            .expect_err("revoked signing key must not be offered for review");
+        assert!(is_revoked_signing_key(&error));
+        assert!(!library.exists());
         fs::remove_dir_all(root).unwrap();
     }
 

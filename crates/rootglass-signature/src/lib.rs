@@ -308,6 +308,11 @@ impl TrustStore {
         self.publishers.values()
     }
 
+    /// Whether this store has public key material for the supplied signing key ID.
+    pub fn contains(&self, key_id: &str) -> bool {
+        self.publishers.contains_key(key_id)
+    }
+
     fn get(&self, key_id: &str) -> Option<&TrustedPublisher> {
         self.publishers.get(key_id)
     }

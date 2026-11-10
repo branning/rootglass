@@ -47,6 +47,11 @@ on:
         required: false
         type: boolean
         default: false
+      capture_publisher_review_screenshot:
+        description: Capture the untrusted publisher review under Xvfb on Linux without booting a guest
+        required: false
+        type: boolean
+        default: false
       embedded_guest_smoke:
         description: Run the real guest workflow inside the embedded TUI on Linux only
         required: false
@@ -72,6 +77,7 @@ jobs:
           REQUESTED_PLATFORM: ${{ inputs.platform || 'all' }}
           DESKTOP_SMOKE: ${{ inputs.desktop_smoke || 'false' }}
           CAPTURE_LIBRARY_SCREENSHOT: ${{ inputs.capture_library_screenshot || 'false' }}
+          CAPTURE_PUBLISHER_REVIEW_SCREENSHOT: ${{ inputs.capture_publisher_review_screenshot || 'false' }}
           EMBEDDED_GUEST_SMOKE: ${{ inputs.embedded_guest_smoke || 'false' }}
         run: |
           python - <<'PY'
@@ -86,12 +92,13 @@ jobs:
           requested = os.environ["REQUESTED_PLATFORM"]
           desktop_smoke = os.environ["DESKTOP_SMOKE"].lower() == "true"
           capture_library_screenshot = os.environ["CAPTURE_LIBRARY_SCREENSHOT"].lower() == "true"
+          capture_publisher_review_screenshot = os.environ["CAPTURE_PUBLISHER_REVIEW_SCREENSHOT"].lower() == "true"
           embedded_guest_smoke = os.environ["EMBEDDED_GUEST_SMOKE"].lower() == "true"
-          if sum((desktop_smoke, capture_library_screenshot, embedded_guest_smoke)) > 1:
-              raise SystemExit("desktop_smoke, capture_library_screenshot, and embedded_guest_smoke are separate runs")
+          if sum((desktop_smoke, capture_library_screenshot, capture_publisher_review_screenshot, embedded_guest_smoke)) > 1:
+              raise SystemExit("desktop_smoke, screenshot captures, and embedded_guest_smoke are separate runs")
           if embedded_guest_smoke and requested not in ("all", "linux"):
               raise SystemExit("the embedded guest smoke runs on Linux only")
-          if (desktop_smoke or capture_library_screenshot) and requested not in ("all", "linux"):
+          if (desktop_smoke or capture_library_screenshot or capture_publisher_review_screenshot) and requested not in ("all", "linux"):
               raise SystemExit("the GPUI desktop workflow runs on Linux only")
           selected = platforms if requested == "all" else [
               platform for platform in platforms if platform["platform"] == requested
@@ -106,7 +113,7 @@ jobs:
   pty-smoke:
     name: PTY smoke (${{ matrix.name }})
     needs: select_platforms
-    if: (github.event_name != 'pull_request' || (!github.event.pull_request.draft && github.event.pull_request.base.ref == 'main')) && !(github.event_name == 'workflow_dispatch' && (inputs.desktop_smoke || inputs.capture_library_screenshot || inputs.embedded_guest_smoke))
+    if: (github.event_name != 'pull_request' || (!github.event.pull_request.draft && github.event.pull_request.base.ref == 'main')) && !(github.event_name == 'workflow_dispatch' && (inputs.desktop_smoke || inputs.capture_library_screenshot || inputs.capture_publisher_review_screenshot || inputs.embedded_guest_smoke))
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -280,7 +287,7 @@ jobs:
 
   desktop-smoke:
     name: GPUI desktop workflow smoke (Linux x86_64)
-    if: (github.event_name == 'workflow_dispatch' && (inputs.desktop_smoke || inputs.capture_library_screenshot) && (inputs.platform == 'all' || inputs.platform == 'linux')) || (github.event_name == 'pull_request' && github.event.action == 'ready_for_review' && !github.event.pull_request.draft && github.event.pull_request.base.ref == 'main')
+    if: (github.event_name == 'workflow_dispatch' && (inputs.desktop_smoke || inputs.capture_library_screenshot || inputs.capture_publisher_review_screenshot) && (inputs.platform == 'all' || inputs.platform == 'linux')) || (github.event_name == 'pull_request' && github.event.action == 'ready_for_review' && !github.event.pull_request.draft && github.event.pull_request.base.ref == 'main')
     runs-on: ubuntu-24.04
 
     steps:
@@ -314,11 +321,11 @@ jobs:
           cargo build --locked --manifest-path crates/rootglass-desktop/Cargo.toml
 
       - name: Materialize the signed guest fixture assets
-        if: github.event_name != 'workflow_dispatch' || !inputs.capture_library_screenshot
+        if: github.event_name != 'workflow_dispatch' || (!inputs.capture_library_screenshot && !inputs.capture_publisher_review_screenshot)
         run: bash scripts/materialize-example-assets.sh
 
       - name: Exercise GPUI desktop workflows under Xvfb
-        if: github.event_name != 'workflow_dispatch' || !inputs.capture_library_screenshot
+        if: github.event_name != 'workflow_dispatch' || (!inputs.capture_library_screenshot && !inputs.capture_publisher_review_screenshot)
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
         run: |
@@ -336,6 +343,17 @@ jobs:
           xvfb-run -a -s \
             "-screen 0 1280x800x24 +extension GLX +render -noreset" \
             dbus-run-session -- bash scripts/capture-rootglass-library-xvfb.sh \
+            crates/rootglass-desktop/target/debug/rootglass \
+            artifacts/gpui-desktop-xvfb
+
+      - name: Capture untrusted publisher review under Xvfb
+        if: github.event_name == 'workflow_dispatch' && inputs.capture_publisher_review_screenshot
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          xvfb-run -a -s \
+            "-screen 0 1280x800x24 +extension GLX +render -noreset" \
+            dbus-run-session -- bash scripts/capture-rootglass-publisher-review-xvfb.sh \
             crates/rootglass-desktop/target/debug/rootglass \
             artifacts/gpui-desktop-xvfb
 
