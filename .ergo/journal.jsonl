@@ -349,3 +349,4 @@
 {"version":1,"task_id":"J6B4KP","kind":"result","at":"2026-11-10T17:36:33.037416877Z","agent":"codex@worker-1","text":"Verified-import screen is correct; updating boot, serial-input, restart and stop smoke coordinates."}
 {"version":1,"task_id":"J6B4KP","kind":"result","at":"2026-11-10T17:45:56.839734142Z","agent":"codex@worker-1","text":"Xvfb boots guest but output hides serial input; constraining running flex panes."}
 {"version":1,"task_id":"J6B4KP","kind":"result","at":"2026-11-10T17:56:22.892748426Z","agent":"codex@worker-1","text":"Flex min-height alone still clips guest input; setting full parent height and zero flex bases for console panes."}
+{"version":1,"task_id":"J6B4KP","kind":"result","at":"2026-11-10T18:05:53.376554528Z","agent":"codex@worker-1","text":"The input is visible now; the Xvfb harness was sending keys without targeting the app window."}

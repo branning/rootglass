@@ -279,12 +279,16 @@ import -window "$window_id" "${artifact_dir}/03-guest-running.png"
 # Submit a username at the guest login prompt and wait for its password request.
 window_geometry="$(xdotool getwindowgeometry --shell "$window_id")"
 window_height="$(sed -n 's/^HEIGHT=//p' <<<"$window_geometry")"
-input_y="$((window_height - 80))"
+input_y="$((window_height - 68))"
+xdotool windowfocus --sync "$window_id"
 xdotool mousemove --window "$window_id" 600 "$input_y" click 1
-xdotool type --clearmodifiers --delay 20 "$serial_username"
+printf 'ROOTGLASS_DESKTOP_INPUT_FOCUS window=%s focused=%s\n' \
+  "$window_id" "$(xdotool getwindowfocus 2>/dev/null || true)"
+xdotool type --clearmodifiers --delay 80 --window "$window_id" "$serial_username"
 sleep 0.25
 import -window "$window_id" "${artifact_dir}/04-guest-username-input.png"
-xdotool key Return
+xdotool key --clearmodifiers --window "$window_id" Return
+wait_for_marker ROOTGLASS_DESKTOP_SERIAL_INPUT_REQUEST
 wait_for_marker ROOTGLASS_DESKTOP_SERIAL_INPUT_SENT
 wait_for_marker ROOTGLASS_DESKTOP_SERIAL_ECHO 45
 echo "ROOTGLASS_DESKTOP_SMOKE_SERIAL_RESPONSE"
