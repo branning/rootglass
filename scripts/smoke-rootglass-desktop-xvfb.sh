@@ -298,11 +298,11 @@ sleep 0.5
 import -window "$window_id" "${artifact_dir}/05-guest-password-prompt.png"
 
 # Restart, wait for a second guest-ready event, then stop through the UI.
-xdotool mousemove --window "$window_id" 1155 110 click 1
+xdotool mousemove --window "$window_id" 1135 42 click 1
 wait_for_marker ROOTGLASS_DESKTOP_RESTART_STARTED 15
 wait_for_count ROOTGLASS_DESKTOP_GUEST_READY 2 120
 echo "ROOTGLASS_DESKTOP_SMOKE_RESTART_READY"
-xdotool mousemove --window "$window_id" 1230 110 click 1
+xdotool mousemove --window "$window_id" 1215 42 click 1
 wait_for_marker ROOTGLASS_DESKTOP_STOPPED 120
 echo "ROOTGLASS_DESKTOP_SMOKE_STOPPED"
 xdotool windowsize --sync "$window_id" 1000 650

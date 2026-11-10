@@ -311,6 +311,7 @@ impl RootglassWindow {
                         div()
                             .v_flex()
                             .flex_1()
+                            .min_w(px(0.0))
                             .gap_1()
                             .child(eyebrow(format!("LIBRARY / {}", name.to_uppercase()), cx))
                             .child(page_title(name.clone(), cx))
@@ -322,6 +323,7 @@ impl RootglassWindow {
                     .child(
                         div()
                             .h_flex()
+                            .flex_shrink_0()
                             .gap_2()
                             .child(
                                 Button::new("running-restart")
