@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+## v0.0.4 preview
+
+### GPUI desktop experience
+
+- Add a native GPUI library for inspecting installed guests and their publisher,
+  launch checks, and saved-data status.
+- Add publisher review before importing a bundle from an untrusted signer.
+- Show guest console, run status, and launch-recovery actions in the desktop UI.
+- Open `.glass` files through the installed app's operating-system association.
+
+### Release assets
+
+Includes Linux x86_64, macOS arm64, and Windows x86_64 desktop packages with
+matching versioned QEMU runtimes, Alpine guest boot assets, runtime checksums,
+and a signed Hello World `.glass` with its SHA-256 checksum. The example uses a
+public development key and the disposable `rootglass-ci` guest password; it is
+for verification only. The desktop app does not trust the example key by
+default; follow the README trust setup before importing the example.
+
+### macOS first launch
+
+The macOS DMG is unsigned and not notarized. After mounting it, drag
+`Rootglass.app` to Applications. If Gatekeeper reports that the app is damaged,
+run `xattr -dr com.apple.quarantine /Applications/Rootglass.app` in Terminal.
+This workaround does not sign or notarize the app. The v0.0.2 QEMU signature
+defect is fixed in v0.0.3 and later previews.
+
 ## v0.0.3 preview
 
 ### macOS runtime and startup diagnostics
