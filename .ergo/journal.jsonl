@@ -356,3 +356,5 @@
 {"version":1,"task_id":"J6B4KP","kind":"result","at":"2026-11-10T18:36:31.623257362Z","agent":"codex@worker-1","text":"Restart passes; toolbar visible. Centering Stop click and matching CI rustfmt output."}
 {"version":1,"task_id":"J6B4KP","kind":"done","at":"2026-11-10T18:46:35.529689663Z","agent":"codex@worker-1","text":"Merged #119 (4e27e45); CI and Xvfb QEMU boot, serial I/O, restart, stop and resize passed."}
 {"version":1,"task_id":"IRZXIF","kind":"claim","at":"2026-11-10T18:49:52.631256079Z","agent":"codex@worker-1"}
+{"version":1,"task_id":"IRZXIF","kind":"done","at":"2026-11-10T19:46:32.201993323Z","agent":"codex@worker-1","text":"PR #120 merged; CI and Linux Xvfb screenshot evidence passed."}
+{"version":1,"task_id":"OOFC7Q","kind":"claim","at":"2026-11-10T19:49:15.015746226Z","agent":"codex@worker-1"}
