@@ -457,7 +457,7 @@ def run(binary: Path, glass: Path, output: Path) -> None:
         if remaining:
             raise SmokeFailure(f"QEMU remained after TUI stop: {remaining}")
 
-        session.send(b"q")
+        session.send(b"\x11")
         status = session.child.wait(timeout=10)
         if status != 0:
             raise SmokeFailure(f"packaged Rootglass TUI exited with status {status}")
