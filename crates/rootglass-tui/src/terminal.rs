@@ -788,7 +788,12 @@ fn handle_normal_key(
             if let Some(path) = model
                 .selected_path
                 .clone()
-                .filter(|_| matches!(model.state, UiState::Ready(_) | UiState::Blocked(_)))
+                .filter(|_| {
+                    matches!(
+                        model.state,
+                        UiState::Ready(_) | UiState::Blocked(_) | UiState::Planned(_)
+                    )
+                })
             {
                 request_state_action(model, worker, path, StateOperation::Refresh)?;
             }
