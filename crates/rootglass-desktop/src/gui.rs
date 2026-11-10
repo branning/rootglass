@@ -1,11 +1,14 @@
 #[cfg(feature = "embedded-terminal")]
 #[path = "embedded_terminal.rs"]
 mod embedded_terminal;
+#[path = "failure_view.rs"]
+mod failure_view;
 
 use crate::ui_model::{
     lock_service, GlassPreview, RemovalDetails, SignatureStatus, StartEffect, StopRequest, UiModel,
     UiState,
 };
+use failure_view::RecoveryFailure;
 use gpui_kit::actions;
 use gpui_kit::base::StyledExt;
 use gpui_kit::component::button::*;
@@ -16,6 +19,7 @@ use gpui_kit::component::*;
 use gpui_kit::*;
 use gpui_kit::component::{Theme, ThemeMode, ThemeRegistry};
 use rootglass_app::registry::InstalledGlass;
+use rootglass_app::state::StateRecord;
 use rootglass_app::DiagnosticLogSnapshot;
 use rootglass_app::ManifestValidationReport;
 use rootglass_app::RuntimeEvent;
@@ -36,6 +40,10 @@ struct RootglassWindow {
     qemu_diagnostics_truncated: bool,
     qemu_diagnostics_loading: bool,
     run_started_at: Option<Instant>,
+    failure_guest_was_ready: bool,
+    failure_diagnostics_open: bool,
+    recovery_retrying: bool,
+    recovery_preview_context: Option<GlassPreview>,
     pending_file_drop: Option<PathBuf>,
     file_drop_active: bool,
     #[cfg(feature = "embedded-terminal")]
@@ -58,9 +66,45 @@ enum ArchiveOpenResult {
     Imported(Result<crate::ui_model::ImportCompletion, rootglass_app::AppError>),
 }
 
+#[derive(Clone)]
+struct RecoveryStateSnapshot {
+    records: Vec<StateRecord>,
+    cursor: usize,
+    selected_state_id: String,
+    error: Option<String>,
+    busy: bool,
+    locked: bool,
+    loaded: bool,
+}
+
+impl RecoveryStateSnapshot {
+    fn capture(model: &UiModel) -> Self {
+        Self {
+            records: model.state_records.clone(),
+            cursor: model.state_cursor,
+            selected_state_id: model.selected_state_id.clone(),
+            error: model.state_error.clone(),
+            busy: model.state_busy,
+            locked: model.state_locked,
+            loaded: model.state_loaded,
+        }
+    }
+
+    fn restore(self, model: &mut UiModel) {
+        model.state_records = self.records;
+        model.state_cursor = self.cursor;
+        model.selected_state_id = self.selected_state_id;
+        model.state_error = self.error;
+        model.state_busy = self.busy;
+        model.state_locked = self.locked;
+        model.state_loaded = self.loaded;
+    }
+}
+
 impl Render for RootglassWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let actions = self.model.actions();
+        let mut actions = self.model.actions();
+        actions.open &= !self.recovery_retrying;
         let root = div()
             .v_flex()
             .size_full()
@@ -111,12 +155,64 @@ impl Render for RootglassWindow {
             &self.model.state,
             UiState::Running(_) | UiState::Booting(_) | UiState::Stopping(_)
         );
+        let recovery_failure = RecoveryFailure::from_ui_state(&self.model.state);
+        let is_recovery_failure = recovery_failure.is_some();
         let main = if let UiState::PublisherReview(review) = &self.model.state {
             div()
                 .flex_1()
                 .child(publisher_review_view(review, &self.model.trust_policy, cx))
         } else if is_active_run {
             self.running_guest_view(actions, cx)
+        } else if let Some(failure) = recovery_failure {
+            let glass_name = self.recovery_glass_name(&failure);
+            let preview = self
+                .model
+                .selected_preview()
+                .or(self.recovery_preview_context.as_ref());
+            let guest_was_ready = self.failure_guest_was_ready;
+            let retry_available = failure.retry_path(self.model.selected_path.as_ref()).is_some();
+            let failure_content = failure_view::content(
+                &failure,
+                &glass_name,
+                preview,
+                guest_was_ready,
+                self.failure_diagnostics_open,
+                cx,
+            )
+            .child(
+                div()
+                    .h_flex()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        Button::new("retry-launch-checks")
+                            .primary()
+                            .label(if self.recovery_retrying {
+                                "CHECKING…"
+                            } else {
+                                "RETRY CHECKS"
+                            })
+                            .disabled(self.recovery_retrying || !retry_available)
+                            .on_click(cx.listener(|this, _, _, cx| this.retry_failure(cx))),
+                    )
+                    .child(
+                        Button::new("toggle-launch-diagnostics")
+                            .secondary()
+                            .label(if self.failure_diagnostics_open {
+                                "HIDE DIAGNOSTICS"
+                            } else {
+                                "VIEW DIAGNOSTICS"
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.failure_diagnostics_open = !this.failure_diagnostics_open;
+                                cx.notify();
+                            })),
+                    ),
+            );
+            div()
+                .flex_1()
+                .min_h(px(0.0))
+                .child(failure_content)
         } else {
             let mut main = div()
                 .v_flex()
@@ -207,7 +303,7 @@ impl Render for RootglassWindow {
                 .child(sidebar_view(cx))
                 .child(main),
         );
-        if !is_active_run && !self.model.console.is_empty() {
+        if !is_active_run && !is_recovery_failure && !self.model.console.is_empty() {
             layout = layout.child(
                 div()
                     .v_flex()
@@ -819,8 +915,11 @@ impl RootglassWindow {
             if view
                 .update(cx, |view, cx| {
                     view.model.apply_poll_result(result);
-                    if guest_ready && view.run_started_at.is_none() {
-                        if matches!(view.model.state, UiState::Running(_)) {
+                    if guest_ready {
+                        view.failure_guest_was_ready = true;
+                        if view.run_started_at.is_none()
+                            && matches!(view.model.state, UiState::Running(_))
+                        {
                             view.run_started_at = Some(Instant::now());
                         }
                     }
@@ -889,6 +988,10 @@ impl RootglassWindow {
             qemu_diagnostics_truncated: false,
             qemu_diagnostics_loading: false,
             run_started_at: None,
+            failure_guest_was_ready: false,
+            failure_diagnostics_open: false,
+            recovery_retrying: false,
+            recovery_preview_context: None,
             pending_file_drop: None,
             file_drop_active: false,
             #[cfg(feature = "embedded-terminal")]
@@ -927,7 +1030,7 @@ impl RootglassWindow {
     }
 
     fn open_bundle(&mut self, cx: &mut Context<Self>) {
-        if !self.model.actions().open {
+        if self.recovery_retrying || !self.model.actions().open {
             return;
         }
         let selection = cx.prompt_for_paths(PathPromptOptions {
@@ -956,10 +1059,14 @@ impl RootglassWindow {
     }
 
     fn open_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        if !self.model.actions().open {
+        if self.recovery_retrying || !self.model.actions().open {
             desktop_smoke_event("ROOTGLASS_DESKTOP_OPEN_PATH_REJECTED");
             return;
         }
+        self.failure_diagnostics_open = false;
+        self.recovery_preview_context = None;
+        self.run_started_at = None;
+        self.failure_guest_was_ready = false;
         desktop_smoke_event("ROOTGLASS_DESKTOP_OPEN_PATH_ACCEPTED");
         let background_executor = cx.background_executor().clone();
         cx.spawn(async move |view, cx| {
@@ -979,7 +1086,7 @@ impl RootglassWindow {
                 "ROOTGLASS_DESKTOP_OPEN_PATH_DIRECTORY"
             });
             let ticket = match view.update(cx, |view, cx| {
-                if !view.model.actions().open {
+                if view.recovery_retrying || !view.model.actions().open {
                     return None;
                 }
                 let ticket = if is_archive {
@@ -1166,7 +1273,14 @@ impl RootglassWindow {
                     desktop_smoke_event("ROOTGLASS_DESKTOP_INSPECT_INVALID")
                 }
             },
-            UiState::Blocked(_) => desktop_smoke_event("ROOTGLASS_DESKTOP_INSPECT_BLOCKED"),
+            UiState::Blocked(blocked) => {
+                desktop_smoke_event("ROOTGLASS_DESKTOP_INSPECT_BLOCKED");
+                desktop_smoke_detail(format!(
+                    "ROOTGLASS_DESKTOP_PREFLIGHT_BLOCKED summary={} detail={}",
+                    blocked.reason,
+                    blocked.preflight.blockers.join(" | ")
+                ));
+            }
             UiState::Failed(details) if details.detail.contains("unknown signing key") => {
                 desktop_smoke_event("ROOTGLASS_DESKTOP_INSPECT_UNTRUSTED");
                 desktop_smoke_detail(format!(
@@ -1195,6 +1309,127 @@ impl RootglassWindow {
         self.open_path(path, cx);
     }
 
+    fn recovery_glass_name(&self, failure: &RecoveryFailure) -> String {
+        if let Some(preview) = self
+            .model
+            .selected_preview()
+            .or(self.recovery_preview_context.as_ref())
+        {
+            return preview.name.clone();
+        }
+        if let Some(glass) = self.model.selected_installed() {
+            return glass.name.clone();
+        }
+        let path = failure.retry_path(self.model.selected_path.as_ref());
+        let stem = path
+            .as_deref()
+            .and_then(|path| path.file_stem())
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("this glass");
+        stem.split(['-', '_', '.'])
+            .filter(|word| !word.is_empty())
+            .map(|word| {
+                let mut characters = word.chars();
+                characters.next().map_or_else(String::new, |first| {
+                    first.to_uppercase().collect::<String>() + characters.as_str()
+                })
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn retry_failure(&mut self, cx: &mut Context<Self>) {
+        if self.recovery_retrying {
+            return;
+        }
+        let Some(failure) = RecoveryFailure::from_ui_state(&self.model.state) else {
+            return;
+        };
+        let Some(path) = failure.retry_path(self.model.selected_path.as_ref()) else {
+            return;
+        };
+        let state_before = RecoveryStateSnapshot::capture(&self.model);
+        let preview_before = self
+            .model
+            .selected_preview()
+            .cloned()
+            .or_else(|| self.recovery_preview_context.clone());
+        self.recovery_retrying = true;
+        desktop_smoke_event("ROOTGLASS_DESKTOP_RECOVERY_RETRY_REQUEST");
+        let service = self.model.shared_service();
+        let background_executor = cx.background_executor().clone();
+        let path_for_check = path.clone();
+        cx.notify();
+        cx.spawn(async move |view, cx| {
+            let service_for_retry = service.clone();
+            let retry_result = background_executor
+                .spawn(async move {
+                    match lock_service(&service_for_retry) {
+                        Ok(mut service) => {
+                            let outcome = service.inspect_bundle(&path_for_check);
+                            let states = if matches!(&outcome, crate::ui_model::InspectionOutcome::Ready(_)) {
+                                Some(service.list_states(&path_for_check))
+                            } else {
+                                None
+                            };
+                            (outcome, states)
+                        }
+                        Err(error) => (
+                            crate::ui_model::InspectionOutcome::Failed(
+                                crate::ui_model::FailureDetails {
+                                    path: Some(path_for_check.clone()),
+                                    phase: format!("{:?}", error.phase),
+                                    summary: error.summary,
+                                    detail: error.detail,
+                                },
+                            ),
+                            None,
+                        ),
+                    }
+                })
+                .await;
+            let _ = view.update(cx, |view, cx| {
+                let ready = matches!(
+                    &retry_result.0,
+                    crate::ui_model::InspectionOutcome::Ready(_)
+                );
+                let verified_failure = matches!(
+                    &retry_result.0,
+                    crate::ui_model::InspectionOutcome::Blocked(_)
+                        | crate::ui_model::InspectionOutcome::Failed(_)
+                );
+                if let Some(ticket) = view.model.begin_inspection(path) {
+                    view.model.finish_inspection(&ticket, retry_result.0);
+                    if let Some(states) = retry_result.1 {
+                        view.model.finish_state_operation(states);
+                    } else if verified_failure {
+                        state_before.restore(&mut view.model);
+                    }
+                    if ready {
+                        view.recovery_preview_context = None;
+                        view.run_started_at = None;
+                        view.failure_guest_was_ready = false;
+                        view.failure_diagnostics_open = false;
+                        desktop_smoke_event("ROOTGLASS_DESKTOP_RECOVERY_RETRY_READY");
+                    } else if verified_failure {
+                        view.recovery_preview_context = preview_before;
+                        desktop_smoke_event(if matches!(&view.model.state, UiState::Blocked(_)) {
+                            "ROOTGLASS_DESKTOP_RECOVERY_RETRY_BLOCKED"
+                        } else {
+                            "ROOTGLASS_DESKTOP_RECOVERY_RETRY_FAILED"
+                        });
+                    } else {
+                        view.recovery_preview_context = None;
+                        desktop_smoke_event("ROOTGLASS_DESKTOP_RECOVERY_RETRY_PUBLISHER_REVIEW");
+                    }
+                }
+                view.recovery_retrying = false;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     fn cancel_publisher_review(&mut self, cx: &mut Context<Self>) {
         self.model.return_to_library();
         cx.notify();
@@ -1202,6 +1437,10 @@ impl RootglassWindow {
 
     fn start_guest(&mut self, cx: &mut Context<Self>) {
         self.run_started_at = None;
+        self.failure_guest_was_ready = false;
+        self.failure_diagnostics_open = false;
+        self.recovery_retrying = false;
+        self.recovery_preview_context = None;
         self.qemu_diagnostics.clear();
         self.qemu_diagnostics_error = None;
         self.qemu_diagnostics_truncated = false;
@@ -1288,6 +1527,7 @@ impl RootglassWindow {
 
     fn restart_guest(&mut self, cx: &mut Context<Self>) {
         self.run_started_at = None;
+        self.failure_guest_was_ready = false;
         self.qemu_diagnostics.clear();
         self.qemu_diagnostics_error = None;
         self.qemu_diagnostics_truncated = false;

@@ -354,3 +354,5 @@
 {"version":1,"task_id":"J6B4KP","kind":"result","at":"2026-11-10T18:21:23.797663483Z","agent":"codex@worker-1","text":"Xvfb confirms guest input works; the header still hides actions, so forcing full width and tracing button requests."}
 {"version":1,"task_id":"J6B4KP","kind":"result","at":"2026-11-10T18:29:24.337475897Z","agent":"codex@worker-1","text":"Guest input works; header actions remained offscreen, so moving them into a dedicated visible toolbar row."}
 {"version":1,"task_id":"J6B4KP","kind":"result","at":"2026-11-10T18:36:31.623257362Z","agent":"codex@worker-1","text":"Restart passes; toolbar visible. Centering Stop click and matching CI rustfmt output."}
+{"version":1,"task_id":"J6B4KP","kind":"done","at":"2026-11-10T18:46:35.529689663Z","agent":"codex@worker-1","text":"Merged #119 (4e27e45); CI and Xvfb QEMU boot, serial I/O, restart, stop and resize passed."}
+{"version":1,"task_id":"IRZXIF","kind":"claim","at":"2026-11-10T18:49:52.631256079Z","agent":"codex@worker-1"}
