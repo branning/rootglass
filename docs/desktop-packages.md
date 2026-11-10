@@ -103,10 +103,17 @@ with `platform=macos`, then dispatch **Installed macOS TUI smoke** on the same
 commit and pass the successful package workflow's run ID as `package_run_id`.
 The smoke downloads that run's DMG and signed example, copies `Rootglass.app`
 into `/Applications`, configures the public example trust key in a temporary
-runner home, and drives the installed Ratatui TUI through planning, guest boot,
-serial login, an `uname -a` check, and stop. It verifies the bundled QEMU
-signature before boot and uploads a TUI screenshot, serial output, and QEMU
-logs as a 14-day artifact.
+runner home, and opens the signed `.glass` file through LaunchServices. It checks
+that the installed app is the registered handler and that the GUI accepts and
+imports the archive. The smoke verifies the packaged runtime inventory and
+signatures, then runs the installed Ratatui TUI outside the checkout while the
+host network interface is down. Fail-fast `cargo`, `rustc`, and system-QEMU
+shims ensure the installed app uses its bundled runtime. The TUI plans, boots,
+logs into, restarts, and stops the guest, checks `uname -a`, and confirms QEMU
+exits. Finally, the workflow removes the app bundle and verifies the temporary
+trust policy and imported library remain. Package digests, runtime inventory,
+LaunchServices events, a TUI screenshot, serial output, and QEMU logs are
+uploaded as a 14-day artifact.
 
 For example, after the macOS package run succeeds on the current `main` commit,
 dispatch the smoke with its run ID:
