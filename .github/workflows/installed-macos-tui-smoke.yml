@@ -165,8 +165,13 @@ jobs:
           TEST_TMPDIR: ${{ runner.temp }}/rootglass-tmp
         run: |
           set -euo pipefail
-          mkdir -p "$TEST_HOME/Library/Application Support/Rootglass" "$TEST_TMPDIR"
-          cat > "$TEST_HOME/Library/Application Support/Rootglass/trust.json" <<'JSON'
+          mkdir -p "$TEST_TMPDIR"
+          # LaunchServices supplies the account HOME even when launchctl HOME is changed.
+          # Seed trust there for the associated-app path, plus the isolated TUI test home.
+          for trust_home in "$HOME" "$TEST_HOME"; do
+            trust_dir="$trust_home/Library/Application Support/Rootglass"
+            mkdir -p "$trust_dir"
+            cat > "$trust_dir/trust.json" <<'JSON'
           {
             "schemaVersion": 1,
             "trustedPublishers": [
@@ -180,7 +185,8 @@ jobs:
             "revokedKeyIds": []
           }
           JSON
-          chmod 600 "$TEST_HOME/Library/Application Support/Rootglass/trust.json"
+            chmod 600 "$trust_dir/trust.json"
+          done
 
       - name: Check isolated macOS package-store permissions
         env:
@@ -228,8 +234,6 @@ jobs:
         env:
           EXAMPLE_DIR: ${{ runner.temp }}/rootglass-example
           EVIDENCE_DIR: ${{ runner.temp }}/rootglass-tui-evidence
-          TEST_HOME: ${{ runner.temp }}/rootglass-home
-          TEST_TMPDIR: ${{ runner.temp }}/rootglass-tmp
         run: |
           set -euo pipefail
           app=/Applications/Rootglass.app
@@ -282,8 +286,6 @@ jobs:
           old_smoke=$(launchctl getenv ROOTGLASS_DESKTOP_SMOKE || true)
           old_event_log=$(launchctl getenv ROOTGLASS_DESKTOP_SMOKE_EVENT_LOG || true)
           old_expected_trust_key_id=$(launchctl getenv ROOTGLASS_DESKTOP_SMOKE_EXPECTED_TRUST_KEY_ID || true)
-          old_home=$(launchctl getenv HOME || true)
-          old_tmpdir=$(launchctl getenv TMPDIR || true)
           restore_launch_environment() {
             if [[ -n "$old_smoke" ]]; then
               launchctl setenv ROOTGLASS_DESKTOP_SMOKE "$old_smoke"
@@ -300,24 +302,12 @@ jobs:
             else
               launchctl unsetenv ROOTGLASS_DESKTOP_SMOKE_EXPECTED_TRUST_KEY_ID || true
             fi
-            if [[ -n "$old_home" ]]; then
-              launchctl setenv HOME "$old_home"
-            else
-              launchctl unsetenv HOME || true
-            fi
-            if [[ -n "$old_tmpdir" ]]; then
-              launchctl setenv TMPDIR "$old_tmpdir"
-            else
-              launchctl unsetenv TMPDIR || true
-            fi
           }
           trap restore_launch_environment EXIT
           launchctl setenv ROOTGLASS_DESKTOP_SMOKE 1
           launchctl setenv ROOTGLASS_DESKTOP_SMOKE_EVENT_LOG "$event_log"
           launchctl setenv ROOTGLASS_DESKTOP_SMOKE_EXPECTED_TRUST_KEY_ID \
             "ed25519:4a079f6f512c9e1a24f83b08e84fb8508996c91e0d54a19512fabfafc82b62d0"
-          launchctl setenv HOME "$TEST_HOME"
-          launchctl setenv TMPDIR "$TEST_TMPDIR"
           open "$glass"
 
           for _ in $(seq 1 120); do
@@ -370,7 +360,7 @@ jobs:
             "$(sw_vers -productName)" "$(sw_vers -productVersion)" \
             "$(uname -m)" "$associated_app" "$glass" \
             > "$EVIDENCE_DIR/launchservices-open.txt"
-          printf 'Isolated home: %s\n' "$TEST_HOME" >> "$EVIDENCE_DIR/launchservices-open.txt"
+          printf 'Application home: %s\n' "$HOME" >> "$EVIDENCE_DIR/launchservices-open.txt"
           cat "$EVIDENCE_DIR/launchservices-open.txt"
 
           bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")
