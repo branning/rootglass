@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       package_run_id:
-        description: Successful Desktop packages run ID for this commit (macOS only)
+        description: Successful macOS package run for this commit or a smoke-only descendant
         type: string
         required: true
 
@@ -44,10 +44,27 @@ jobs:
             echo "Package run $PACKAGE_RUN_ID must have completed successfully" >&2
             exit 1
           }
-          [[ "$(jq -r '.head_sha' <<< "$run_json")" == "$GITHUB_SHA" ]] || {
-            echo "Package run $PACKAGE_RUN_ID was built from a different commit" >&2
-            exit 1
-          }
+          package_sha=$(jq -r '.head_sha' <<< "$run_json")
+          if [[ "$package_sha" != "$GITHUB_SHA" ]]; then
+            comparison=$(gh api "repos/$GITHUB_REPOSITORY/compare/$package_sha...$GITHUB_SHA")
+            [[ "$(jq -r '.status' <<< "$comparison")" == "ahead" && \
+               "$(jq -r '.merge_base_commit.sha' <<< "$comparison")" == "$package_sha" ]] || {
+              echo "Package commit $package_sha is not an ancestor of smoke commit $GITHUB_SHA" >&2
+              exit 1
+            }
+            jq -e '
+              (.files | length > 0 and length < 300) and
+              all(.files[];
+                .filename == ".github/workflows/installed-macos-tui-smoke.yml" or
+                .filename == "scripts/smoke-rootglass-installed-macos-tui.py" or
+                .filename == "docs/desktop-packages.md"
+              )
+            ' <<< "$comparison" >/dev/null || {
+              echo "Package commit $package_sha differs from this smoke commit outside the smoke workflow, driver, and evidence docs" >&2
+              exit 1
+            }
+            echo "Reusing package $package_sha; changes since it affect only smoke harness/evidence files"
+          fi
 
           jobs_json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PACKAGE_RUN_ID/jobs?per_page=100")
           for required_job in "Materialize pinned guest boot assets" "macOS arm64 package"; do
@@ -59,7 +76,7 @@ jobs:
               exit 1
             }
           done
-          echo "Validated successful macOS package artifacts from $PACKAGE_RUN_ID at $GITHUB_SHA"
+          echo "Validated successful macOS package artifacts from run $PACKAGE_RUN_ID at $package_sha"
 
       - name: Download macOS package artifact
         uses: actions/download-artifact@v4
@@ -91,6 +108,8 @@ jobs:
         env:
           PACKAGE_DIR: ${{ runner.temp }}/rootglass-package
           EXAMPLE_DIR: ${{ runner.temp }}/rootglass-example
+          EVIDENCE_DIR: ${{ runner.temp }}/rootglass-tui-evidence
+          PACKAGE_RUN_ID: ${{ inputs.package_run_id }}
         run: |
           set -euo pipefail
           example_checksum=$(find "$EXAMPLE_DIR" -type f -name SHA256SUMS-example.txt -print -quit)
@@ -125,6 +144,9 @@ jobs:
             exit 1
           }
 
+          example_glass=$(find "$EXAMPLE_DIR" -type f -name '*.glass' -print -quit)
+          example_hash=$(shasum -a 256 "$example_glass" | awk '{print $1}')
+
           mountpoint="$RUNNER_TEMP/rootglass-dmg"
           mkdir -p "$mountpoint"
           # The DMG embeds its license agreement. Supply the affirmative
@@ -136,10 +158,23 @@ jobs:
             find "$mountpoint" -maxdepth 3 -print >&2
             exit 1
           }
+          app_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$mountpoint/Rootglass.app/Contents/Info.plist")
           sudo ditto "$mountpoint/Rootglass.app" /Applications/Rootglass.app
           hdiutil detach "$mountpoint"
           trap - EXIT
           echo "Installed $dmg at /Applications/Rootglass.app"
+          mkdir -p "$EVIDENCE_DIR"
+          {
+            printf 'Package workflow run: %s\n' "$PACKAGE_RUN_ID"
+            printf 'Workflow commit: %s\n' "$GITHUB_SHA"
+            printf 'OS: %s %s (%s)\n' "$(sw_vers -productName)" \
+              "$(sw_vers -productVersion)" "$(sw_vers -buildVersion)"
+            printf 'Architecture: %s\n' "$(uname -m)"
+            printf 'Application version: %s\n' "$app_version"
+            printf 'DMG: %s\nDMG SHA-256: %s\n' "$dmg_name" "$actual_dmg_hash"
+            printf 'Example: %s\nExample SHA-256: %s\n' \
+              "$(basename "$example_glass")" "$example_hash"
+          } | tee "$EVIDENCE_DIR/package-install.txt"
 
       - name: Configure example publisher trust
         env:
@@ -147,8 +182,13 @@ jobs:
           TEST_TMPDIR: ${{ runner.temp }}/rootglass-tmp
         run: |
           set -euo pipefail
-          mkdir -p "$TEST_HOME/Library/Application Support/Rootglass" "$TEST_TMPDIR"
-          cat > "$TEST_HOME/Library/Application Support/Rootglass/trust.json" <<'JSON'
+          mkdir -p "$TEST_TMPDIR"
+          # LaunchServices supplies the account HOME even when launchctl HOME is changed.
+          # Seed trust there for the associated-app path, plus the isolated TUI test home.
+          for trust_home in "$HOME" "$TEST_HOME"; do
+            trust_dir="$trust_home/Library/Application Support/Rootglass"
+            mkdir -p "$trust_dir"
+            cat > "$trust_dir/trust.json" <<'JSON'
           {
             "schemaVersion": 1,
             "trustedPublishers": [
@@ -162,7 +202,8 @@ jobs:
             "revokedKeyIds": []
           }
           JSON
-          chmod 600 "$TEST_HOME/Library/Application Support/Rootglass/trust.json"
+            chmod 600 "$trust_dir/trust.json"
+          done
 
       - name: Check isolated macOS package-store permissions
         env:
@@ -206,12 +247,156 @@ jobs:
           PY
           rmdir "$packages_dir" "$app_data_root/library"
 
+      - name: Open the signed example through LaunchServices
+        env:
+          EXAMPLE_DIR: ${{ runner.temp }}/rootglass-example
+          EVIDENCE_DIR: ${{ runner.temp }}/rootglass-tui-evidence
+        run: |
+          set -euo pipefail
+          app=/Applications/Rootglass.app
+          glass=$(find "$EXAMPLE_DIR" -type f -name '*.glass' -print -quit)
+          [[ -n "$glass" ]] || { echo "Signed example is missing" >&2; exit 1; }
+          [[ "$(uname -m)" == arm64 ]] || {
+            echo "Expected an Apple Silicon runner, found $(uname -m)" >&2
+            exit 1
+          }
+          major_version=$(sw_vers -productVersion | cut -d. -f1)
+          [[ "$major_version" -ge 15 ]] || {
+            echo "Expected macOS 15 or later, found $(sw_vers -productVersion)" >&2
+            exit 1
+          }
+          lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+          [[ -x "$lsregister" ]] || { echo "LaunchServices registration tool is missing" >&2; exit 1; }
+          "$lsregister" -f "$app"
+
+          cat > "$RUNNER_TEMP/rootglass-file-handler.swift" <<'SWIFT'
+          import AppKit
+          import Foundation
+          import Darwin
+
+          if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == "--terminate" {
+              let bundleID = CommandLine.arguments[2]
+              for _ in 0..<60 {
+                  let applications = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+                  if applications.isEmpty { exit(0) }
+                  for application in applications { _ = application.terminate() }
+                  Thread.sleep(forTimeInterval: 0.25)
+              }
+              fputs("Rootglass did not terminate after LaunchServices smoke\n", stderr)
+              exit(1)
+          }
+
+          let glass = URL(fileURLWithPath: CommandLine.arguments[1])
+          guard let handler = NSWorkspace.shared.urlForApplication(toOpen: glass) else {
+              fputs("LaunchServices did not find an application for \(glass.path)\n", stderr)
+              exit(1)
+          }
+          print(handler.standardizedFileURL.path)
+          SWIFT
+          associated_app=$(swift "$RUNNER_TEMP/rootglass-file-handler.swift" "$glass")
+          [[ "$associated_app" == "$app" ]] || {
+            echo "LaunchServices selected '$associated_app' for $glass, expected '$app'" >&2
+            exit 1
+          }
+
+          event_log="$EVIDENCE_DIR/launchservices-events.log"
+          old_smoke=$(launchctl getenv ROOTGLASS_DESKTOP_SMOKE || true)
+          old_event_log=$(launchctl getenv ROOTGLASS_DESKTOP_SMOKE_EVENT_LOG || true)
+          old_expected_trust_key_id=$(launchctl getenv ROOTGLASS_DESKTOP_SMOKE_EXPECTED_TRUST_KEY_ID || true)
+          restore_launch_environment() {
+            if [[ -n "$old_smoke" ]]; then
+              launchctl setenv ROOTGLASS_DESKTOP_SMOKE "$old_smoke"
+            else
+              launchctl unsetenv ROOTGLASS_DESKTOP_SMOKE || true
+            fi
+            if [[ -n "$old_event_log" ]]; then
+              launchctl setenv ROOTGLASS_DESKTOP_SMOKE_EVENT_LOG "$old_event_log"
+            else
+              launchctl unsetenv ROOTGLASS_DESKTOP_SMOKE_EVENT_LOG || true
+            fi
+            if [[ -n "$old_expected_trust_key_id" ]]; then
+              launchctl setenv ROOTGLASS_DESKTOP_SMOKE_EXPECTED_TRUST_KEY_ID "$old_expected_trust_key_id"
+            else
+              launchctl unsetenv ROOTGLASS_DESKTOP_SMOKE_EXPECTED_TRUST_KEY_ID || true
+            fi
+          }
+          trap restore_launch_environment EXIT
+          launchctl setenv ROOTGLASS_DESKTOP_SMOKE 1
+          launchctl setenv ROOTGLASS_DESKTOP_SMOKE_EVENT_LOG "$event_log"
+          launchctl setenv ROOTGLASS_DESKTOP_SMOKE_EXPECTED_TRUST_KEY_ID \
+            "ed25519:4a079f6f512c9e1a24f83b08e84fb8508996c91e0d54a19512fabfafc82b62d0"
+          open "$glass"
+
+          for _ in $(seq 1 120); do
+            if [[ -f "$event_log" ]] && \
+               grep -q '^ROOTGLASS_DESKTOP_OPEN_URLS_RECEIVED$' "$event_log" && \
+               grep -q '^ROOTGLASS_DESKTOP_OPEN_PATH_ACCEPTED$' "$event_log" && \
+               grep -q '^ROOTGLASS_DESKTOP_TRUST_POLICY_EXPECTED_KEY_PRESENT$' "$event_log"; then
+              break
+            fi
+            sleep 0.25
+          done
+          grep -q '^ROOTGLASS_DESKTOP_TRUST_POLICY_EXPECTED_KEY_PRESENT$' "$event_log" || {
+            echo "LaunchServices app did not load the canonical example publisher trust key" >&2
+            cat "$event_log" 2>/dev/null || true
+            exit 1
+          }
+          grep -q '^ROOTGLASS_DESKTOP_OPEN_URLS_RECEIVED$' "$event_log" || {
+            echo "LaunchServices did not reach GPUI's open-URLs handler" >&2
+            cat "$event_log" 2>/dev/null || true
+            exit 1
+          }
+          grep -q '^ROOTGLASS_DESKTOP_OPEN_PATH_ACCEPTED$' "$event_log" || {
+            echo "LaunchServices did not deliver the .glass path to Rootglass" >&2
+            cat "$event_log" 2>/dev/null || true
+            exit 1
+          }
+          for _ in $(seq 1 120); do
+            if grep -q '^ROOTGLASS_DESKTOP_OPEN_PATH_ARCHIVE$' "$event_log"; then
+              break
+            fi
+            sleep 0.25
+          done
+          grep -q '^ROOTGLASS_DESKTOP_OPEN_PATH_ARCHIVE$' "$event_log" || {
+            echo "Rootglass did not classify the associated path as a .glass archive" >&2
+            cat "$event_log" >&2
+            exit 1
+          }
+          for _ in $(seq 1 120); do
+            if grep -q '^ROOTGLASS_DESKTOP_STATE_READY$' "$event_log"; then
+              break
+            fi
+            sleep 0.25
+          done
+          grep -q '^ROOTGLASS_DESKTOP_STATE_READY$' "$event_log" || {
+            echo "Rootglass did not finish verifying and importing the associated .glass archive" >&2
+            cat "$event_log" >&2
+            exit 1
+          }
+          printf 'OS: %s %s\nArchitecture: %s\nAssociated app: %s\nOpened bundle: %s\n' \
+            "$(sw_vers -productName)" "$(sw_vers -productVersion)" \
+            "$(uname -m)" "$associated_app" "$glass" \
+            > "$EVIDENCE_DIR/launchservices-open.txt"
+          printf 'Application home: %s\n' "$HOME" >> "$EVIDENCE_DIR/launchservices-open.txt"
+          cat "$EVIDENCE_DIR/launchservices-open.txt"
+
+          bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")
+          swift "$RUNNER_TEMP/rootglass-file-handler.swift" --terminate "$bundle_id"
+          qemu=$(find "$app/Contents/Resources/rootglass/runtime-assets" \
+            -type f -name qemu-system-aarch64 -print -quit)
+          if [[ -n "$qemu" ]] && pgrep -f "$qemu" >/dev/null; then
+            echo "QEMU started during file-open smoke before Boot was requested" >&2
+            ps -axo pid=,comm= >&2
+            exit 1
+          fi
+
       - name: Verify installed QEMU signature and boot through the TUI
         env:
           EXAMPLE_DIR: ${{ runner.temp }}/rootglass-example
           TEST_HOME: ${{ runner.temp }}/rootglass-home
           TEST_TMPDIR: ${{ runner.temp }}/rootglass-tmp
           EVIDENCE_DIR: ${{ runner.temp }}/rootglass-tui-evidence
+          SHIM_DIR: ${{ runner.temp }}/rootglass-host-tool-shims
         run: |
           set -euo pipefail
           runtime_root=/Applications/Rootglass.app/Contents/Resources/rootglass/runtime-assets
@@ -224,12 +409,169 @@ jobs:
           done < <(find "$runtime_root" -type f \( -name '*.dylib' -o -name '*.so' \) -print)
           "$qemu" --version
 
+          runtime_root=$(find "$runtime_root" -mindepth 1 -maxdepth 1 -type d -print -quit)
+          [[ -n "$runtime_root" ]] || { echo "Versioned runtime directory is missing" >&2; exit 1; }
+          cp "$runtime_root/assets.json" "$EVIDENCE_DIR/runtime-assets.json"
+          cp "$runtime_root/runtime-info.json" "$EVIDENCE_DIR/runtime-info.json"
+          python3 - "$runtime_root" "$EVIDENCE_DIR/runtime-inventory.txt" <<'PY'
+          import hashlib
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1]).resolve()
+          inventory_path = Path(sys.argv[2])
+          manifest = json.loads((root / "assets.json").read_text(encoding="utf-8"))
+          info = json.loads((root / "runtime-info.json").read_text(encoding="utf-8"))
+          assert manifest["runtime_version"] == root.name
+          assert info["runtime_version"] == root.name
+          assert info["target_platform"] == "macos-arm64"
+          assets = manifest["assets"]
+          kinds = {asset["kind"] for asset in assets}
+          assert {"kernel", "initramfs", "qemu", "support"}.issubset(kinds)
+          lines = [f"Runtime version: {root.name}", f"QEMU: {info['qemu_version']}"]
+          for asset in assets:
+              path = (root / asset["path"]).resolve()
+              if root not in path.parents or not path.is_file():
+                  raise SystemExit(f"invalid or missing runtime asset: {asset['path']}")
+              hasher = hashlib.sha256()
+              with path.open("rb") as source:
+                  for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                      hasher.update(chunk)
+              digest = hasher.hexdigest()
+              if digest != asset["sha256"]:
+                  raise SystemExit(f"runtime asset checksum mismatch: {asset['path']}")
+              lines.append(f"{asset['kind']}: {asset['path']} sha256={digest}")
+          if not info["license_files"]:
+              raise SystemExit("runtime inventory contains no QEMU license files")
+          for name in info["license_files"]:
+              if not (root / name).is_file():
+                  raise SystemExit(f"runtime license file is missing: {name}")
+          lines.append(f"License files: {len(info['license_files'])}")
+          inventory_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          print(inventory_path.read_text(encoding="utf-8"), end="")
+          PY
+
           glass=$(find "$EXAMPLE_DIR" -type f -name '*.glass' -print -quit)
+          mkdir -p "$SHIM_DIR"
+          for tool in cargo rustc qemu-system-aarch64 qemu-system-x86_64; do
+            cat > "$SHIM_DIR/$tool" <<'SHIM'
+          #!/bin/sh
+          printf '%s %s\n' "$(basename "$0")" "$*" >> "$EVIDENCE_DIR/blocked-host-tool-invocations.log"
+          echo "Rootglass attempted to use a host tool instead of the installed package: $0" >&2
+          exit 97
+          SHIM
+            chmod +x "$SHIM_DIR/$tool"
+          done
+          export PATH="$SHIM_DIR:$PATH"
+          network_interface=$(route -n get default | awk '/interface:/{print $2; exit}')
+          [[ -n "$network_interface" ]] || { echo "Default network interface was not found" >&2; exit 1; }
+          printf 'Offline interface: %s\n' "$network_interface" | tee "$EVIDENCE_DIR/offline-boot.txt"
+          sudo -n ifconfig "$network_interface" down
+          restore_network() { sudo -n ifconfig "$network_interface" up || true; }
+          trap restore_network EXIT
+          cd "$RUNNER_TEMP"
           HOME="$TEST_HOME" TMPDIR="$TEST_TMPDIR" \
-            python3 scripts/smoke-rootglass-installed-macos-tui.py \
+            python3 "$GITHUB_WORKSPACE/scripts/smoke-rootglass-installed-macos-tui.py" \
               /Applications/Rootglass.app/Contents/MacOS/rootglass \
               "$glass" "$EVIDENCE_DIR"
+          sudo -n ifconfig "$network_interface" up
+          trap - EXIT
           test -s "$EVIDENCE_DIR/tui-terminal-screenshot.png"
+          test ! -s "$EVIDENCE_DIR/blocked-host-tool-invocations.log"
+          printf 'Working directory: %s\n' "$RUNNER_TEMP" >> "$EVIDENCE_DIR/offline-boot.txt"
+          printf 'Host-tool shims: cargo, rustc, qemu-system-aarch64, qemu-system-x86_64 (no invocation)\n' \
+            >> "$EVIDENCE_DIR/offline-boot.txt"
+
+      - name: Remove app and verify user state retention
+        env:
+          TEST_HOME: ${{ runner.temp }}/rootglass-home
+          EVIDENCE_DIR: ${{ runner.temp }}/rootglass-tui-evidence
+        run: |
+          set -euo pipefail
+          app_data_root="$TEST_HOME/Library/Application Support/Rootglass"
+          library_root="$app_data_root/library"
+          state_root="$app_data_root/states"
+          trust_file="$app_data_root/trust.json"
+          registry="$library_root/registry.json"
+          [[ -s "$trust_file" ]] || { echo "Trust policy was not retained" >&2; exit 1; }
+          [[ -s "$registry" ]] || { echo "Imported package registry is missing" >&2; exit 1; }
+          trust_hash_before=$(shasum -a 256 "$trust_file" | awk '{print $1}')
+          write_user_data_snapshot() {
+            python3 - "$library_root" "$state_root" "$1" <<'PY'
+          import hashlib
+          import json
+          import sys
+          from pathlib import Path
+
+          library = Path(sys.argv[1])
+          states = Path(sys.argv[2])
+          snapshot = Path(sys.argv[3])
+          registry = library / "registry.json"
+          data = json.loads(registry.read_text(encoding="utf-8"))
+          packages = data.get("packages", [])
+          if data.get("schema_version") != 1 or not packages:
+              raise SystemExit("installed package registry has no retained sample")
+          for package in packages:
+              path = Path(package["package_path"])
+              if not path.is_dir():
+                  raise SystemExit(f"installed package data is missing: {path}")
+              if not (path / "rootglass.toml").is_file():
+                  raise SystemExit(f"installed package manifest is missing: {path}")
+          state_files = sorted(path for path in states.rglob("*") if path.is_file())
+          if not state_files:
+              raise SystemExit("guest state was not persisted under the user data directory")
+          lines = [f"packages={len(packages)}"]
+          for root in (library, states):
+              if not root.is_dir():
+                  raise SystemExit(f"user data directory is missing: {root}")
+              files = sorted(path for path in root.rglob("*") if path.is_file())
+              if not files:
+                  raise SystemExit(f"user data directory is empty: {root}")
+              lines.append(f"directory={root.name} files={len(files)}")
+              for path in files:
+                  digest = hashlib.sha256()
+                  with path.open("rb") as source:
+                      for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                          digest.update(chunk)
+                  lines.append(
+                      f"{root.name}/{path.relative_to(root)} size={path.stat().st_size} "
+                      f"sha256={digest.hexdigest()}"
+                  )
+          snapshot.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          print(snapshot.read_text(encoding="utf-8"), end="")
+          PY
+          }
+          write_user_data_snapshot "$EVIDENCE_DIR/user-data-before-uninstall.txt"
+          registry_hash_before=$(shasum -a 256 "$registry" | awk '{print $1}')
+          sudo -n rm -rf /Applications/Rootglass.app
+          [[ ! -e /Applications/Rootglass.app ]] || {
+            echo "Rootglass.app remained installed" >&2
+            exit 1
+          }
+          [[ -s "$trust_file" && -s "$registry" ]] || {
+            echo "Removing Rootglass.app removed user state" >&2
+            exit 1
+          }
+          trust_hash_after=$(shasum -a 256 "$trust_file" | awk '{print $1}')
+          registry_hash_after=$(shasum -a 256 "$registry" | awk '{print $1}')
+          [[ "$trust_hash_before" == "$trust_hash_after" ]] || {
+            echo "Trust policy changed while uninstalling the app" >&2
+            exit 1
+          }
+          [[ "$registry_hash_before" == "$registry_hash_after" ]] || {
+            echo "Library registry changed while uninstalling the app" >&2
+            exit 1
+          }
+          write_user_data_snapshot "$RUNNER_TEMP/user-data-after-uninstall.txt"
+          diff -u "$EVIDENCE_DIR/user-data-before-uninstall.txt" \
+            "$RUNNER_TEMP/user-data-after-uninstall.txt"
+          cp "$RUNNER_TEMP/user-data-after-uninstall.txt" "$EVIDENCE_DIR/user-data-after-uninstall.txt"
+          printf 'Removed app: /Applications/Rootglass.app\nTrust SHA-256 before/after: %s\nLibrary registry SHA-256 before/after: %s\nLibrary and guest state files: unchanged\n' \
+            "$trust_hash_after" "$registry_hash_after" \
+            | tee "$EVIDENCE_DIR/uninstall-retention.txt"
+          printf 'Library: %s\nGuest state: %s\n' "$library_root" "$state_root" \
+            >> "$EVIDENCE_DIR/uninstall-retention.txt"
 
       - name: Upload TUI, serial, and QEMU evidence
         if: always()

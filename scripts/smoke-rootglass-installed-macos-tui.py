@@ -150,8 +150,12 @@ def serial_logs(directory: Path) -> list[Path]:
 
 
 def read_serial(directory: Path) -> bytes:
+    return read_serial_paths(serial_logs(directory))
+
+
+def read_serial_paths(paths: list[Path]) -> bytes:
     output = bytearray()
-    for path in serial_logs(directory):
+    for path in paths:
         try:
             output.extend(path.read_bytes())
         except OSError:
@@ -252,18 +256,36 @@ class TuiSession:
         self.wait_for_terminal(b"Guest input:", timeout, after)
         self.send(line + b"\r")
 
-    def wait_for_serial(self, pattern: bytes, timeout: int) -> bytes:
+    def wait_for_serial(
+        self, pattern: bytes, timeout: int, logs: list[Path] | None = None
+    ) -> bytes:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             self.drain_terminal()
             screen = clean_terminal(self.capture)
             self.check_for_startup_failure(screen)
             self.check_child()
-            output = read_serial(Path(os.environ["TMPDIR"]))
+            output = read_serial_paths(
+                logs if logs is not None else serial_logs(Path(os.environ["TMPDIR"]))
+            )
             if re.search(pattern, clean_terminal(output)):
                 return output
             time.sleep(0.05)
         raise SmokeFailure(f"timed out waiting for serial output matching: {pattern!r}")
+
+    def wait_for_new_serial_log(
+        self, directory: Path, previous_logs: set[Path], timeout: int
+    ) -> Path:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            new_logs = [path for path in serial_logs(directory) if path not in previous_logs]
+            if new_logs:
+                return new_logs[-1]
+            self.drain_terminal()
+            self.check_for_startup_failure(clean_terminal(self.capture))
+            self.check_child()
+            time.sleep(0.05)
+        raise SmokeFailure("restart did not create a new QEMU diagnostic log")
 
     @staticmethod
     def check_for_startup_failure(screen: bytes) -> None:
@@ -309,6 +331,22 @@ class TuiSession:
         self.terminal_log.write_bytes(self.capture)
         (self.output / "tui-terminal.txt").write_bytes(clean_terminal(self.capture))
         os.close(self.master)
+
+
+def guest_uname(serial: bytes, begin_marker: bytes, done_marker: bytes) -> bytes:
+    lines = [line.strip() for line in serial.replace(b"\r", b"").splitlines()]
+    try:
+        begin = lines.index(begin_marker)
+        done = lines.index(done_marker, begin + 1)
+    except ValueError as error:
+        raise SmokeFailure("guest command completion markers were not emitted") from error
+    uname = next(
+        (line for line in lines[begin + 1 : done] if line.startswith(b"Linux rootglass-hello")),
+        None,
+    )
+    if uname is None or b"aarch64" not in uname:
+        raise SmokeFailure("guest uname output did not identify the expected aarch64 guest")
+    return uname
 
 
 def run(binary: Path, glass: Path, output: Path) -> None:
@@ -361,19 +399,53 @@ def run(binary: Path, glass: Path, output: Path) -> None:
             rb"ROOTGLASS_TUI_SMOKE_DONE(?:\r\n|\n|\r)", COMMAND_TIMEOUT
         )
         session.wait_for_terminal(b"ROOTGLASS_TUI_SMOKE_DONE", COMMAND_TIMEOUT)
-        serial = read_serial(log_directory).replace(b"\r", b"")
-        lines = [line.strip() for line in serial.splitlines()]
-        try:
-            begin = lines.index(b"ROOTGLASS_TUI_SMOKE_BEGIN")
-            done = lines.index(b"ROOTGLASS_TUI_SMOKE_DONE", begin + 1)
-        except ValueError as error:
-            raise SmokeFailure("guest command completion markers were not emitted") from error
-        uname = next(
-            (line for line in lines[begin + 1 : done] if line.startswith(b"Linux rootglass-hello")),
-            None,
+        first_logs = serial_logs(log_directory)
+        uname = guest_uname(
+            read_serial_paths(first_logs),
+            b"ROOTGLASS_TUI_SMOKE_BEGIN",
+            b"ROOTGLASS_TUI_SMOKE_DONE",
         )
-        if uname is None or b"aarch64" not in uname:
-            raise SmokeFailure("guest uname output did not identify the expected aarch64 guest")
+
+        session.save_screenshot()
+        previous_logs = set(first_logs)
+        after = session.current_screen()
+        session.send(b"r")
+        session.wait_for_terminal(b"Restarting guest", 30, after)
+        restart_log = session.wait_for_new_serial_log(
+            log_directory, previous_logs, BOOT_TIMEOUT
+        )
+        session.wait_for_serial(rb"rootglass-hello login:\s*$", BOOT_TIMEOUT, [restart_log])
+        session.wait_for_terminal(b"rootglass-hello login:", 60, after)
+        session.wait_for_terminal(b"Running", 30, after)
+        restarted_qemu = qemu_processes(qemu_binary)
+        if len(restarted_qemu) != 1:
+            raise SmokeFailure(
+                f"expected one QEMU process after restart, found {restarted_qemu}"
+            )
+
+        session.send_console_line(b"root")
+        session.wait_for_serial(rb"(?i)password:\s*$", LOGIN_TIMEOUT, [restart_log])
+        session.wait_for_terminal(b"Password:", 10)
+        session.send_console_line(FIXTURE_PASSWORD)
+        session.wait_for_serial(rb"(?m)#\s*$", LOGIN_TIMEOUT, [restart_log])
+        restart_command = (
+            b"printf 'ROOTGLASS_TUI_RESTART_BEGIN\\n'; uname -a; "
+            b"printf 'ROOTGLASS_TUI_RESTART_DONE\\n'"
+        )
+        session.send_console_line(restart_command)
+        session.wait_for_serial(
+            rb"ROOTGLASS_TUI_RESTART_DONE(?:\r\n|\n|\r)",
+            COMMAND_TIMEOUT,
+            [restart_log],
+        )
+        session.wait_for_terminal(b"ROOTGLASS_TUI_RESTART_DONE", COMMAND_TIMEOUT)
+        restarted_uname = guest_uname(
+            read_serial_paths([restart_log]),
+            b"ROOTGLASS_TUI_RESTART_BEGIN",
+            b"ROOTGLASS_TUI_RESTART_DONE",
+        )
+        if restarted_uname != uname:
+            raise SmokeFailure("guest uname changed across a TUI restart")
 
         session.save_screenshot()
         session.send(b"s")
@@ -385,16 +457,21 @@ def run(binary: Path, glass: Path, output: Path) -> None:
         if remaining:
             raise SmokeFailure(f"QEMU remained after TUI stop: {remaining}")
 
-        session.send(b"q")
+        session.send(b"\x11")
         status = session.child.wait(timeout=10)
         if status != 0:
             raise SmokeFailure(f"packaged Rootglass TUI exited with status {status}")
         if qemu_processes(qemu_binary):
             raise SmokeFailure("a bundled QEMU process remained after Rootglass exited")
 
-        (output / "guest-uname.txt").write_bytes(uname + b"\n")
+        (output / "guest-uname.txt").write_bytes(
+            b"initial: " + uname + b"\nrestarted: " + restarted_uname + b"\n"
+        )
         session.save_evidence()
-        print(f"TUI booted the example and reported: {uname.decode(errors='replace')}")
+        print(
+            f"TUI booted and restarted the example; guest uname: "
+            f"{restarted_uname.decode(errors='replace')}"
+        )
         print("TUI stop completed and no bundled QEMU process remained.")
     except Exception:
         session.save_evidence()

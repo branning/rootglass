@@ -16,7 +16,9 @@ use gpui_kit::*;
 use rootglass_app::registry::InstalledGlass;
 use rootglass_app::ManifestValidationReport;
 use rootglass_app::RuntimeEvent;
+use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::Duration;
 
 actions!(rootglass, [OpenBundle, StopGlass, Quit]);
@@ -183,6 +185,7 @@ impl RootglassWindow {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Type to guest console…"));
         let model = UiModel::default();
+        log_desktop_smoke_trust_policy(&model);
         let service = model.shared_service();
         let background_executor = cx.background_executor().clone();
         let _library_task = cx.spawn(async move |view, cx| {
@@ -533,8 +536,11 @@ impl RootglassWindow {
                         "ROOTGLASS_DESKTOP_PREFLIGHT_BLOCKED"
                     });
                 }
-                SignatureStatus::Untrusted(_) => {
-                    desktop_smoke_event("ROOTGLASS_DESKTOP_INSPECT_UNTRUSTED")
+                SignatureStatus::Untrusted(reason) => {
+                    desktop_smoke_event("ROOTGLASS_DESKTOP_INSPECT_UNTRUSTED");
+                    desktop_smoke_detail(format!(
+                        "ROOTGLASS_DESKTOP_SIGNATURE_UNTRUSTED reason={reason}"
+                    ));
                 }
                 SignatureStatus::Tampered(_) => {
                     desktop_smoke_event("ROOTGLASS_DESKTOP_INSPECT_TAMPERED")
@@ -546,6 +552,10 @@ impl RootglassWindow {
             UiState::Blocked(_) => desktop_smoke_event("ROOTGLASS_DESKTOP_INSPECT_BLOCKED"),
             UiState::Failed(details) if details.detail.contains("unknown signing key") => {
                 desktop_smoke_event("ROOTGLASS_DESKTOP_INSPECT_UNTRUSTED");
+                desktop_smoke_detail(format!(
+                    "ROOTGLASS_DESKTOP_SIGNATURE_UNTRUSTED detail={}",
+                    details.detail
+                ));
             }
             UiState::Failed(details)
                 if details.detail.contains("subject digest mismatch")
@@ -709,6 +719,97 @@ fn desktop_smoke_event(marker: &str) {
                 let _ = writeln!(log, "{marker}");
             }
         }
+    }
+}
+
+fn desktop_smoke_detail(detail: String) {
+    if std::env::var_os("ROOTGLASS_DESKTOP_SMOKE").is_none() {
+        return;
+    }
+    let detail = detail.replace('\n', " ").replace('\r', " ");
+    eprintln!("{detail}");
+    if let Some(path) = std::env::var_os("ROOTGLASS_DESKTOP_SMOKE_EVENT_LOG") {
+        if let Ok(mut log) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            use std::io::Write;
+            let _ = writeln!(log, "{detail}");
+        }
+    }
+}
+
+fn log_desktop_smoke_trust_policy(model: &UiModel) {
+    if std::env::var_os("ROOTGLASS_DESKTOP_SMOKE").is_none() {
+        return;
+    }
+    let expected_key_id = std::env::var("ROOTGLASS_DESKTOP_SMOKE_EXPECTED_TRUST_KEY_ID").ok();
+    let shared_service = model.shared_service();
+    match lock_service(&shared_service) {
+        Ok(mut service) => {
+            let status = service.trust_policy_status();
+            let key_ids = status
+                .trusted_publishers
+                .iter()
+                .map(|publisher| publisher.key_id.as_str())
+                .collect::<Vec<_>>()
+                .join(",");
+            let trusted_key_ids = if key_ids.is_empty() {
+                "<none>".to_string()
+            } else {
+                key_ids
+            };
+            let expected_key_present = expected_key_id.as_deref().is_some_and(|expected| {
+                status
+                    .trusted_publishers
+                    .iter()
+                    .any(|publisher| publisher.key_id == expected)
+            });
+            desktop_smoke_detail(format!(
+                "ROOTGLASS_DESKTOP_TRUST_POLICY path={} trusted_key_ids={} revoked_key_ids={} error={} expected_key_present={expected_key_present}",
+                status
+                    .config_path
+                    .as_deref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "<none>".to_string()),
+                trusted_key_ids,
+                if status.revoked_key_ids.is_empty() {
+                    "<none>".to_string()
+                } else {
+                    status.revoked_key_ids.join(",")
+                },
+                status.error.as_deref().unwrap_or("<none>")
+            ));
+            desktop_smoke_event(if expected_key_present {
+                "ROOTGLASS_DESKTOP_TRUST_POLICY_EXPECTED_KEY_PRESENT"
+            } else {
+                "ROOTGLASS_DESKTOP_TRUST_POLICY_EXPECTED_KEY_MISSING"
+            });
+        }
+        Err(error) => desktop_smoke_detail(format!(
+            "ROOTGLASS_DESKTOP_TRUST_POLICY unavailable={}",
+            error.detail
+        )),
+    };
+}
+
+fn path_from_open_url(value: &str) -> Option<PathBuf> {
+    url::Url::parse(value).ok()?.to_file_path().ok()
+}
+
+fn open_urls_in_view(app: &AsyncApp, view: &Entity<RootglassWindow>, urls: Vec<String>) {
+    for url in urls {
+        let Some(path) = path_from_open_url(&url) else {
+            continue;
+        };
+        let app = app.clone();
+        let view = view.clone();
+        app.spawn(async move |cx| {
+            let _ = view.update(cx, |view, cx| view.open_path(path, cx));
+        })
+        .detach();
+        break;
     }
 }
 
@@ -958,31 +1059,51 @@ fn removal_details_view(details: &RemovalDetails) -> Div {
 }
 
 pub fn run_gui(initial_glass: Option<PathBuf>) {
-    gpui_kit::application()
+    let open_url_target: Rc<RefCell<Option<(AsyncApp, Entity<RootglassWindow>)>>> =
+        Rc::new(RefCell::new(None));
+    let pending_open_urls: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let application = gpui_kit::application()
         .with_quit_mode(QuitMode::LastWindowClosed)
-        .with_assets(gpui_kit::assets::Assets)
-        .run(move |cx| {
-            gpui_kit::init(cx);
-            cx.bind_keys([
-                KeyBinding::new("cmd-o", OpenBundle, Some(ROOTGLASS_CONTEXT)),
-                KeyBinding::new("cmd-.", StopGlass, Some(ROOTGLASS_CONTEXT)),
-                KeyBinding::new("cmd-q", Quit, Some(ROOTGLASS_CONTEXT)),
-                KeyBinding::new("cmd-w", Quit, Some(ROOTGLASS_CONTEXT)),
-                KeyBinding::new("alt-f4", Quit, Some(ROOTGLASS_CONTEXT)),
-            ]);
-            let initial_glass = initial_glass.clone();
-            gpui_kit::open_window(WindowOptions::default(), cx, move |window, cx| {
-                let initial_glass = initial_glass.clone();
-                cx.new(move |cx| {
-                    let mut view = RootglassWindow::new(window, cx);
-                    if let Some(path) = initial_glass {
-                        view.open_path(path, cx);
-                    }
-                    view
-                })
-            })
-            .expect("failed to open Rootglass window");
+        .with_assets(gpui_kit::assets::Assets);
+    {
+        let open_url_target = open_url_target.clone();
+        let pending_open_urls = pending_open_urls.clone();
+        application.on_open_urls(move |urls| {
+            desktop_smoke_event("ROOTGLASS_DESKTOP_OPEN_URLS_RECEIVED");
+            let target = open_url_target.borrow().clone();
+            if let Some((app, view)) = target {
+                open_urls_in_view(&app, &view, urls);
+            } else {
+                pending_open_urls.borrow_mut().extend(urls);
+            }
         });
+    }
+    application.run(move |cx| {
+        gpui_kit::init(cx);
+        cx.bind_keys([
+            KeyBinding::new("cmd-o", OpenBundle, Some(ROOTGLASS_CONTEXT)),
+            KeyBinding::new("cmd-.", StopGlass, Some(ROOTGLASS_CONTEXT)),
+            KeyBinding::new("cmd-q", Quit, Some(ROOTGLASS_CONTEXT)),
+            KeyBinding::new("cmd-w", Quit, Some(ROOTGLASS_CONTEXT)),
+            KeyBinding::new("alt-f4", Quit, Some(ROOTGLASS_CONTEXT)),
+        ]);
+        let initial_glass = initial_glass.clone();
+        let (_, view) = gpui_kit::open_window(WindowOptions::default(), cx, move |window, cx| {
+            let initial_glass = initial_glass.clone();
+            cx.new(move |cx| {
+                let mut view = RootglassWindow::new(window, cx);
+                if let Some(path) = initial_glass {
+                    view.open_path(path, cx);
+                }
+                view
+            })
+        })
+        .expect("failed to open Rootglass window");
+        let app = cx.to_async();
+        *open_url_target.borrow_mut() = Some((app.clone(), view.clone()));
+        let pending = std::mem::take(&mut *pending_open_urls.borrow_mut());
+        open_urls_in_view(&app, &view, pending);
+    });
 
     #[cfg(feature = "embedded-terminal")]
     embedded_terminal::wait_for_cleanup();
