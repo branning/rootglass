@@ -279,7 +279,7 @@ xdotool mousemove --window "$window_id" 320 120
 wait_for_marker ROOTGLASS_DESKTOP_INSPECT_FAILED
 sleep 0.5
 import -window "$window_id" "${artifact_dir}/02-launch-check-failed.png"
-xdotool mousemove --window "$window_id" 350 730 click 1
+xdotool mousemove --window "$window_id" 295 620 click 1
 wait_for_marker ROOTGLASS_DESKTOP_RECOVERY_RETRY_REQUEST 15
 wait_for_marker ROOTGLASS_DESKTOP_RECOVERY_RETRY_FAILED 30
 sleep 0.5
