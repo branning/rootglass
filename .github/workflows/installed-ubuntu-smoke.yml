@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       package_run_id:
-        description: Successful Desktop packages run ID for this exact commit (Linux x64 only)
+        description: Successful Linux x64 package run for this commit, or an ancestor changed only in this workflow
         type: string
         required: true
 
@@ -47,10 +47,22 @@ jobs:
             echo "Package run $PACKAGE_RUN_ID must have completed successfully" >&2
             exit 1
           }
-          [[ "$(jq -r '.head_sha' <<< "$run_json")" == "$GITHUB_SHA" ]] || {
-            echo "Package run $PACKAGE_RUN_ID was built from a different commit" >&2
-            exit 1
-          }
+          package_sha=$(jq -r '.head_sha' <<< "$run_json")
+          if [[ "$package_sha" != "$GITHUB_SHA" ]]; then
+            comparison=$(gh api "repos/$GITHUB_REPOSITORY/compare/$package_sha...$GITHUB_SHA")
+            [[ "$(jq -r '.status' <<< "$comparison")" == ahead && \
+               "$(jq -r '.merge_base_commit.sha' <<< "$comparison")" == "$package_sha" ]] || {
+              echo "Package run $PACKAGE_RUN_ID is not an ancestor of $GITHUB_SHA" >&2
+              exit 1
+            }
+            changed_files=$(jq -r '[.files[].filename] | unique | join("\n")' <<< "$comparison")
+            [[ "$changed_files" == ".github/workflows/installed-ubuntu-smoke.yml" ]] || {
+              echo "Package source $package_sha differs outside the installed Ubuntu smoke workflow" >&2
+              printf '%s\n' "$changed_files" >&2
+              exit 1
+            }
+            echo "Package source $package_sha matches current product code; only the smoke workflow changed"
+          fi
           jobs_json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PACKAGE_RUN_ID/jobs?per_page=100")
           for required_job in "Materialize pinned guest boot assets" "Linux x64 package"; do
             conclusion=$(jq -r --arg name "$required_job" \
@@ -89,7 +101,8 @@ jobs:
             python3 python3-xlib x11-utils xauth xdg-desktop-portal \
             xdg-desktop-portal-gtk xdg-utils xdotool xvfb
 
-      - name: Verify artifacts, install package, and record inventory
+      - name: Verify artifact checksums and package metadata
+        timeout-minutes: 4
         env:
           PACKAGE_DIR: ${{ runner.temp }}/rootglass-package
           EXAMPLE_DIR: ${{ runner.temp }}/rootglass-example
@@ -98,6 +111,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$EVIDENCE_DIR" "$TEST_HOME/.config/rootglass" "$TEST_HOME/.local/share"
+          progress_file="$EVIDENCE_DIR/progress.txt"
+          progress() {
+            printf '%s\n' "$1" | tee -a "$progress_file"
+          }
           cat > "$TEST_HOME/.config/rootglass/trust.json" <<'JSON'
           {
             "schemaVersion": 1,
@@ -114,10 +131,18 @@ jobs:
           JSON
           chmod 600 "$TEST_HOME/.config/rootglass/trust.json"
 
-          python3 - "$PACKAGE_DIR" "$EXAMPLE_DIR" <<'PY'
+          if timeout --signal=TERM --kill-after=5s 120s \
+            python3 - "$PACKAGE_DIR" "$EXAMPLE_DIR" > "$EVIDENCE_DIR/checksums.log" 2>&1 <<'PY'
           import hashlib
           import sys
           from pathlib import Path
+
+          def sha256_file(path: Path) -> str:
+              digest = hashlib.sha256()
+              with path.open("rb") as source:
+                  for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                      digest.update(chunk)
+              return digest.hexdigest()
 
           def verify(checksum_file: Path, root: Path) -> None:
               for line in checksum_file.read_text(encoding="ascii").splitlines():
@@ -128,12 +153,13 @@ jobs:
                   matches = list(root.rglob(name))
                   if len(matches) != 1:
                       raise SystemExit(f"expected one artifact named {name}, found {len(matches)}")
-                  actual = hashlib.sha256(matches[0].read_bytes()).hexdigest()
+                  actual = sha256_file(matches[0])
                   if actual.lower() != expected.lower():
                       raise SystemExit(f"SHA-256 mismatch for {matches[0]}")
                   print(f"verified {name}: {actual}")
 
           package_dir, example_dir = map(Path, sys.argv[1:])
+          print("verifying downloaded package and example checksums", flush=True)
           package_checks = list(package_dir.rglob("SHA256SUMS-linux.txt"))
           example_checks = list(example_dir.rglob("SHA256SUMS-example.txt"))
           debs = list(package_dir.rglob("*.deb"))
@@ -147,21 +173,57 @@ jobs:
           (package_dir / "package-path.txt").write_text(str(debs[0]) + "\n", encoding="utf-8")
           (example_dir / "glass-path.txt").write_text(str(glasses[0]) + "\n", encoding="utf-8")
           PY
+          then
+            cat "$EVIDENCE_DIR/checksums.log"
+          else
+            checksum_status=$?
+            cat "$EVIDENCE_DIR/checksums.log"
+            exit "$checksum_status"
+          fi
+          progress "checksums verified"
 
           deb=$(cat "$PACKAGE_DIR/package-path.txt")
-          glass=$(cat "$EXAMPLE_DIR/glass-path.txt")
           package_name=$(dpkg-deb -f "$deb" Package)
           package_depends=$(dpkg-deb -f "$deb" Depends)
-          echo "Package: $package_name" | tee "$EVIDENCE_DIR/package.txt"
-          dpkg-deb -f "$deb" Package Version Architecture | tee -a "$EVIDENCE_DIR/package.txt"
-          echo "Depends: $package_depends" | tee -a "$EVIDENCE_DIR/package.txt"
+          {
+            echo "Package: $package_name"
+            dpkg-deb -f "$deb" Package Version Architecture
+            echo "Depends: $package_depends"
+          } | tee "$EVIDENCE_DIR/package.txt"
           for dependency in libxcb1 libxkbcommon0 libxkbcommon-x11-0; do
             if [[ "$package_depends" != *"$dependency"* ]]; then
               echo "Debian package is missing runtime dependency: $dependency" >&2
               exit 1
             fi
           done
-          sudo apt-get install -y "$deb"
+          printf '%s\n' "$package_name" > "$EVIDENCE_DIR/package-name.txt"
+          progress "package checksums and metadata verified"
+
+      - name: Install package and record host
+        timeout-minutes: 5
+        env:
+          PACKAGE_DIR: ${{ runner.temp }}/rootglass-package
+          TEST_HOME: ${{ runner.temp }}/rootglass-user-home
+          EVIDENCE_DIR: ${{ runner.temp }}/rootglass-install-evidence
+        run: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR" "$TEST_HOME/.config/rootglass" "$TEST_HOME/.local/share"
+          deb=$(cat "$PACKAGE_DIR/package-path.txt")
+          package_name=$(cat "$EVIDENCE_DIR/package-name.txt")
+          progress() {
+            printf '%s\n' "$1" | tee -a "$EVIDENCE_DIR/progress.txt"
+          }
+          progress "installing Linux package with a 180-second limit"
+          if timeout --signal=TERM --kill-after=10s 180s \
+            sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y "$deb" \
+            > "$EVIDENCE_DIR/package-install.log" 2>&1; then
+            cat "$EVIDENCE_DIR/package-install.log"
+          else
+            install_status=$?
+            cat "$EVIDENCE_DIR/package-install.log"
+            exit "$install_status"
+          fi
+          progress "Linux package installed"
           rootglass_binary="$(command -v rootglass)"
           [[ -x "$rootglass_binary" ]] || { echo "Installed rootglass binary is missing" >&2; exit 1; }
           echo "$rootglass_binary" > "$EVIDENCE_DIR/binary-path.txt"
@@ -172,15 +234,26 @@ jobs:
           else
             echo "/dev/kvm is unavailable; TCG will be used" | tee -a "$EVIDENCE_DIR/host.txt"
           fi
+          progress "host and installed package recorded"
 
-          runtime_info=$(dpkg-query -L "$package_name" | grep '/runtime-info.json$' | head -n 1)
+      - name: Verify installed runtime inventory
+        timeout-minutes: 4
+        env:
+          EVIDENCE_DIR: ${{ runner.temp }}/rootglass-install-evidence
+        run: |
+          set -euo pipefail
+          progress() {
+            printf '%s\n' "$1" | tee -a "$EVIDENCE_DIR/progress.txt"
+          }
+          runtime_info=$(awk '/\/runtime-info\.json$/ { print; exit }' "$EVIDENCE_DIR/installed-files.txt")
           [[ -n "$runtime_info" && -f "$runtime_info" ]] || {
             echo "The installed package has no runtime inventory" >&2
             exit 1
           }
           runtime_root="$(dirname "$runtime_info")"
-          python3 - "$runtime_root" <<'PY' | tee "$EVIDENCE_DIR/runtime-inventory.txt"
-          import hashlib
+          progress "verifying installed runtime inventory with a 120-second limit"
+          if timeout --signal=TERM --kill-after=5s 120s \
+            python3 - "$runtime_root" > "$EVIDENCE_DIR/runtime-inventory.txt" 2>&1 <<'PY'
           import json
           import pathlib
           import sys
@@ -194,97 +267,143 @@ jobs:
               path = root / asset["path"]
               if not path.is_file():
                   raise SystemExit(f"missing runtime asset: {path}")
-              digest = hashlib.sha256(path.read_bytes()).hexdigest()
-              if digest.lower() != asset["sha256"].lower():
-                  raise SystemExit(f"runtime checksum mismatch: {path}")
-          qemu = next(root / asset["path"] for asset in manifest["assets"] if asset["kind"] == "qemu")
+          rom = root / "share" / "qemu" / "efi-virtio.rom"
+          if not rom.is_file():
+              raise SystemExit(f"missing bundled QEMU EFI virtio ROM: {rom}")
+          qemu_assets = [asset for asset in manifest["assets"] if asset["kind"] == "qemu"]
+          if len(qemu_assets) != 1:
+              raise SystemExit(f"expected one bundled QEMU binary, found {len(qemu_assets)}")
+          qemu_asset = qemu_assets[0]
+          qemu = root / qemu_asset["path"]
+          if qemu_asset["sha256"].lower() != info["qemu_sha256"].lower():
+              raise SystemExit("QEMU digest in runtime metadata does not match the asset manifest")
           print(f"runtime_version={info['runtime_version']}")
           print(f"target_platform={info['target_platform']}")
           print(f"qemu_version={info['qemu_version']}")
           print(f"qemu_source={info['qemu_source']}")
           print(f"qemu_sha256={info['qemu_sha256']}")
           print(f"qemu_binary={qemu}")
-          print(f"verified_asset_count={len(manifest['assets'])}")
+          print(f"efi_virtio_rom={rom}")
+          print(f"installed_asset_count={len(manifest['assets'])}")
           PY
+          then
+            cat "$EVIDENCE_DIR/runtime-inventory.txt"
+          else
+            inventory_status=$?
+            cat "$EVIDENCE_DIR/runtime-inventory.txt"
+            exit "$inventory_status"
+          fi
+          progress "installed runtime inventory verified"
 
-          mkdir -p "$RUNNER_TEMP/rootglass-shims"
-          for tool in cargo rustc qemu-system-aarch64; do
-            cat > "$RUNNER_TEMP/rootglass-shims/$tool" <<EOF
-          #!/usr/bin/env bash
-          touch "$RUNNER_TEMP/rootglass-shims/$tool.used"
-          echo "unexpected $tool invocation during clean-install smoke" >&2
-          exit 99
-          EOF
-            chmod 755 "$RUNNER_TEMP/rootglass-shims/$tool"
-          done
-
-          plan_output="$RUNNER_TEMP/rootglass-plan.txt"
-          (
-            cd "$RUNNER_TEMP"
-            env PATH="$RUNNER_TEMP/rootglass-shims:$PATH" \
-              HOME="$TEST_HOME" \
-              XDG_CONFIG_HOME="$TEST_HOME/.config" \
-              XDG_DATA_HOME="$TEST_HOME/.local/share" \
-              "$rootglass_binary" plan "$glass"
-          ) | tee "$plan_output" | tee "$EVIDENCE_DIR/package-plan.txt"
-          python3 - "$plan_output" <<'PY'
-          import pathlib
-          import shlex
-          import sys
-
-          lines = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
-          command = next((line for line in reversed(lines) if "qemu-system-aarch64" in line), None)
-          if command is None:
-              raise SystemExit("plan output did not include the QEMU command")
-          executable = pathlib.Path(shlex.split(command)[0])
-          if not executable.is_absolute() or "runtime-assets" not in executable.parts or not executable.is_file():
-              raise SystemExit(f"plan did not resolve the installed bundled QEMU: {executable}")
-          print(f"bundled_qemu={executable}")
-          PY
-
-      - name: Run offline install, association, and guest smoke
+      - name: Run installed OS association smoke offline
+        timeout-minutes: 6
         env:
           EXAMPLE_DIR: ${{ runner.temp }}/rootglass-example
           TEST_HOME: ${{ runner.temp }}/rootglass-user-home
           EVIDENCE_DIR: ${{ runner.temp }}/rootglass-install-evidence
         run: |
           set -euo pipefail
+          progress() {
+            printf '%s\n' "$1" | tee -a "$EVIDENCE_DIR/progress.txt"
+          }
           rootglass_binary=$(cat "$EVIDENCE_DIR/binary-path.txt")
           glass=$(cat "$EXAMPLE_DIR/glass-path.txt")
           shim_path="$RUNNER_TEMP/rootglass-shims:$PATH"
           sudo iptables -I OUTPUT 1 ! -o lo -j REJECT
           trap 'sudo iptables -D OUTPUT 1 ! -o lo -j REJECT >/dev/null 2>&1 || true' EXIT
+          association_log="$EVIDENCE_DIR/association-smoke.log"
+          progress "running offline .glass association check"
+          if timeout --signal=TERM --kill-after=15s 300s \
+            dbus-run-session -- xvfb-run --auto-servernum \
+              --server-args='-screen 0 1920x1200x24' \
+              env PATH="$shim_path" HOME="$TEST_HOME" \
+              bash scripts/smoke-rootglass-installed-linux-association.sh \
+                "$rootglass_binary" "$glass" "$EVIDENCE_DIR/association" \
+            > "$association_log" 2>&1; then
+            cat "$association_log"
+          else
+            association_status=$?
+            cat "$association_log"
+            exit "$association_status"
+          fi
+          progress "installed .glass association verified"
 
-          dbus-run-session -- xvfb-run --auto-servernum \
-            --server-args='-screen 0 1920x1200x24' \
-            env PATH="$shim_path" HOME="$TEST_HOME" \
-            bash scripts/smoke-rootglass-installed-linux-association.sh \
-              "$rootglass_binary" "$glass" "$EVIDENCE_DIR/association"
+      - name: Run installed GPUI desktop guest workflow offline
+        timeout-minutes: 12
+        env:
+          EVIDENCE_DIR: ${{ runner.temp }}/rootglass-install-evidence
+        run: |
+          set -euo pipefail
+          progress() {
+            printf '%s\n' "$1" | tee -a "$EVIDENCE_DIR/progress.txt"
+          }
+          rootglass_binary=$(cat "$EVIDENCE_DIR/binary-path.txt")
+          shim_path="$RUNNER_TEMP/rootglass-shims:$PATH"
+          sudo iptables -I OUTPUT 1 ! -o lo -j REJECT
+          trap 'sudo iptables -D OUTPUT 1 ! -o lo -j REJECT >/dev/null 2>&1 || true' EXIT
+          gui_log="$EVIDENCE_DIR/gui-workflow-output.txt"
+          progress "running installed GPUI workflow offline"
+          if timeout --signal=TERM --kill-after=15s 600s \
+            dbus-run-session -- xvfb-run --auto-servernum \
+              --server-args='-screen 0 1920x1200x24' \
+              env PATH="$shim_path" \
+              bash scripts/smoke-rootglass-desktop-xvfb.sh \
+                "$rootglass_binary" "$EVIDENCE_DIR/gui-workflow" \
+            > "$gui_log" 2>&1; then
+            cat "$gui_log"
+          else
+            gui_status=$?
+            cat "$gui_log"
+            exit "$gui_status"
+          fi
+          progress "installed GPUI workflow verified"
 
-          dbus-run-session -- xvfb-run --auto-servernum \
-            --server-args='-screen 0 1920x1200x24' \
-            env PATH="$shim_path" \
-            bash scripts/smoke-rootglass-desktop-xvfb.sh \
-              "$rootglass_binary" "$EVIDENCE_DIR/gui-workflow"
+      - name: Run installed CLI guest boot offline
+        timeout-minutes: 8
+        env:
+          EXAMPLE_DIR: ${{ runner.temp }}/rootglass-example
+          TEST_HOME: ${{ runner.temp }}/rootglass-user-home
+          EVIDENCE_DIR: ${{ runner.temp }}/rootglass-install-evidence
+        run: |
+          set -euo pipefail
+          progress() {
+            printf '%s\n' "$1" | tee -a "$EVIDENCE_DIR/progress.txt"
+          }
+          rootglass_binary=$(cat "$EVIDENCE_DIR/binary-path.txt")
+          shim_path="$RUNNER_TEMP/rootglass-shims:$PATH"
+          sudo iptables -I OUTPUT 1 ! -o lo -j REJECT
+          trap 'sudo iptables -D OUTPUT 1 ! -o lo -j REJECT >/dev/null 2>&1 || true' EXIT
 
           work_dir="$RUNNER_TEMP/rootglass-installed-boot"
           mkdir -p "$work_dir"
+          mkdir -p "$RUNNER_TEMP/rootglass-qemu-tmp"
           cp -a examples/hello-world.glass "$work_dir/hello-world.glass"
-          env PATH="$shim_path" \
-            HOME="$TEST_HOME" \
-            XDG_CONFIG_HOME="$TEST_HOME/.config" \
-            TMPDIR="$RUNNER_TEMP/rootglass-qemu-tmp" \
-            ROOTGLASS_BINARY="$rootglass_binary" \
-            ROOTGLASS_SMOKE_GLASS="$work_dir/hello-world.glass" \
-            ROOTGLASS_SMOKE_CWD="$work_dir" \
-            ROOTGLASS_SMOKE_LOG="$EVIDENCE_DIR/installed-cli-boot.log" \
-            python3 scripts/smoke-boot-example.py | tee "$EVIDENCE_DIR/installed-cli-boot-output.txt"
+          boot_log="$EVIDENCE_DIR/installed-cli-boot-output.txt"
+          progress "running offline installed CLI guest boot"
+          if timeout --signal=TERM --kill-after=15s 420s \
+            env PATH="$shim_path" \
+              HOME="$TEST_HOME" \
+              XDG_CONFIG_HOME="$TEST_HOME/.config" \
+              TMPDIR="$RUNNER_TEMP/rootglass-qemu-tmp" \
+              ROOTGLASS_BINARY="$rootglass_binary" \
+              ROOTGLASS_SMOKE_GLASS="$work_dir/hello-world.glass" \
+              ROOTGLASS_SMOKE_CWD="$work_dir" \
+              ROOTGLASS_SMOKE_LOG="$EVIDENCE_DIR/installed-cli-boot.log" \
+              python3 scripts/smoke-boot-example.py \
+            > "$boot_log" 2>&1; then
+            cat "$boot_log"
+          else
+            boot_status=$?
+            cat "$boot_log"
+            exit "$boot_status"
+          fi
 
           if compgen -G "$RUNNER_TEMP/rootglass-shims/*.used" >/dev/null; then
             echo "The installed app attempted to use a developer tool or system QEMU" >&2
             ls -l "$RUNNER_TEMP/rootglass-shims" >&2
             exit 1
           fi
+          progress "installed CLI guest boot verified"
           echo "PASS: package installed and guest workflows ran offline outside the checkout"
 
       - name: Verify uninstall preserves user trust and library data

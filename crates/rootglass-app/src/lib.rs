@@ -308,6 +308,20 @@ impl AppService {
         self
     }
 
+    /// Configure the versioned runtime assets bundled beside a packaged app.
+    ///
+    /// Package builds set `ROOTGLASS_RUNTIME_VERSION`; developer builds leave it
+    /// unset and retain the explicit system-QEMU development behavior.
+    pub fn with_packaged_runtime_assets(self) -> Self {
+        let Some(runtime_version) = option_env!("ROOTGLASS_RUNTIME_VERSION") else {
+            return self;
+        };
+        self.with_verified_runtime_assets(
+            RuntimeAssetsResolver::new(packaged_resource_root(), app_data_root()),
+            runtime_version,
+        )
+    }
+
     /// Load and use a local production trust configuration.
     pub fn from_trust_config(path: impl AsRef<Path>) -> Result<Self, TrustConfigError> {
         let path = path.as_ref().to_path_buf();
@@ -905,6 +919,71 @@ impl AppService {
         }
         Ok(self.active.as_mut().expect("active run was validated"))
     }
+}
+
+fn packaged_resource_root() -> PathBuf {
+    let executable = std::env::current_exe().unwrap_or_default();
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(contents) = executable.parent().and_then(Path::parent) {
+            return contents.join("Resources").join("rootglass");
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let installed = PathBuf::from("/usr/lib/rootglass/rootglass");
+        if installed.join("runtime-assets").is_dir() {
+            return installed;
+        }
+        let installed = PathBuf::from("/usr/lib/rootglass");
+        if installed.join("runtime-assets").is_dir() {
+            return installed;
+        }
+    }
+    executable
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("rootglass")
+}
+
+fn app_data_root() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(path) = std::env::var_os("LOCALAPPDATA") {
+            return PathBuf::from(path).join("Rootglass");
+        }
+        if let Some(home) = std::env::var_os("USERPROFILE") {
+            return PathBuf::from(home)
+                .join("AppData")
+                .join("Local")
+                .join("Rootglass");
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join("Rootglass");
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(path) = std::env::var_os("XDG_DATA_HOME") {
+            let path = PathBuf::from(path);
+            if path.is_absolute() {
+                return path.join("rootglass");
+            }
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home)
+                .join(".local")
+                .join("share")
+                .join("rootglass");
+        }
+    }
+    std::env::temp_dir().join("rootglass")
 }
 
 fn active_run_error(

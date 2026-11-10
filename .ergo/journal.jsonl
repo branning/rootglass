@@ -308,3 +308,5 @@
 {"version":1,"task_id":"IEELHO","kind":"claim","at":"2026-11-09T18:48:58.802339731Z","agent":"codex@worker-1"}
 {"version":1,"task_id":"IEELHO","kind":"result","at":"2026-11-09T19:12:55.696691697Z","agent":"codex@worker-1","text":"Fixed .glass association dispatch; rootglass-cli tests passed 8/8; desktop package CI is pending."}
 {"version":1,"task_id":"IEELHO","kind":"result","at":"2026-11-09T19:12:55.709847572Z","agent":"codex@worker-1","text":"Added opt-in Ubuntu install workflow; YAML, embedded shell, formatting, and bash syntax checks pass."}
+{"version":1,"task_id":"IEELHO","kind":"result","at":"2026-11-10T00:32:49.744577862Z","agent":"codex@worker-1","text":"Runs 42724958162 and 42726806035 reused package 42717412656; both stalled at install; Actions logs unavailable."}
+{"version":1,"task_id":"IEELHO","kind":"block","at":"2026-11-10T00:32:49.757485099Z","agent":"codex@worker-1","text":"Both Ubuntu x64 hosted smoke runs stalled during apt installation beyond the 180-second guard and were canceled. GitHub retained no job logs, so installed guest evidence was not collected. Resume with a clean Ubuntu host or runner diagnostics."}

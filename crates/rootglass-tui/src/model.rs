@@ -5,7 +5,6 @@ use rootglass_app::{
     AppError, AppService, ManifestValidationReport, PreflightReport, RunId, RunOptions,
     RuntimeEvent, TrustPolicyStatus,
 };
-use rootglass_core::runtime_assets::RuntimeAssetsResolver;
 use rootglass_core::LifecycleState;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1474,7 +1473,7 @@ impl Default for UiModel {
     fn default() -> Self {
         let (service, state) = match local_trust_config_path() {
             Ok(path) => match AppService::from_trust_config(&path) {
-                Ok(service) => (with_packaged_runtime_assets(service), UiState::Empty),
+                Ok(service) => (service.with_packaged_runtime_assets(), UiState::Empty),
                 Err(error) => {
                     let detail = format!("{} ({})", error, path.display());
                     (
@@ -1490,79 +1489,6 @@ impl Default for UiModel {
         };
         Self::with_service(service, state)
     }
-}
-
-fn with_packaged_runtime_assets(service: AppService) -> AppService {
-    let Some(runtime_version) = option_env!("ROOTGLASS_RUNTIME_VERSION") else {
-        return service;
-    };
-    let resource_root = packaged_resource_root();
-    let user_data_root = app_data_root();
-    service.with_verified_runtime_assets(
-        RuntimeAssetsResolver::new(resource_root, user_data_root),
-        runtime_version,
-    )
-}
-
-fn packaged_resource_root() -> PathBuf {
-    let executable = std::env::current_exe().unwrap_or_default();
-    #[cfg(target_os = "macos")]
-    {
-        if let Some(contents) = executable.parent().and_then(Path::parent) {
-            return contents.join("Resources").join("rootglass");
-        }
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let installed = PathBuf::from("/usr/lib/rootglass");
-        if installed.is_dir() {
-            return installed;
-        }
-    }
-    executable
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("rootglass")
-}
-
-fn app_data_root() -> PathBuf {
-    #[cfg(target_os = "windows")]
-    {
-        if let Some(path) = std::env::var_os("LOCALAPPDATA") {
-            return PathBuf::from(path).join("Rootglass");
-        }
-        if let Some(home) = std::env::var_os("USERPROFILE") {
-            return PathBuf::from(home)
-                .join("AppData")
-                .join("Local")
-                .join("Rootglass");
-        }
-    }
-    #[cfg(target_os = "macos")]
-    {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home)
-                .join("Library")
-                .join("Application Support")
-                .join("Rootglass");
-        }
-    }
-    #[cfg(target_os = "linux")]
-    {
-        if let Some(path) = std::env::var_os("XDG_DATA_HOME") {
-            let path = PathBuf::from(path);
-            if path.is_absolute() {
-                return path.join("rootglass");
-            }
-        }
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home)
-                .join(".local")
-                .join("share")
-                .join("rootglass");
-        }
-    }
-    std::env::temp_dir().join("rootglass")
 }
 
 fn failure_details(source: &Path, error: AppError) -> FailureDetails {
