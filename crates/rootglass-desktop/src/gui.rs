@@ -303,22 +303,19 @@ impl RootglassWindow {
             .p_6()
             .bg(cx.theme().background)
             .child(
-                div()
-                    .h_flex()
-                    .items_start()
-                    .child(
-                        div()
-                            .v_flex()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .gap_1()
-                            .child(eyebrow(format!("LIBRARY / {}", name.to_uppercase()), cx))
-                            .child(page_title(name.clone(), cx))
-                            .child(muted_text(
-                                format!("Version {version} · Publisher: {publisher}"),
-                                cx,
-                            )),
-                    ),
+                div().h_flex().items_start().child(
+                    div()
+                        .v_flex()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .gap_1()
+                        .child(eyebrow(format!("LIBRARY / {}", name.to_uppercase()), cx))
+                        .child(page_title(name.clone(), cx))
+                        .child(muted_text(
+                            format!("Version {version} · Publisher: {publisher}"),
+                            cx,
+                        )),
+                ),
             )
             .child(
                 div()
