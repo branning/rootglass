@@ -99,11 +99,16 @@ formatting, Clippy, tests, the Linux desktop compile check, and CLI/boot smoke c
 
 The **Installed macOS TUI smoke** workflow verifies a packaged app without
 adding a macOS job to every push or pull request. First run **Desktop packages**
-with `platform=macos`, then dispatch **Installed macOS TUI smoke** on the same
-commit and pass the successful package workflow's run ID as `package_run_id`.
-The smoke downloads that run's DMG and signed example, copies `Rootglass.app`
-into `/Applications`, configures the public example trust key in a temporary
-runner home, and opens the signed `.glass` file through LaunchServices. It checks
+with `platform=macos`, then dispatch **Installed macOS TUI smoke** and pass the
+successful package workflow's run ID as `package_run_id`. The package must come
+from the smoke commit or an ancestor where changes are limited to this smoke
+workflow, its Python driver, and this evidence document; that lets driver fixes
+reuse the identical app binary without another package build. The smoke
+downloads that run's DMG and signed example, copies `Rootglass.app` into
+`/Applications`, configures the public example trust key under the runner's
+account home for LaunchServices and under an isolated home for the TUI, and
+opens the signed `.glass` file through LaunchServices. macOS LaunchServices
+uses the account's normal HOME even when `launchctl setenv HOME` is set. The smoke checks
 that the installed app is the registered handler and that the GUI accepts and
 imports the archive. The smoke verifies the packaged runtime inventory and
 signatures, then runs the installed Ratatui TUI outside the checkout while the

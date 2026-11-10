@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       package_run_id:
-        description: Successful Desktop packages run ID for this commit (macOS only)
+        description: Successful macOS package run for this commit or a smoke-only descendant
         type: string
         required: true
 
@@ -44,10 +44,27 @@ jobs:
             echo "Package run $PACKAGE_RUN_ID must have completed successfully" >&2
             exit 1
           }
-          [[ "$(jq -r '.head_sha' <<< "$run_json")" == "$GITHUB_SHA" ]] || {
-            echo "Package run $PACKAGE_RUN_ID was built from a different commit" >&2
-            exit 1
-          }
+          package_sha=$(jq -r '.head_sha' <<< "$run_json")
+          if [[ "$package_sha" != "$GITHUB_SHA" ]]; then
+            comparison=$(gh api "repos/$GITHUB_REPOSITORY/compare/$package_sha...$GITHUB_SHA")
+            [[ "$(jq -r '.status' <<< "$comparison")" == "ahead" && \
+               "$(jq -r '.merge_base_commit.sha' <<< "$comparison")" == "$package_sha" ]] || {
+              echo "Package commit $package_sha is not an ancestor of smoke commit $GITHUB_SHA" >&2
+              exit 1
+            }
+            jq -e '
+              (.files | length > 0 and length < 300) and
+              all(.files[];
+                .filename == ".github/workflows/installed-macos-tui-smoke.yml" or
+                .filename == "scripts/smoke-rootglass-installed-macos-tui.py" or
+                .filename == "docs/desktop-packages.md"
+              )
+            ' <<< "$comparison" >/dev/null || {
+              echo "Package commit $package_sha differs from this smoke commit outside the smoke workflow, driver, and evidence docs" >&2
+              exit 1
+            }
+            echo "Reusing package $package_sha; changes since it affect only smoke harness/evidence files"
+          fi
 
           jobs_json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PACKAGE_RUN_ID/jobs?per_page=100")
           for required_job in "Materialize pinned guest boot assets" "macOS arm64 package"; do
@@ -59,7 +76,7 @@ jobs:
               exit 1
             }
           done
-          echo "Validated successful macOS package artifacts from $PACKAGE_RUN_ID at $GITHUB_SHA"
+          echo "Validated successful macOS package artifacts from run $PACKAGE_RUN_ID at $package_sha"
 
       - name: Download macOS package artifact
         uses: actions/download-artifact@v4
