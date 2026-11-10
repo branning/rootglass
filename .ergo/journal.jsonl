@@ -321,3 +321,11 @@
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-10T03:04:37.935252762Z","agent":"codex@worker-1","text":"PR #116; actionlint and static checks pass; CI/host run pending; Windows 11 x64 evidence and approval outstanding.","file":{"path":"docs/desktop-packages.md","sha256":"ff91d815a934f26f36801be311961bff8bee6a50eb01ad214f093fb28a7acd35","mtime":"2026-11-10T02:50:01.727085244Z","git_commit":"90930917a01556f26619e6c383a39e783222384a"}}
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-10T03:09:02.621557671Z","agent":"codex@worker-1","text":"PR #116 CI 42747032506 passed 7/7; Windows host smoke remains pending.","file":{"path":"docs/desktop-packages.md","sha256":"ff91d815a934f26f36801be311961bff8bee6a50eb01ad214f093fb28a7acd35","mtime":"2026-11-10T02:50:01.727085244Z","git_commit":"0ee3fbb6318844066f39bbc62670d497ce33fd41"}}
 {"version":1,"task_id":"YFYS3W","kind":"block","at":"2026-11-10T03:09:02.642000689Z","agent":"codex@worker-1","text":"#116 cannot dispatch until its workflow is on the default branch; it is stacked on #115 and #114.\n\nNeed Windows 11 x64 clean-host evidence and maintainer support approval; the ARM64 cell only tests the x64 package under emulation."}
+{"version":1,"task_id":"6NWNFF","kind":"created","at":"2026-11-10T04:16:08.616781277Z"}
+{"version":1,"task_id":"LCYMII","kind":"created","at":"2026-11-10T04:16:08.616892805Z"}
+{"version":1,"task_id":"SEKSNS","kind":"created","at":"2026-11-10T04:16:08.616899435Z"}
+{"version":1,"task_id":"J6B4KP","kind":"created","at":"2026-11-10T04:16:08.616904673Z"}
+{"version":1,"task_id":"IRZXIF","kind":"created","at":"2026-11-10T04:16:08.616908238Z"}
+{"version":1,"task_id":"OOFC7Q","kind":"created","at":"2026-11-10T04:16:08.616912495Z"}
+{"version":1,"task_id":"LCYMII","kind":"claim","at":"2026-11-10T04:16:12.943358788Z","agent":"codex@worker-1"}
+{"version":1,"task_id":"LCYMII","kind":"result","at":"2026-11-10T04:35:24.722382267Z","agent":"codex@worker-1","text":"Local: theme JSON valid and token keys verified; diff check passed; Rust toolchain unavailable in workspace."}
