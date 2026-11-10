@@ -78,6 +78,7 @@ chmod 700 "${work_dir}/runtime"
 ln -s "${repo_root}/runtime-assets" "${work_dir}/runtime-assets"
 
 verified_dir="${work_dir}/verified.glass"
+preflight_failure_dir="${work_dir}/acceleration-required.glass"
 trusted_key="${work_dir}/trusted-seed"
 untrusted_key="${work_dir}/untrusted-seed"
 trust_config="${work_dir}/config/rootglass/trust.json"
@@ -141,6 +142,21 @@ PY
   --key "$trusted_key" --created-at 2026-11-08T00:00:00Z
 "$cli_binary" package "$verified_dir" "$untrusted_archive" \
   --key "$untrusted_key" --created-at 2026-11-08T00:00:00Z
+cp -a "$verified_dir" "$preflight_failure_dir"
+python3 - "$preflight_failure_dir/rootglass.toml" <<'PY'
+import sys
+
+manifest_path = sys.argv[1]
+with open(manifest_path, encoding="utf-8") as manifest_file:
+    manifest = manifest_file.read()
+expected = "requires_hardware_acceleration = false"
+if manifest.count(expected) != 1:
+    raise SystemExit("could not set up the required-acceleration preflight fixture")
+with open(manifest_path, "w", encoding="utf-8") as manifest_file:
+    manifest_file.write(manifest.replace(expected, "requires_hardware_acceleration = true"))
+PY
+"$cli_binary" sign "$preflight_failure_dir" --key "$trusted_key" \
+  --created-at 2026-11-08T00:00:00Z
 python3 - "$verified_archive" "$tampered_archive" <<'PY'
 from zipfile import ZipFile
 import sys
@@ -255,6 +271,20 @@ wait_for_marker ROOTGLASS_DESKTOP_STATE_READY
 sleep 0.5
 import -window "$window_id" "${artifact_dir}/01-verified-directory.png"
 
+# This signed copy requires acceleration. The Linux runner lacks KVM, so the
+# service reports a compatibility failure during validation. Retry runs the
+# same checks again without mutating the package or selected state.
+xdotool mousemove --window "$window_id" 320 120
+/usr/bin/python3 "${repo_root}/scripts/xdnd-drop-file.py" "$window_id" "$preflight_failure_dir"
+wait_for_marker ROOTGLASS_DESKTOP_INSPECT_FAILED
+sleep 0.5
+import -window "$window_id" "${artifact_dir}/02-launch-check-failed.png"
+xdotool mousemove --window "$window_id" 295 620 click 1
+wait_for_marker ROOTGLASS_DESKTOP_RECOVERY_RETRY_REQUEST 15
+wait_for_marker ROOTGLASS_DESKTOP_RECOVERY_RETRY_FAILED 30
+sleep 0.5
+import -window "$window_id" "${artifact_dir}/03-launch-checks-retried.png"
+
 xdotool mousemove --window "$window_id" 320 120
 /usr/bin/python3 "${repo_root}/scripts/xdnd-drop-file.py" "$window_id" "$untrusted_archive"
 wait_for_marker ROOTGLASS_DESKTOP_PUBLISHER_REVIEW
@@ -267,14 +297,14 @@ xdotool mousemove --window "$window_id" 320 120
 wait_for_count ROOTGLASS_DESKTOP_INSPECT_VERIFIED 2
 wait_for_count ROOTGLASS_DESKTOP_STATE_READY 2
 sleep 0.5
-import -window "$window_id" "${artifact_dir}/02-verified-import.png"
+import -window "$window_id" "${artifact_dir}/04-verified-import.png"
 
 # Click START GLASS after the verified import is visibly ready.
 xdotool mousemove --window "$window_id" 305 618 click 1
 wait_for_marker ROOTGLASS_DESKTOP_BOOT_STARTED 15
 wait_for_marker ROOTGLASS_DESKTOP_GUEST_READY 120
 sleep 0.5
-import -window "$window_id" "${artifact_dir}/03-guest-running.png"
+import -window "$window_id" "${artifact_dir}/05-guest-running.png"
 
 # Submit a username at the guest login prompt and wait for its password request.
 window_geometry="$(xdotool getwindowgeometry --shell "$window_id")"
@@ -286,7 +316,7 @@ printf 'ROOTGLASS_DESKTOP_INPUT_FOCUS window=%s focused=%s\n' \
   "$window_id" "$(xdotool getwindowfocus 2>/dev/null || true)"
 xdotool type --clearmodifiers --delay 80 --window "$window_id" "$serial_username"
 sleep 0.25
-import -window "$window_id" "${artifact_dir}/04-guest-username-input.png"
+import -window "$window_id" "${artifact_dir}/06-guest-username-input.png"
 xdotool key --clearmodifiers --window "$window_id" Return
 wait_for_marker ROOTGLASS_DESKTOP_SERIAL_INPUT_REQUEST
 wait_for_marker ROOTGLASS_DESKTOP_SERIAL_INPUT_SENT
@@ -295,7 +325,7 @@ echo "ROOTGLASS_DESKTOP_SMOKE_SERIAL_RESPONSE"
 xdotool mousemove --window "$window_id" 900 "$((window_height - 100))"
 xdotool click --repeat 20 --delay 25 5
 sleep 0.5
-import -window "$window_id" "${artifact_dir}/05-guest-password-prompt.png"
+import -window "$window_id" "${artifact_dir}/07-guest-password-prompt.png"
 
 # Restart, wait for a second guest-ready event, then stop through the UI.
 xdotool mousemove --window "$window_id" 298 131 click 1
@@ -309,7 +339,7 @@ wait_for_marker ROOTGLASS_DESKTOP_STOPPED 120
 echo "ROOTGLASS_DESKTOP_SMOKE_STOPPED"
 xdotool windowsize --sync "$window_id" 1000 650
 sleep 1
-import -window "$window_id" "${artifact_dir}/06-guest-stopped-resized.png"
+import -window "$window_id" "${artifact_dir}/08-guest-stopped-resized.png"
 
 xdotool key --clearmodifiers alt+F4
 for _ in $(seq 1 300); do
