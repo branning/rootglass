@@ -305,6 +305,7 @@ impl RootglassWindow {
             .child(
                 div()
                     .h_flex()
+                    .w_full()
                     .items_start()
                     .gap_4()
                     .child(
