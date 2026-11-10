@@ -1816,10 +1816,7 @@ mod tests {
             key_id: format!("ed25519:{}", "9".repeat(64)),
         };
 
-        assert!(model.finish_inspection(
-            &ticket,
-            InspectionOutcome::PublisherReview(review.clone())
-        ));
+        assert!(model.finish_inspection(&ticket, InspectionOutcome::PublisherReview(review.clone())));
         assert_eq!(model.selected_path, Some(path));
         assert_eq!(model.installed_glasses.len(), 0);
         assert!(matches!(model.state, UiState::PublisherReview(_)));

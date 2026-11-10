@@ -420,9 +420,7 @@ fn state_details(
     (title, lines)
 }
 
-fn publisher_review_lines(
-    review: &rootglass_app::UntrustedPublisherReview,
-) -> Vec<Line<'static>> {
+fn publisher_review_lines(review: &rootglass_app::UntrustedPublisherReview) -> Vec<Line<'static>> {
     vec![
         Line::from(Span::styled(
             "This publisher is not trusted. The signature is not verified.",
@@ -436,7 +434,9 @@ fn publisher_review_lines(
         field("Signature", "Not verified · signing key is not trusted"),
         field("Archive", review.path.display()),
         Line::from("Import and boot are blocked until this key is trusted."),
-        Line::from("Update the local trust configuration, restart Rootglass, then reopen the archive."),
+        Line::from(
+            "Update the local trust configuration, restart Rootglass, then reopen the archive.",
+        ),
         Line::from("[c/Esc] Cancel review and return to the library"),
     ]
 }
@@ -961,7 +961,10 @@ mod tests {
             "Import and boot are blocked",
             "Cancel review",
         ] {
-            assert!(text.contains(value), "missing {value:?} in rendered screen:\n{text}");
+            assert!(
+                text.contains(value),
+                "missing {value:?} in rendered screen:\n{text}"
+            );
         }
     }
 

@@ -92,7 +92,9 @@ impl Render for RootglassWindow {
         }
 
         let main = if let UiState::PublisherReview(review) = &self.model.state {
-            publisher_review_view(review, &self.model.trust_policy, cx)
+            div()
+                .flex_1()
+                .child(publisher_review_view(review, &self.model.trust_policy, cx))
         } else {
             let mut main = div()
                 .v_flex()
@@ -173,7 +175,7 @@ impl Render for RootglassWindow {
                     )
                     .child(status_view(&self.model.state).p_2().bg(cx.theme().sidebar));
             }
-            main
+            div().flex_1().child(main)
         };
         let mut layout = root.child(
             div()
@@ -1182,8 +1184,8 @@ fn details_view(state: &UiState) -> Div {
 fn publisher_review_view(
     review: &rootglass_app::UntrustedPublisherReview,
     trust_policy: &rootglass_app::TrustPolicyStatus,
-    cx: &mut App,
-) -> Div {
+    cx: &mut Context<RootglassWindow>,
+) -> impl IntoElement {
     let archive_name = review
         .path
         .file_name()

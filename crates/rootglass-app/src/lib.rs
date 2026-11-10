@@ -1637,10 +1637,7 @@ mod publisher_trust_tests {
             .unwrap();
         archive.write_all(&manifest).unwrap();
         archive
-            .start_file(
-                "signatures/glass.dsse.json",
-                SimpleFileOptions::default(),
-            )
+            .start_file("signatures/glass.dsse.json", SimpleFileOptions::default())
             .unwrap();
         archive.write_all(envelope.as_bytes()).unwrap();
         archive.finish().unwrap();
@@ -1706,8 +1703,8 @@ mod publisher_trust_tests {
         let archive = root.join("unknown-publisher.glass");
         let key_id = untrusted_archive(&archive);
         let library = root.join("library");
-        let service = AppService::with_trust_store(TrustStore::default())
-            .with_library_root(library.clone());
+        let service =
+            AppService::with_trust_store(TrustStore::default()).with_library_root(library.clone());
 
         let review = service
             .review_archive(&archive)
@@ -1716,7 +1713,10 @@ mod publisher_trust_tests {
         assert_eq!(review.key_id, key_id);
         assert_eq!(review.publisher_name, "Rootglass Examples");
         assert_eq!(review.publisher_identity, PUBLISHER_IDENTITY);
-        assert!(!library.exists(), "review must not create or install a package");
+        assert!(
+            !library.exists(),
+            "review must not create or install a package"
+        );
 
         let config = root.join("revoked-trust.json");
         write_trust_config(&config, &[], std::slice::from_ref(&key_id));

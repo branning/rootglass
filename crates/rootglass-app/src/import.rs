@@ -110,10 +110,12 @@ pub fn review_untrusted_glass_archive(
                 .max_total_uncompressed_bytes
                 .min(rootglass_signature::MAX_SIGNATURE_ENVELOPE_BYTES),
         )?;
-        let envelope: DsseEnvelope = serde_json::from_slice(&envelope_bytes)
-            .map_err(SignatureError::from)?;
+        let envelope: DsseEnvelope =
+            serde_json::from_slice(&envelope_bytes).map_err(SignatureError::from)?;
         if envelope.signatures.len() != 1 {
-            return Err(ImportError::Signature(SignatureError::InvalidSignatureCount));
+            return Err(ImportError::Signature(
+                SignatureError::InvalidSignatureCount,
+            ));
         }
         let key_id = envelope.signatures[0].keyid.clone();
         if trust_store.contains(&key_id) {
@@ -266,7 +268,7 @@ fn verification_limits(limits: &ImportLimits) -> VerificationLimits {
 fn read_archive_member(path: &Path, name: &str, max_bytes: u64) -> Result<Vec<u8>, ImportError> {
     let file = File::open(path).map_err(|source| io_at(path, source))?;
     let mut archive = ZipArchive::new(file)?;
-    let mut entry = archive.by_name(name)?;
+    let entry = archive.by_name(name)?;
     if entry.size() > max_bytes {
         return Err(ImportError::MemberTooLarge {
             path: name.to_string(),
@@ -921,8 +923,8 @@ mod tests {
     }
 
     fn untrusted_archive(path: &Path) -> (String, Vec<u8>) {
-        let manifest_path =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/hello-world.glass/rootglass.toml");
+        let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/hello-world.glass/rootglass.toml");
         let manifest = fs::read(manifest_path).unwrap();
         let key_id = format!("ed25519:{}", "9".repeat(64));
         let envelope = format!(
@@ -979,16 +981,13 @@ mod tests {
     fn reviews_unknown_key_with_unverified_manifest_claims() {
         let path = temp_file("publisher-review");
         let (key_id, manifest_bytes) = untrusted_archive(&path);
-        let manifest = Manifest::from_toml_str(std::str::from_utf8(&manifest_bytes).unwrap())
-            .unwrap();
+        let manifest =
+            Manifest::from_toml_str(std::str::from_utf8(&manifest_bytes).unwrap()).unwrap();
 
-        let review = review_untrusted_glass_archive(
-            &path,
-            &TrustStore::default(),
-            &ImportLimits::default(),
-        )
-        .unwrap()
-        .expect("unknown publisher should be reviewed before import");
+        let review =
+            review_untrusted_glass_archive(&path, &TrustStore::default(), &ImportLimits::default())
+                .unwrap()
+                .expect("unknown publisher should be reviewed before import");
 
         assert_eq!(review.path, path);
         assert_eq!(review.name, manifest.name);
@@ -1011,9 +1010,11 @@ mod tests {
             public_key_base64url: "invalid-until-normal-verification".to_string(),
         }]);
 
-        assert!(review_untrusted_glass_archive(&path, &trust_store, &ImportLimits::default())
-            .unwrap()
-            .is_none());
+        assert!(
+            review_untrusted_glass_archive(&path, &trust_store, &ImportLimits::default())
+                .unwrap()
+                .is_none()
+        );
         let _ = fs::remove_file(path);
     }
 
