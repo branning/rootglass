@@ -365,3 +365,7 @@
 {"version":1,"task_id":"MFCINK","kind":"result","at":"2026-11-10T21:00:59.695675763Z","agent":"codex@worker-1","text":"Release CI exposed a TUI state-refresh gap after planning; added Planned-state refresh before retrying smoke"}
 {"version":1,"task_id":"MFCINK","kind":"result","at":"2026-11-10T21:11:38.592577364Z","agent":"codex@worker-1","text":"Embedded smoke exposed missing Planned-state refresh; fix added. Local cargo unavailable; CI will validate."}
 {"version":1,"task_id":"MFCINK","kind":"result","at":"2026-11-10T21:21:02.670538643Z","agent":"codex@worker-1","text":"CI #42902893496 and embedded guest smoke #42902674382 passed; screenshots and TUI/QEMU traces are attached."}
+{"version":1,"task_id":"MFCINK","kind":"result","at":"2026-11-10T21:59:09.579095254Z","agent":"codex@worker-1","text":"PR #123 merged at 6fab114; PR CI #42904289125 passed."}
+{"version":1,"task_id":"MFCINK","kind":"result","at":"2026-11-10T21:59:09.594425572Z","agent":"codex@worker-1","text":"Package run #42905505796 attached 14 assets; all published checksums verified."}
+{"version":1,"task_id":"MFCINK","kind":"result","at":"2026-11-10T21:59:09.610068419Z","agent":"codex@worker-1","text":"macOS smoke #42909500277 passed import, QEMU boot, restart, and uninstall retention."}
+{"version":1,"task_id":"MFCINK","kind":"done","at":"2026-11-10T21:59:09.626327547Z","agent":"codex@worker-1","text":"Published v0.0.4 prerelease with all platform assets: https://github.com/branning/rootglass/releases/tag/v0.0.4"}
