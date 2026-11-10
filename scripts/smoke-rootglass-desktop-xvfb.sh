@@ -272,18 +272,18 @@ sleep 0.5
 import -window "$window_id" "${artifact_dir}/01-verified-directory.png"
 
 # This signed copy requires acceleration. The Linux runner lacks KVM, so the
-# real service preflight must render the concrete host blocker. Retry exercises
-# the same checks again without mutating the package or selected state.
+# service reports a compatibility failure during validation. Retry runs the
+# same checks again without mutating the package or selected state.
 xdotool mousemove --window "$window_id" 320 120
 /usr/bin/python3 "${repo_root}/scripts/xdnd-drop-file.py" "$window_id" "$preflight_failure_dir"
-wait_for_marker ROOTGLASS_DESKTOP_PREFLIGHT_BLOCKED
+wait_for_marker ROOTGLASS_DESKTOP_INSPECT_FAILED
 sleep 0.5
-import -window "$window_id" "${artifact_dir}/02-launch-preflight-blocked.png"
-xdotool mousemove --window "$window_id" 350 420 click 1
+import -window "$window_id" "${artifact_dir}/02-launch-check-failed.png"
+xdotool mousemove --window "$window_id" 350 730 click 1
 wait_for_marker ROOTGLASS_DESKTOP_RECOVERY_RETRY_REQUEST 15
-wait_for_marker ROOTGLASS_DESKTOP_RECOVERY_RETRY_BLOCKED 30
+wait_for_marker ROOTGLASS_DESKTOP_RECOVERY_RETRY_FAILED 30
 sleep 0.5
-import -window "$window_id" "${artifact_dir}/03-launch-preflight-retried.png"
+import -window "$window_id" "${artifact_dir}/03-launch-checks-retried.png"
 
 xdotool mousemove --window "$window_id" 320 120
 /usr/bin/python3 "${repo_root}/scripts/xdnd-drop-file.py" "$window_id" "$untrusted_archive"

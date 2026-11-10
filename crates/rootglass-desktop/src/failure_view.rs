@@ -77,6 +77,9 @@ impl RecoveryFailure {
         }
         match self {
             Self::Preflight(_) => format!("Couldn’t start {glass_name}"),
+            Self::Launch(failure) if is_compatibility_failure(failure) => {
+                format!("Couldn’t start {glass_name}")
+            }
             Self::Launch(failure) if failure.phase == "Guest" => {
                 format!("{glass_name} failed during startup")
             }
@@ -112,7 +115,8 @@ impl RecoveryFailure {
                 let verified = preview.is_some_and(|preview| {
                     matches!(&preview.signature, SignatureStatus::Verified(_))
                 });
-                let bundle_status = if failure.phase == "Validating" {
+                let compatibility_failure = is_compatibility_failure(failure);
+                let bundle_status = if failure.phase == "Validating" && !compatibility_failure {
                     check(
                         "Bundle format",
                         format!("Failed · {}", one_line(&failure.summary, 160)),
@@ -134,7 +138,13 @@ impl RecoveryFailure {
                 } else {
                     check("Publisher & signature", "Not confirmed", CheckTone::Neutral)
                 };
-                let launch_check = if failure.phase == "Guest" && guest_was_ready {
+                let launch_check = if compatibility_failure {
+                    check(
+                        "Computer compatibility",
+                        format!("Failed · {}", one_line(&failure.summary, 160)),
+                        CheckTone::Blocked,
+                    )
+                } else if failure.phase == "Guest" && guest_was_ready {
                     check(
                         "Guest runtime",
                         format!("Failed · {}", one_line(&failure.summary, 160)),
@@ -317,6 +327,13 @@ fn check(name: &'static str, value: impl Into<String>, tone: CheckTone) -> Launc
         value: value.into(),
         tone,
     }
+}
+
+fn is_compatibility_failure(failure: &FailureDetails) -> bool {
+    let description = format!("{} {}", failure.summary, failure.detail).to_ascii_lowercase();
+    description.contains("runtime requirements")
+        || description.contains("acceleration")
+        || description.contains("/dev/kvm")
 }
 
 fn one_line(value: &str, max_chars: usize) -> String {
