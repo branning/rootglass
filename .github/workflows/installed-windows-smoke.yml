@@ -1,0 +1,187 @@
+name: Installed Windows clean-install smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_run_id:
+        description: Successful Windows x64 Desktop packages run for this commit
+        type: string
+        required: true
+      host:
+        description: Windows host architecture to exercise
+        type: choice
+        required: true
+        default: all
+        options:
+          - all
+          - windows-x64
+          - windows-arm64
+
+permissions:
+  contents: read
+
+concurrency:
+  group: installed-windows-smoke-${{ github.workflow }}-${{ github.ref }}-${{ inputs.host }}-${{ inputs.package_run_id }}
+  cancel-in-progress: true
+
+jobs:
+  select-hosts:
+    name: Select Windows host cells
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - name: Validate host selection
+        id: select
+        env:
+          HOST: ${{ inputs.host }}
+        run: |
+          set -euo pipefail
+          case "$HOST" in
+            all|windows-x64|windows-arm64) ;;
+            *) echo "Unsupported Windows host: $HOST" >&2; exit 1 ;;
+          esac
+          matrix=$(jq -cn --arg host "$HOST" '
+            {include: ([
+              {id: "windows-x64", name: "Windows Server 2025 x64 host", runner: "windows-2025", host_arch: "X64"},
+              {id: "windows-arm64", name: "Windows 11 ARM64 host (x64 app emulation)", runner: "windows-11-arm", host_arch: "ARM64"}
+            ] | map(select($host == "all" or .id == $host)))}')
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  install-and-smoke:
+    name: ${{ matrix.name }}
+    needs: [select-hosts]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    permissions:
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.select-hosts.outputs.matrix) }}
+    steps:
+      - name: Check out the smoke revision
+        uses: actions/checkout@v6
+
+      - name: Validate matching Windows package run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_RUN_ID: ${{ inputs.package_run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$PACKAGE_RUN_ID" =~ ^[0-9]+$ ]] || {
+            echo "package_run_id must be numeric" >&2
+            exit 1
+          }
+          run_json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PACKAGE_RUN_ID")
+          [[ "$(jq -r '.path' <<< "$run_json")" == ".github/workflows/desktop-packages.yml" ]] || {
+            echo "Run $PACKAGE_RUN_ID is not the Desktop packages workflow" >&2
+            exit 1
+          }
+          [[ "$(jq -r '.status' <<< "$run_json")" == completed && \
+             "$(jq -r '.conclusion' <<< "$run_json")" == success ]] || {
+            echo "Package run $PACKAGE_RUN_ID must have completed successfully" >&2
+            exit 1
+          }
+          package_sha=$(jq -r '.head_sha' <<< "$run_json")
+          if [[ "$package_sha" != "$GITHUB_SHA" ]]; then
+            comparison=$(gh api "repos/$GITHUB_REPOSITORY/compare/$package_sha...$GITHUB_SHA")
+            [[ "$(jq -r '.status' <<< "$comparison")" == ahead && \
+               "$(jq -r '.merge_base_commit.sha' <<< "$comparison")" == "$package_sha" ]] || {
+              echo "Package commit $package_sha is not an ancestor of smoke commit $GITHUB_SHA" >&2
+              exit 1
+            }
+            jq -e '
+              (.files | length > 0 and length < 300) and
+              all(.files[];
+                .filename == ".github/workflows/installed-windows-smoke.yml" or
+                .filename == "scripts/smoke-rootglass-installed-windows-tui.py" or
+                .filename == "scripts/smoke-rootglass-installed-windows.ps1" or
+                .filename == "docs/desktop-packages.md"
+              )
+            ' <<< "$comparison" >/dev/null || {
+              echo "Package commit $package_sha differs outside the Windows smoke harness/evidence docs" >&2
+              exit 1
+            }
+            echo "Reusing package $package_sha; intervening changes affect only the smoke harness/evidence"
+          fi
+          jobs_json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PACKAGE_RUN_ID/jobs?per_page=100")
+          for required_job in "Materialize pinned guest boot assets" "Windows x64 package"; do
+            conclusion=$(jq -r --arg name "$required_job" \
+              '[.jobs[] | select(.name == $name) | .conclusion] | first // "missing"' \
+              <<< "$jobs_json")
+            [[ "$conclusion" == success ]] || {
+              echo "Required package job '$required_job' did not succeed (found $conclusion)" >&2
+              exit 1
+            }
+          done
+          echo "Validated Windows x64 package run $PACKAGE_RUN_ID at $package_sha"
+
+      - name: Download Windows x64 installer and runtime
+        uses: actions/download-artifact@v4
+        with:
+          name: rootglass-nsis-Windows-X64
+          path: ${{ runner.temp }}/rootglass-package
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.package_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Download signed example bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: rootglass-example-glass
+          path: ${{ runner.temp }}/rootglass-example
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.package_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          architecture: x64
+
+      - name: Install Python TUI harness dependencies
+        shell: pwsh
+        run: python -m pip install --disable-pip-version-check pywinpty==2.0.15 pyte==0.8.2 Pillow==11.3.0
+
+      - name: Install, associate, boot, and uninstall offline
+        timeout-minutes: 35
+        shell: pwsh
+        env:
+          PACKAGE_DIR: ${{ runner.temp }}/rootglass-package
+          EXAMPLE_DIR: ${{ runner.temp }}/rootglass-example
+          EVIDENCE_DIR: ${{ runner.temp }}/rootglass-windows-evidence
+        run: >-
+          ./scripts/smoke-rootglass-installed-windows.ps1
+          -PackageDirectory "$env:PACKAGE_DIR"
+          -ExampleDirectory "$env:EXAMPLE_DIR"
+          -EvidenceDirectory "$env:EVIDENCE_DIR"
+          -TuiSmokeScript "scripts/smoke-rootglass-installed-windows-tui.py"
+
+      - name: Record runner information on failure
+        if: failure()
+        shell: pwsh
+        env:
+          EVIDENCE_DIR: ${{ runner.temp }}/rootglass-windows-evidence
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:EVIDENCE_DIR | Out-Null
+          @(
+            "OS: $((Get-CimInstance Win32_OperatingSystem).Caption)",
+            "Version: $((Get-CimInstance Win32_OperatingSystem).Version)",
+            "Build: $((Get-CimInstance Win32_OperatingSystem).BuildNumber)",
+            "Runner architecture: $env:RUNNER_ARCH",
+            "PROCESSOR_ARCHITECTURE: $env:PROCESSOR_ARCHITECTURE",
+            "PROCESSOR_ARCHITEW6432: $env:PROCESSOR_ARCHITEW6432"
+          ) | Set-Content -Path (Join-Path $env:EVIDENCE_DIR "runner-failure-info.txt") -Encoding utf8
+
+      - name: Upload installed Windows evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installed-windows-${{ matrix.id }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/rootglass-windows-evidence
+          if-no-files-found: ignore
+          compression-level: 0
+          retention-days: 14

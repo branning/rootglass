@@ -195,6 +195,31 @@ does not qualify Linux aarch64 package support, KVM hardware acceleration, or
 native interaction on a user's desktop. Those limits remain part of the
 platform decision.
 
+## Manual installed Windows package smoke
+
+The **Installed Windows clean-install smoke** workflow is manual because it
+installs the unsigned Windows x64 review package and boots a guest. First run
+**Desktop packages** with `platform=windows` on the product commit, then dispatch
+the install smoke on that commit with the successful package run ID. The
+`host=all` default uses the Windows Server 2025 x64 runner and the Windows 11
+ARM64 runner; either cell can be selected separately to reduce runner minutes.
+
+Both cells install the Windows x64 NSIS package, verify its checksum and
+runtime inventory, check the `.glass` file association, import the signed
+example, and run the installed Ratatui workflow through a Windows pseudoterminal
+with outbound Internet traffic blocked for Rootglass and QEMU. The guest boots,
+accepts serial login and `uname -a`, restarts, and stops. The workflow verifies
+that QEMU exits, uninstalls the app, and confirms trust configuration, imported
+library data, and guest state remain. A TUI screenshot, serial logs, runtime
+inventory, association events, and uninstall record are retained for 14 days.
+
+The hosted x64 cell is Windows Server 2025, not Windows 11. The ARM64 cell is
+Windows 11 ARM64 running the x64 app and QEMU under Windows emulation; it does
+not qualify a native ARM64 package. Windows 11 x64 clean-install evidence still
+requires a configured Windows 11 x64 runner or a clean maintainer host. Do not
+claim full Windows support from these hosted cells alone; the platform decision
+remains subject to maintainer approval.
+
 ## Remaining release limits
 
 - App and installer signing, macOS notarization, and release provenance are not configured. No signing credentials are stored in the repository.
