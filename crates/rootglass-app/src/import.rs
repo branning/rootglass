@@ -8,9 +8,11 @@
 //! to `rootglass-signature` rather than increasing these limits casually.
 
 use crate::registry::{InstalledGlass, PackageRegistry, RegistryError};
-use rootglass_manifest::Glass;
+use crate::UntrustedPublisherReview;
+use rootglass_manifest::{Glass, Manifest, MAX_MANIFEST_BYTES};
 use rootglass_signature::{
-    verify_glass_archive_with_limits, verify_glass_dir_with_limits, TrustStore, VerificationLimits,
+    verify_glass_archive_with_limits, verify_glass_dir_with_limits, DsseEnvelope, SignatureError,
+    TrustStore, VerificationLimits,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashSet};
@@ -82,6 +84,83 @@ pub enum ImportError {
     ArchiveChanged { detail: String },
     #[error("archive is missing required manifest '{0}'")]
     MissingManifest(&'static str),
+    #[error("manifest at {path} is not valid UTF-8")]
+    InvalidManifestEncoding { path: PathBuf },
+}
+
+/// Inspect an archive signed by a key that is not currently trusted. This only
+/// returns declared metadata for display; it does not establish that the
+/// signature is valid or that the publisher claims are authentic.
+pub fn review_untrusted_glass_archive(
+    source: impl AsRef<Path>,
+    trust_store: &TrustStore,
+    limits: &ImportLimits,
+) -> Result<Option<UntrustedPublisherReview>, ImportError> {
+    let source = source.as_ref();
+    validate_limits(limits)?;
+
+    let snapshot = temp_path(&std::env::temp_dir(), "publisher-review");
+    snapshot_archive(source, &snapshot, limits)?;
+    let result = (|| {
+        inspect_archive(&snapshot, limits)?;
+        let envelope_bytes = read_archive_member(
+            &snapshot,
+            SIGNATURE_PATH,
+            limits
+                .max_total_uncompressed_bytes
+                .min(rootglass_signature::MAX_SIGNATURE_ENVELOPE_BYTES),
+        )?;
+        let envelope: DsseEnvelope = serde_json::from_slice(&envelope_bytes)
+            .map_err(SignatureError::from)?;
+        if envelope.signatures.len() != 1 {
+            return Err(ImportError::Signature(SignatureError::InvalidSignatureCount));
+        }
+        let key_id = envelope.signatures[0].keyid.clone();
+        if trust_store.contains(&key_id) {
+            // A trusted archive follows the existing import path, which performs
+            // the full verification once and preserves its usual diagnostics.
+            return Ok(None);
+        }
+
+        let verification_limits = verification_limits(limits);
+        match verify_glass_archive_with_limits(
+            &snapshot,
+            SIGNATURE_PATH,
+            trust_store,
+            &verification_limits,
+        ) {
+            Err(SignatureError::UnknownKey(unknown)) if unknown == key_id => {}
+            Err(error) => return Err(ImportError::Signature(error)),
+            Ok(_) => return Ok(None),
+        }
+
+        let manifest_bytes = read_archive_member(&snapshot, "rootglass.toml", MAX_MANIFEST_BYTES)?;
+        let manifest_text = String::from_utf8(manifest_bytes).map_err(|_| {
+            ImportError::InvalidManifestEncoding {
+                path: source.to_path_buf(),
+            }
+        })?;
+        let manifest = Manifest::from_toml_str(&manifest_text).map_err(|source_error| {
+            ImportError::Manifest(rootglass_manifest::ManifestError::ParseManifest {
+                path: source.to_path_buf(),
+                source: source_error,
+            })
+        })?;
+        manifest.validate_manifest_only()?;
+
+        Ok(Some(UntrustedPublisherReview {
+            path: source.to_path_buf(),
+            name: manifest.name,
+            identifier: manifest.identifier,
+            version: manifest.version,
+            description: manifest.description,
+            publisher_name: manifest.publisher.name,
+            publisher_identity: manifest.publisher.identity,
+            key_id,
+        }))
+    })();
+    let _ = fs::remove_file(&snapshot);
+    result
 }
 
 /// Verify and install a signed archive, then atomically publish its registry row.
@@ -101,13 +180,38 @@ pub fn import_glass_archive(
     // Snapshot to a private temporary file, so verification and extraction consume
     // exactly the bytes whose digest names the immutable installed package.
     let snapshot = temp_path(store_root, "archive");
-    let snapshot_result = (|| {
-        let input = File::open(source).map_err(|error| io_at(source, error))?;
-        let mut snapshot_file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&snapshot)
-            .map_err(|source| io_at(&snapshot, source))?;
+    let digest = snapshot_archive(source, &snapshot, limits)?;
+
+    let result = import_snapshot(
+        source,
+        &snapshot,
+        store_root,
+        registry,
+        trust_store,
+        limits,
+        &digest,
+    );
+    let _ = fs::remove_file(&snapshot);
+    result
+}
+
+fn snapshot_archive(
+    source: &Path,
+    snapshot: &Path,
+    limits: &ImportLimits,
+) -> Result<String, ImportError> {
+    let input = File::open(source).map_err(|error| io_at(source, error))?;
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut snapshot_file = options
+        .open(snapshot)
+        .map_err(|source| io_at(snapshot, source))?;
+    let result = (|| {
         let mut hasher = Sha256::new();
         let mut count = 0u64;
         let mut reader = input;
@@ -131,33 +235,62 @@ pub fn import_glass_archive(
             }
             snapshot_file
                 .write_all(&buffer[..n])
-                .map_err(|source| io_at(&snapshot, source))?;
+                .map_err(|source| io_at(snapshot, source))?;
             hasher.update(&buffer[..n]);
         }
         snapshot_file
             .sync_all()
-            .map_err(|source| io_at(&snapshot, source))?;
+            .map_err(|source| io_at(snapshot, source))?;
         Ok(encode_hex(&hasher.finalize()))
     })();
-    let digest = match snapshot_result {
-        Ok(digest) => digest,
-        Err(error) => {
-            let _ = fs::remove_file(&snapshot);
-            return Err(error);
-        }
-    };
-
-    let result = import_snapshot(
-        source,
-        &snapshot,
-        store_root,
-        registry,
-        trust_store,
-        limits,
-        &digest,
-    );
-    let _ = fs::remove_file(&snapshot);
+    drop(snapshot_file);
+    if result.is_err() {
+        let _ = fs::remove_file(snapshot);
+    }
     result
+}
+
+fn verification_limits(limits: &ImportLimits) -> VerificationLimits {
+    VerificationLimits {
+        max_archive_bytes: limits.max_archive_bytes,
+        max_entries: limits.max_members,
+        max_member_bytes: limits.max_member_bytes,
+        max_total_uncompressed_bytes: limits.max_total_uncompressed_bytes,
+        max_compression_ratio: limits.max_compression_ratio,
+        max_signature_bytes: limits
+            .max_total_uncompressed_bytes
+            .min(rootglass_signature::MAX_SIGNATURE_ENVELOPE_BYTES),
+    }
+}
+
+fn read_archive_member(path: &Path, name: &str, max_bytes: u64) -> Result<Vec<u8>, ImportError> {
+    let file = File::open(path).map_err(|source| io_at(path, source))?;
+    let mut archive = ZipArchive::new(file)?;
+    let mut entry = archive.by_name(name)?;
+    if entry.size() > max_bytes {
+        return Err(ImportError::MemberTooLarge {
+            path: name.to_string(),
+            limit: max_bytes,
+        });
+    }
+    let expected_size = entry.size();
+    let mut bytes = Vec::with_capacity(expected_size.min(usize::MAX as u64) as usize);
+    entry
+        .take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|source| io_at(path, source))?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(ImportError::MemberTooLarge {
+            path: name.to_string(),
+            limit: max_bytes,
+        });
+    }
+    if bytes.len() as u64 != expected_size {
+        return Err(ImportError::ArchiveChanged {
+            detail: format!("archive member '{name}' size differs from its ZIP record"),
+        });
+    }
+    Ok(bytes)
 }
 
 fn import_snapshot(
@@ -169,16 +302,7 @@ fn import_snapshot(
     limits: &ImportLimits,
     digest: &str,
 ) -> Result<InstalledGlass, ImportError> {
-    let verification_limits = VerificationLimits {
-        max_archive_bytes: limits.max_archive_bytes,
-        max_entries: limits.max_members,
-        max_member_bytes: limits.max_member_bytes,
-        max_total_uncompressed_bytes: limits.max_total_uncompressed_bytes,
-        max_compression_ratio: limits.max_compression_ratio,
-        max_signature_bytes: limits
-            .max_total_uncompressed_bytes
-            .min(rootglass_signature::MAX_SIGNATURE_ENVELOPE_BYTES),
-    };
+    let verification_limits = verification_limits(limits);
     let verification = verify_glass_archive_with_limits(
         snapshot,
         SIGNATURE_PATH,
@@ -796,6 +920,24 @@ mod tests {
         writer.finish().unwrap();
     }
 
+    fn untrusted_archive(path: &Path) -> (String, Vec<u8>) {
+        let manifest_path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/hello-world.glass/rootglass.toml");
+        let manifest = fs::read(manifest_path).unwrap();
+        let key_id = format!("ed25519:{}", "9".repeat(64));
+        let envelope = format!(
+            r#"{{"payloadType":"application/vnd.in-toto+json","payload":"e30","signatures":[{{"keyid":"{key_id}","sig":"AA"}}]}}"#
+        );
+        archive(
+            path,
+            &[
+                ("rootglass.toml", &manifest),
+                (SIGNATURE_PATH, envelope.as_bytes()),
+            ],
+        );
+        (key_id, manifest)
+    }
+
     #[test]
     fn keeps_staging_root_writable_until_atomic_publish() {
         let parent = temp_file("readonly-publish").with_extension("dir");
@@ -830,6 +972,48 @@ mod tests {
             ],
         );
         assert!(inspect_archive(&path, &ImportLimits::default()).is_ok());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn reviews_unknown_key_with_unverified_manifest_claims() {
+        let path = temp_file("publisher-review");
+        let (key_id, manifest_bytes) = untrusted_archive(&path);
+        let manifest = Manifest::from_toml_str(std::str::from_utf8(&manifest_bytes).unwrap())
+            .unwrap();
+
+        let review = review_untrusted_glass_archive(
+            &path,
+            &TrustStore::default(),
+            &ImportLimits::default(),
+        )
+        .unwrap()
+        .expect("unknown publisher should be reviewed before import");
+
+        assert_eq!(review.path, path);
+        assert_eq!(review.name, manifest.name);
+        assert_eq!(review.identifier, manifest.identifier);
+        assert_eq!(review.version, manifest.version);
+        assert_eq!(review.publisher_name, manifest.publisher.name);
+        assert_eq!(review.publisher_identity, manifest.publisher.identity);
+        assert_eq!(review.key_id, key_id);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn trusted_key_continues_to_normal_import_verification() {
+        let path = temp_file("trusted-review");
+        let (key_id, _) = untrusted_archive(&path);
+        let trust_store = TrustStore::new([rootglass_signature::TrustedPublisher {
+            name: "Trusted Example".to_string(),
+            identity: "example.test".to_string(),
+            key_id,
+            public_key_base64url: "invalid-until-normal-verification".to_string(),
+        }]);
+
+        assert!(review_untrusted_glass_archive(&path, &trust_store, &ImportLimits::default())
+            .unwrap()
+            .is_none());
         let _ = fs::remove_file(path);
     }
 

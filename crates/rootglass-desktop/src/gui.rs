@@ -37,6 +37,11 @@ struct RootglassWindow {
     _input_subscription: Subscription,
 }
 
+enum ArchiveOpenResult {
+    PublisherReview(rootglass_app::UntrustedPublisherReview),
+    Imported(Result<crate::ui_model::ImportCompletion, rootglass_app::AppError>),
+}
+
 impl Render for RootglassWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let actions = self.model.actions();
@@ -86,85 +91,90 @@ impl Render for RootglassWindow {
             return root.child(terminal.clone());
         }
 
-        let mut main = div()
-            .v_flex()
-            .flex_1()
-            .gap_2()
-            .p_4()
-            .bg(cx.theme().background)
-            .overflow_scrollbar()
-            .child(
-                div()
-                    .h_flex()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .v_flex()
-                            .flex_1()
-                            .gap_2()
-                            .child(eyebrow("YOUR GLASSES", cx))
-                            .child(page_title("Library", cx))
-                            .child(muted_text(
-                                "Contained Linux worlds, ready when you are.",
-                                cx,
-                            )),
-                    )
-                    .child(
-                        Button::new("open-glass")
-                            .primary()
-                            .label("IMPORT GLASS")
-                            .disabled(!actions.open)
-                            .on_click(cx.listener(|this, _, _, cx| this.open_bundle(cx))),
-                    ),
-            )
-            .child(library_view(
-                &self.model.state,
-                &self.model.installed_glasses,
-                self.model.selected_path.as_ref(),
-                self.model.library_error.as_deref(),
-                actions.open,
-                self.file_drop_active,
-                cx,
-            ));
-        if !matches!(&self.model.state, UiState::Empty) {
-            main = main
-                .child(
-                    div()
-                        .v_flex()
-                        .gap_2()
-                        .p_4()
-                        .bg(cx.theme().group_box)
-                        .child(eyebrow("SELECTED GLASS", cx))
-                        .child(details_view(&self.model.state).text_size(px(14.0))),
-                )
+        let main = if let UiState::PublisherReview(review) = &self.model.state {
+            publisher_review_view(review, &self.model.trust_policy, cx)
+        } else {
+            let mut main = div()
+                .v_flex()
+                .flex_1()
+                .gap_2()
+                .p_4()
+                .bg(cx.theme().background)
+                .overflow_scrollbar()
                 .child(
                     div()
                         .h_flex()
                         .items_center()
                         .gap_2()
                         .child(
-                            Button::new("boot-glass")
+                            div()
+                                .v_flex()
+                                .flex_1()
+                                .gap_2()
+                                .child(eyebrow("YOUR GLASSES", cx))
+                                .child(page_title("Library", cx))
+                                .child(muted_text(
+                                    "Contained Linux worlds, ready when you are.",
+                                    cx,
+                                )),
+                        )
+                        .child(
+                            Button::new("open-glass")
                                 .primary()
-                                .label("START GLASS")
-                                .disabled(!actions.boot)
-                                .on_click(cx.listener(|this, _, _, cx| this.start_guest(cx))),
-                        )
-                        .child(
-                            Button::new("restart-glass")
-                                .label("RESTART")
-                                .disabled(!actions.restart)
-                                .on_click(cx.listener(|this, _, _, cx| this.restart_guest(cx))),
-                        )
-                        .child(
-                            Button::new("stop-glass")
-                                .label("STOP GLASS")
-                                .disabled(!actions.stop)
-                                .on_click(cx.listener(|this, _, _, cx| this.stop_guest(cx))),
+                                .label("IMPORT GLASS")
+                                .disabled(!actions.open)
+                                .on_click(cx.listener(|this, _, _, cx| this.open_bundle(cx))),
                         ),
                 )
-                .child(status_view(&self.model.state).p_2().bg(cx.theme().sidebar));
-        }
+                .child(library_view(
+                    &self.model.state,
+                    &self.model.installed_glasses,
+                    self.model.selected_path.as_ref(),
+                    self.model.library_error.as_deref(),
+                    actions.open,
+                    self.file_drop_active,
+                    cx,
+                ));
+            if !matches!(&self.model.state, UiState::Empty) {
+                main = main
+                    .child(
+                        div()
+                            .v_flex()
+                            .gap_2()
+                            .p_4()
+                            .bg(cx.theme().group_box)
+                            .child(eyebrow("SELECTED GLASS", cx))
+                            .child(details_view(&self.model.state).text_size(px(14.0))),
+                    )
+                    .child(
+                        div()
+                            .h_flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                Button::new("boot-glass")
+                                    .primary()
+                                    .label("START GLASS")
+                                    .disabled(!actions.boot)
+                                    .on_click(cx.listener(|this, _, _, cx| this.start_guest(cx))),
+                            )
+                            .child(
+                                Button::new("restart-glass")
+                                    .label("RESTART")
+                                    .disabled(!actions.restart)
+                                    .on_click(cx.listener(|this, _, _, cx| this.restart_guest(cx))),
+                            )
+                            .child(
+                                Button::new("stop-glass")
+                                    .label("STOP GLASS")
+                                    .disabled(!actions.stop)
+                                    .on_click(cx.listener(|this, _, _, cx| this.stop_guest(cx))),
+                            ),
+                    )
+                    .child(status_view(&self.model.state).p_2().bg(cx.theme().sidebar));
+            }
+            main
+        };
         let mut layout = root.child(
             div()
                 .h_flex()
@@ -528,16 +538,25 @@ impl RootglassWindow {
                 let service_for_import = service.clone();
                 let result = background_executor
                     .spawn(async move {
-                        lock_service(&service_for_import)
-                            .and_then(|mut service| service.import_and_inspect(&source))
+                        let mut service = lock_service(&service_for_import)?;
+                        match service.review_archive(&source)? {
+                            Some(review) => Ok(ArchiveOpenResult::PublisherReview(review)),
+                            None => Ok(ArchiveOpenResult::Imported(
+                                service.import_and_inspect(&source),
+                            )),
+                        }
                     })
                     .await;
-                let state_path = result.as_ref().ok().and_then(|completion| {
-                    matches!(
-                        &completion.inspection,
-                        crate::ui_model::InspectionOutcome::Ready(_)
-                    )
-                    .then(|| completion.installed.package_path.clone())
+                let state_path = result.as_ref().ok().and_then(|outcome| match outcome {
+                    ArchiveOpenResult::Imported(Ok(completion))
+                        if matches!(
+                            &completion.inspection,
+                            crate::ui_model::InspectionOutcome::Ready(_)
+                        ) =>
+                    {
+                        Some(completion.installed.package_path.clone())
+                    }
+                    _ => None,
                 });
                 let state_result = if let Some(path) = state_path {
                     let service_for_state = service.clone();
@@ -553,7 +572,17 @@ impl RootglassWindow {
                     None
                 };
                 let _ = view.update(cx, |view, cx| {
-                    if view.model.finish_import(&ticket, result) {
+                    let applied = match result {
+                        Ok(ArchiveOpenResult::PublisherReview(review)) => view.model.finish_inspection(
+                            &ticket,
+                            crate::ui_model::InspectionOutcome::PublisherReview(review),
+                        ),
+                        Ok(ArchiveOpenResult::Imported(result)) => {
+                            view.model.finish_import(&ticket, result)
+                        }
+                        Err(error) => view.model.finish_import(&ticket, Err(error)),
+                    };
+                    if applied {
                         view.log_desktop_smoke_inspection();
                         if let Some(state_result) = state_result {
                             let state_loaded = state_result.is_ok();
@@ -640,6 +669,13 @@ impl RootglassWindow {
             return;
         }
         match &self.model.state {
+            UiState::PublisherReview(review) => {
+                desktop_smoke_event("ROOTGLASS_DESKTOP_PUBLISHER_REVIEW");
+                desktop_smoke_detail(format!(
+                    "ROOTGLASS_DESKTOP_PUBLISHER_REVIEW key_id={} publisher_identity={}",
+                    review.key_id, review.publisher_identity
+                ));
+            }
             UiState::Ready(preview) => match &preview.signature {
                 SignatureStatus::Verified(_) => {
                     desktop_smoke_event("ROOTGLASS_DESKTOP_INSPECT_VERIFIED");
@@ -689,6 +725,11 @@ impl RootglassWindow {
 
     fn select_bundle(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.open_path(path, cx);
+    }
+
+    fn cancel_publisher_review(&mut self, cx: &mut Context<Self>) {
+        self.model.return_to_library();
+        cx.notify();
     }
 
     fn start_guest(&mut self, cx: &mut Context<Self>) {
@@ -1082,6 +1123,16 @@ fn details_view(state: &UiState) -> Div {
             .child(format!("Trusted publisher: {}", glass.publisher))
             .child("The archive was verified and copied into the local package store."),
         UiState::Ready(glass) => preview_details_view("Ready", glass, None),
+        UiState::PublisherReview(review) => div()
+            .v_flex()
+            .child("Publisher is not trusted · Signature not verified")
+            .child(format!("Declared publisher · unverified: {}", review.publisher_name))
+            .child(format!(
+                "Declared identity · unverified: {}",
+                review.publisher_identity
+            ))
+            .child(format!("Signing key ID · unverified: {}", review.key_id))
+            .child("Import and boot remain blocked until this key is trusted."),
         UiState::Blocked(blocked) => {
             let mut view = div()
                 .v_flex()
@@ -1128,6 +1179,127 @@ fn details_view(state: &UiState) -> Div {
     }
 }
 
+fn publisher_review_view(
+    review: &rootglass_app::UntrustedPublisherReview,
+    trust_policy: &rootglass_app::TrustPolicyStatus,
+    cx: &mut App,
+) -> Div {
+    let archive_name = review
+        .path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("Selected archive");
+    let mut trust_guidance = div()
+        .v_flex()
+        .gap_2()
+        .p_4()
+        .bg(cx.theme().group_box)
+        .child(eyebrow("LOCAL TRUST CONFIGURATION", cx))
+        .child(muted_text(
+            trust_policy
+                .config_path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "No trust configuration is available.".to_string()),
+            cx,
+        ))
+        .child(muted_text(
+            "Add and verify this signing key through the documented trust setup, then restart Rootglass and open the archive again.",
+            cx,
+        ));
+    if let Some(error) = &trust_policy.error {
+        trust_guidance = trust_guidance.child(div().text_color(cx.theme().danger).child(error.clone()));
+    }
+
+    div()
+        .v_flex()
+        .flex_1()
+        .gap_3()
+        .p_5()
+        .bg(cx.theme().background)
+        .overflow_scrollbar()
+        .child(eyebrow("PUBLISHER REVIEW", cx))
+        .child(page_title("Review this glass", cx))
+        .child(muted_text(
+            "Check the publisher claims and signing key before deciding whether to trust this bundle.",
+            cx,
+        ))
+        .child(
+            div()
+                .v_flex()
+                .gap_2()
+                .p_4()
+                .bg(cx.theme().group_box)
+                .child(eyebrow("GLASS BUNDLE", cx))
+                .child(format!("{} · {}", review.name, review.version))
+                .child(muted_text(format!("File: {archive_name}"), cx))
+                .child(muted_text(format!("Identifier: {}", review.identifier), cx))
+                .child(muted_text(format!("Archive path: {}", review.path.display()), cx))
+                .child(muted_text(
+                    review
+                        .description
+                        .clone()
+                        .unwrap_or_else(|| "No description provided.".to_string()),
+                    cx,
+                )),
+        )
+        .child(
+            div()
+                .v_flex()
+                .gap_2()
+                .p_4()
+                .bg(cx.theme().group_box)
+                .child(eyebrow("SIGNATURE AND PUBLISHER", cx))
+                .child("Signature not verified · signing key is not trusted")
+                .child(format!("Declared publisher · unverified: {}", review.publisher_name))
+                .child(format!(
+                    "Declared identity · unverified: {}",
+                    review.publisher_identity
+                ))
+                .child(format!("Signing key ID · unverified: {}", review.key_id)),
+        )
+        .child(
+            div()
+                .v_flex()
+                .gap_2()
+                .p_4()
+                .bg(cx.theme().danger)
+                .text_color(cx.theme().danger_foreground)
+                .child(eyebrow("THIS PUBLISHER IS NOT TRUSTED", cx))
+                .child("Rootglass does not have this key's public key, so it cannot verify the bundle signature.")
+                .child("Publisher name and identity come from the unverified archive. Confirm the key ID through a trusted channel before changing local trust."),
+        )
+        .child(trust_guidance)
+        .child(
+            div()
+                .h_flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    Button::new("cancel-publisher-review")
+                        .label("CANCEL")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.cancel_publisher_review(cx)
+                        })),
+                )
+                .child(
+                    Button::new("review-publisher")
+                        .primary()
+                        .label("REVIEW PUBLISHER")
+                        .disabled(true),
+                ),
+        )
+        .child(muted_text(
+            "Import and boot are blocked until this key is trusted. Restart Rootglass after updating trust, then open this archive again.",
+            cx,
+        ))
+        .child(
+            status_view(&UiState::PublisherReview(review.clone()))
+                .p_2()
+                .bg(cx.theme().sidebar),
+        )
+}
+
 fn status_view(state: &UiState) -> Div {
     match state {
         UiState::Empty => div().child("Status: Stopped · Console is inactive."),
@@ -1144,6 +1316,9 @@ fn status_view(state: &UiState) -> Div {
         UiState::Removing(_) => div().child("Status: Removing installed release."),
         UiState::Imported(_) => div().child("Status: Installed · Stopped."),
         UiState::Ready(_) => div().child("Status: Ready · Stopped."),
+        UiState::PublisherReview(_) => {
+            div().child("Status: Publisher not trusted · Import and boot are blocked.")
+        }
         UiState::Blocked(_) => div().child("Status: Blocked · Stopped."),
         UiState::Failed(error) => div().child(format!("Status: Failed · {}", error.summary)),
         UiState::Booting(run) => div().child(format!("Status: {}", run.status)),

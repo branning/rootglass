@@ -387,6 +387,7 @@ fn state_details(
         UiState::Removing(details) => ("Removing release", removal_lines(details)),
         UiState::Imported(details) => ("Installed", imported_lines(details)),
         UiState::Ready(preview) => ("Ready", preview_lines(preview)),
+        UiState::PublisherReview(review) => ("Publisher review", publisher_review_lines(review)),
         UiState::Blocked(details) => ("Blocked", blocked_lines(details)),
         UiState::Failed(details) => ("Failed", failure_lines(details)),
         UiState::Booting(run) => ("Booting", run_lines(run)),
@@ -417,6 +418,27 @@ fn state_details(
         ));
     }
     (title, lines)
+}
+
+fn publisher_review_lines(
+    review: &rootglass_app::UntrustedPublisherReview,
+) -> Vec<Line<'static>> {
+    vec![
+        Line::from(Span::styled(
+            "This publisher is not trusted. The signature is not verified.",
+            WARNING_STYLE,
+        )),
+        field("Bundle", format!("{} · {}", review.name, review.version)),
+        field("Identifier", &review.identifier),
+        field("Declared publisher · unverified", &review.publisher_name),
+        field("Declared identity · unverified", &review.publisher_identity),
+        field("Signing key ID · unverified", &review.key_id),
+        field("Signature", "Not verified · signing key is not trusted"),
+        field("Archive", review.path.display()),
+        Line::from("Import and boot are blocked until this key is trusted."),
+        Line::from("Update the local trust configuration, restart Rootglass, then reopen the archive."),
+        Line::from("[c/Esc] Cancel review and return to the library"),
+    ]
 }
 
 fn validation_lines(report: &ManifestValidationReport) -> Vec<Line<'static>> {
@@ -678,6 +700,22 @@ fn wrap_console_line(line: &str, width: usize) -> Vec<String> {
 
 fn render_actions(frame: &mut Frame<'_>, model: &UiModel, area: Rect) {
     let actions = model.actions();
+    if matches!(model.state, UiState::PublisherReview(_)) {
+        let lines = vec![Line::from(vec![
+            action("[c/Esc] Cancel review", true),
+            Span::raw("  "),
+            action("[t] Trust config", true),
+            Span::raw("  "),
+            action("[b] Boot", false),
+            Span::raw("  "),
+            action("[o] Open another bundle", actions.open),
+        ])];
+        frame.render_widget(
+            Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title("Actions")),
+            area,
+        );
+        return;
+    }
     let lines = vec![
         action_line([
             action("[o] Open/import", actions.open),
@@ -895,6 +933,35 @@ mod tests {
             publisher: "Rootglass Examples".into(),
             signature: SignatureStatus::Verified("fixture-key".into()),
             preflight: preflight(),
+        }
+    }
+
+    #[test]
+    fn untrusted_publisher_screen_states_claims_and_keeps_import_blocked() {
+        let review = rootglass_app::UntrustedPublisherReview {
+            path: PathBuf::from("publisher.glass"),
+            name: "Unknown Guest".into(),
+            identifier: "example.unknown".into(),
+            version: "1.0.0".into(),
+            description: None,
+            publisher_name: "Claimed Publisher".into(),
+            publisher_identity: "publisher.example".into(),
+            key_id: format!("ed25519:{}", "9".repeat(64)),
+        };
+        let model = model(UiState::PublisherReview(review));
+
+        assert!(!model.actions().boot);
+        let text = snapshot(&model);
+        for value in [
+            "Publisher review",
+            "signature is not verified",
+            "Declared publisher · unverified",
+            "Claimed Publisher",
+            "Signing key ID · unverified",
+            "Import and boot are blocked",
+            "Cancel review",
+        ] {
+            assert!(text.contains(value), "missing {value:?} in rendered screen:\n{text}");
         }
     }
 

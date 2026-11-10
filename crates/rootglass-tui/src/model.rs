@@ -3,7 +3,7 @@ use rootglass_app::registry::InstalledGlass;
 use rootglass_app::state::StateRecord;
 use rootglass_app::{
     AppError, AppService, ManifestValidationReport, PreflightReport, RunId, RunOptions,
-    RuntimeEvent, TrustPolicyStatus,
+    RuntimeEvent, TrustPolicyStatus, UntrustedPublisherReview,
 };
 use rootglass_core::LifecycleState;
 use std::path::{Path, PathBuf};
@@ -27,6 +27,7 @@ pub enum UiState {
     Removing(RemovalDetails),
     Imported(ImportedDetails),
     Ready(GlassPreview),
+    PublisherReview(UntrustedPublisherReview),
     Blocked(BlockedDetails),
     Failed(FailureDetails),
     Booting(RunDetails),
@@ -151,6 +152,7 @@ impl OperationTicket {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InspectionOutcome {
     Ready(GlassPreview),
+    PublisherReview(UntrustedPublisherReview),
     Blocked(BlockedDetails),
     Failed(FailureDetails),
 }
@@ -193,6 +195,12 @@ pub enum StopRequest {
 pub trait TuiService: Send {
     fn installed_glasses(&mut self) -> Result<Vec<InstalledGlass>, AppError>;
     fn import_archive(&mut self, source: &Path) -> Result<InstalledGlass, AppError>;
+    fn review_archive(
+        &mut self,
+        _source: &Path,
+    ) -> Result<Option<UntrustedPublisherReview>, AppError> {
+        Ok(None)
+    }
     fn inspect_bundle(&mut self, source: &Path) -> InspectionOutcome;
     fn validate_manifest(&mut self, _source: &Path) -> Result<ManifestValidationReport, AppError> {
         Err(AppError {
@@ -281,6 +289,7 @@ pub trait TuiService: Send {
         let inspection = self.inspect_bundle(&installed.package_path);
         let outcome = match &inspection {
             InspectionOutcome::Ready(_) => "ready",
+            InspectionOutcome::PublisherReview(_) => "publisher-review",
             InspectionOutcome::Blocked(_) => "blocked",
             InspectionOutcome::Failed(_) => "failed",
         };
@@ -318,6 +327,13 @@ impl TuiService for AppService {
 
     fn import_archive(&mut self, source: &Path) -> Result<InstalledGlass, AppError> {
         AppService::import_archive(self, source)
+    }
+
+    fn review_archive(
+        &mut self,
+        source: &Path,
+    ) -> Result<Option<UntrustedPublisherReview>, AppError> {
+        AppService::review_archive(self, source)
     }
 
     fn inspect_bundle(&mut self, source: &Path) -> InspectionOutcome {
@@ -525,7 +541,8 @@ pub struct UiModel {
 }
 
 impl UiModel {
-    pub fn with_service(service: impl TuiService + 'static, initial_state: UiState) -> Self {
+    pub fn with_service(mut service: impl TuiService + 'static, initial_state: UiState) -> Self {
+        let trust_policy = service.trust_policy_status();
         Self {
             state: initial_state,
             installed_glasses: Vec::new(),
@@ -547,7 +564,7 @@ impl UiModel {
             state_busy: false,
             state_locked: false,
             state_loaded: true,
-            trust_policy: TrustPolicyStatus::default(),
+            trust_policy,
             service: Arc::new(Mutex::new(Box::new(service))),
             next_generation: 0,
             active_operation: None,
@@ -952,6 +969,15 @@ impl UiModel {
         true
     }
 
+    /// Dismiss the untrusted bundle without importing it.
+    pub fn return_to_library(&mut self) {
+        self.cancel_active_operation();
+        self.selected_path = None;
+        self.last_preview = None;
+        self.reset_state_selection();
+        self.state = UiState::Empty;
+    }
+
     pub fn begin_import(&mut self, path: PathBuf) -> Option<OperationTicket> {
         if !self.actions().open {
             return None;
@@ -1332,6 +1358,12 @@ impl UiModel {
                 self.selected_path = Some(preview.path.clone());
                 self.last_preview = Some(preview.clone());
                 self.state = UiState::Ready(preview);
+            }
+            InspectionOutcome::PublisherReview(review) => {
+                self.selected_path = Some(review.path.clone());
+                self.last_preview = None;
+                self.reset_state_selection();
+                self.state = UiState::PublisherReview(review);
             }
             InspectionOutcome::Blocked(blocked) => self.state = UiState::Blocked(blocked),
             InspectionOutcome::Failed(failure) => self.state = UiState::Failed(failure),
@@ -1766,6 +1798,38 @@ mod tests {
         assert!(model.finish_inspection(&ticket, InspectionOutcome::Ready(preview(&path))));
         model.finish_state_operation(Ok(StateSnapshot::default()));
         model
+    }
+
+    #[test]
+    fn publisher_review_is_fail_closed_and_can_be_cancelled_without_installing() {
+        let mut model = model();
+        let path = PathBuf::from("publisher.glass");
+        let ticket = model.begin_import(path.clone()).unwrap();
+        let review = UntrustedPublisherReview {
+            path: path.clone(),
+            name: "Unknown Guest".into(),
+            identifier: "example.unknown".into(),
+            version: "1.0.0".into(),
+            description: None,
+            publisher_name: "Claimed Publisher".into(),
+            publisher_identity: "publisher.example".into(),
+            key_id: format!("ed25519:{}", "9".repeat(64)),
+        };
+
+        assert!(model.finish_inspection(
+            &ticket,
+            InspectionOutcome::PublisherReview(review.clone())
+        ));
+        assert_eq!(model.selected_path, Some(path));
+        assert_eq!(model.installed_glasses.len(), 0);
+        assert!(matches!(model.state, UiState::PublisherReview(_)));
+        assert!(model.actions().open);
+        assert!(!model.actions().boot);
+
+        model.return_to_library();
+        assert!(matches!(model.state, UiState::Empty));
+        assert!(model.selected_path.is_none());
+        assert_eq!(model.installed_glasses.len(), 0);
     }
 
     fn app_error() -> AppError {
