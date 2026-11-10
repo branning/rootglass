@@ -214,8 +214,8 @@ jobs:
             printf '%s\n' "$1" | tee -a "$EVIDENCE_DIR/progress.txt"
           }
           progress "installing Linux package with a 180-second limit"
-          if sudo timeout --signal=TERM --kill-after=10s 180s \
-            env DEBIAN_FRONTEND=noninteractive apt-get install -y "$deb" \
+          if timeout --signal=TERM --kill-after=10s 180s \
+            sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y "$deb" \
             > "$EVIDENCE_DIR/package-install.log" 2>&1; then
             cat "$EVIDENCE_DIR/package-install.log"
           else
