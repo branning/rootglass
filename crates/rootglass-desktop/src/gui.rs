@@ -305,9 +305,7 @@ impl RootglassWindow {
             .child(
                 div()
                     .h_flex()
-                    .w_full()
                     .items_start()
-                    .gap_4()
                     .child(
                         div()
                             .v_flex()
@@ -320,26 +318,26 @@ impl RootglassWindow {
                                 format!("Version {version} · Publisher: {publisher}"),
                                 cx,
                             )),
+                    ),
+            )
+            .child(
+                div()
+                    .h_flex()
+                    .flex_shrink_0()
+                    .gap_2()
+                    .child(
+                        Button::new("running-restart")
+                            .secondary()
+                            .label("RESTART")
+                            .disabled(!actions.restart)
+                            .on_click(cx.listener(|this, _, _, cx| this.restart_guest(cx))),
                     )
                     .child(
-                        div()
-                            .h_flex()
-                            .flex_shrink_0()
-                            .gap_2()
-                            .child(
-                                Button::new("running-restart")
-                                    .secondary()
-                                    .label("RESTART")
-                                    .disabled(!actions.restart)
-                                    .on_click(cx.listener(|this, _, _, cx| this.restart_guest(cx))),
-                            )
-                            .child(
-                                Button::new("running-stop")
-                                    .danger()
-                                    .label("STOP")
-                                    .disabled(!actions.stop)
-                                    .on_click(cx.listener(|this, _, _, cx| this.stop_guest(cx))),
-                            ),
+                        Button::new("running-stop")
+                            .danger()
+                            .label("STOP")
+                            .disabled(!actions.stop)
+                            .on_click(cx.listener(|this, _, _, cx| this.stop_guest(cx))),
                     ),
             )
             .child(

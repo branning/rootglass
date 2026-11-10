@@ -352,3 +352,4 @@
 {"version":1,"task_id":"J6B4KP","kind":"result","at":"2026-11-10T18:05:53.376554528Z","agent":"codex@worker-1","text":"The input is visible now; the Xvfb harness was sending keys without targeting the app window."}
 {"version":1,"task_id":"J6B4KP","kind":"result","at":"2026-11-10T18:13:28.995735253Z","agent":"codex@worker-1","text":"Serial input echoes now; fixing clipped header actions and the smoke's stale restart/stop coordinates."}
 {"version":1,"task_id":"J6B4KP","kind":"result","at":"2026-11-10T18:21:23.797663483Z","agent":"codex@worker-1","text":"Xvfb confirms guest input works; the header still hides actions, so forcing full width and tracing button requests."}
+{"version":1,"task_id":"J6B4KP","kind":"result","at":"2026-11-10T18:29:24.337475897Z","agent":"codex@worker-1","text":"Guest input works; header actions remained offscreen, so moving them into a dedicated visible toolbar row."}
