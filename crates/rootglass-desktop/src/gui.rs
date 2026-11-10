@@ -791,7 +791,7 @@ fn log_desktop_smoke_trust_policy(model: &UiModel) {
             "ROOTGLASS_DESKTOP_TRUST_POLICY unavailable={}",
             error.detail
         )),
-    }
+    };
 }
 
 fn path_from_open_url(value: &str) -> Option<PathBuf> {
