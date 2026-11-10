@@ -313,11 +313,18 @@ jobs:
           open "$glass"
 
           for _ in $(seq 1 120); do
-            if [[ -f "$event_log" ]] && grep -q '^ROOTGLASS_DESKTOP_OPEN_PATH_ACCEPTED$' "$event_log"; then
+            if [[ -f "$event_log" ]] && \
+               grep -q '^ROOTGLASS_DESKTOP_OPEN_URLS_RECEIVED$' "$event_log" && \
+               grep -q '^ROOTGLASS_DESKTOP_OPEN_PATH_ACCEPTED$' "$event_log"; then
               break
             fi
             sleep 0.25
           done
+          grep -q '^ROOTGLASS_DESKTOP_OPEN_URLS_RECEIVED$' "$event_log" || {
+            echo "LaunchServices did not reach GPUI's open-URLs handler" >&2
+            cat "$event_log" 2>/dev/null || true
+            exit 1
+          }
           grep -q '^ROOTGLASS_DESKTOP_OPEN_PATH_ACCEPTED$' "$event_log" || {
             echo "LaunchServices did not deliver the .glass path to Rootglass" >&2
             cat "$event_log" 2>/dev/null || true

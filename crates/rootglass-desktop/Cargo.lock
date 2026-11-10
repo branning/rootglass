@@ -5635,6 +5635,7 @@ dependencies = [
  "rootglass-core",
  "rootglass-terminal-vt",
  "rootglass-tui",
+ "url",
 ]
 
 [[package]]

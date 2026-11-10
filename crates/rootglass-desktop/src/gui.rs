@@ -712,6 +712,10 @@ fn desktop_smoke_event(marker: &str) {
     }
 }
 
+fn path_from_open_url(value: &str) -> Option<PathBuf> {
+    url::Url::parse(value).ok()?.to_file_path().ok()
+}
+
 fn library_view(
     state: &UiState,
     installed_glasses: &[InstalledGlass],
@@ -971,7 +975,7 @@ pub fn run_gui(initial_glass: Option<PathBuf>) {
                 KeyBinding::new("alt-f4", Quit, Some(ROOTGLASS_CONTEXT)),
             ]);
             let initial_glass = initial_glass.clone();
-            gpui_kit::open_window(WindowOptions::default(), cx, move |window, cx| {
+            let (_, view) = gpui_kit::open_window(WindowOptions::default(), cx, move |window, cx| {
                 let initial_glass = initial_glass.clone();
                 cx.new(move |cx| {
                     let mut view = RootglassWindow::new(window, cx);
@@ -982,6 +986,20 @@ pub fn run_gui(initial_glass: Option<PathBuf>) {
                 })
             })
             .expect("failed to open Rootglass window");
+            let app = cx.to_async();
+            cx.on_open_urls({
+                let view = view.clone();
+                move |urls| {
+                    desktop_smoke_event("ROOTGLASS_DESKTOP_OPEN_URLS_RECEIVED");
+                    for url in urls {
+                        let Some(path) = path_from_open_url(&url) else {
+                            continue;
+                        };
+                        let _ = app.update(|cx| view.update(cx, |view, cx| view.open_path(path, cx)));
+                        break;
+                    }
+                }
+            });
         });
 
     #[cfg(feature = "embedded-terminal")]
