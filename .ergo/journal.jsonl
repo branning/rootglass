@@ -345,3 +345,4 @@
 {"version":1,"task_id":"J6B4KP","kind":"open","at":"2026-11-10T16:07:16.406619178Z","text":"Figma Pro Dev access restored; node 2:91 design context and screenshot are now available."}
 {"version":1,"task_id":"J6B4KP","kind":"claim","at":"2026-11-10T16:07:16.419676204Z","agent":"codex@worker-1"}
 {"version":1,"task_id":"J6B4KP","kind":"result","at":"2026-11-10T17:23:46.589516219Z","agent":"codex@worker-1","text":"Xvfb exposed missing relative runtime-assets in the isolated CWD; fixing the smoke harness before rerun."}
+{"version":1,"task_id":"J6B4KP","kind":"result","at":"2026-11-10T17:29:37.31017316Z","agent":"codex@worker-1","text":"Xvfb now opens the picker and passes direct-bundle preflight; adapting its untrusted-state marker."}

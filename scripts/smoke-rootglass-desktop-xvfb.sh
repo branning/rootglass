@@ -252,11 +252,12 @@ xdotool mousemove --window "$window_id" 320 120
 /usr/bin/python3 "${repo_root}/scripts/xdnd-drop-file.py" "$window_id" "$verified_dir"
 wait_for_marker ROOTGLASS_DESKTOP_PREFLIGHT_READY
 wait_for_marker ROOTGLASS_DESKTOP_STATE_READY
+sleep 0.5
 import -window "$window_id" "${artifact_dir}/01-verified-directory.png"
 
 xdotool mousemove --window "$window_id" 320 120
 /usr/bin/python3 "${repo_root}/scripts/xdnd-drop-file.py" "$window_id" "$untrusted_archive"
-wait_for_marker ROOTGLASS_DESKTOP_INSPECT_UNTRUSTED
+wait_for_marker ROOTGLASS_DESKTOP_PUBLISHER_REVIEW
 xdotool mousemove --window "$window_id" 320 120
 /usr/bin/python3 "${repo_root}/scripts/xdnd-drop-file.py" "$window_id" "$tampered_archive"
 wait_for_marker ROOTGLASS_DESKTOP_INSPECT_TAMPERED
@@ -265,12 +266,14 @@ xdotool mousemove --window "$window_id" 320 120
 /usr/bin/python3 "${repo_root}/scripts/xdnd-drop-file.py" "$window_id" "$verified_archive"
 wait_for_count ROOTGLASS_DESKTOP_INSPECT_VERIFIED 2
 wait_for_count ROOTGLASS_DESKTOP_STATE_READY 2
+sleep 0.5
 import -window "$window_id" "${artifact_dir}/02-verified-import.png"
 
 # Toolbar order is Open, Boot, Restart, Stop. Click Boot after verified preflight.
 xdotool mousemove --window "$window_id" 285 26 click 1
-wait_for_marker ROOTGLASS_DESKTOP_BOOT_STARTED 120
+wait_for_marker ROOTGLASS_DESKTOP_BOOT_STARTED 15
 wait_for_marker ROOTGLASS_DESKTOP_GUEST_READY 120
+sleep 0.5
 import -window "$window_id" "${artifact_dir}/03-guest-running.png"
 
 # Submit a username at the guest login prompt and wait for its password request.
@@ -292,7 +295,7 @@ import -window "$window_id" "${artifact_dir}/05-guest-password-prompt.png"
 
 # Restart, wait for a second guest-ready event, then stop through the UI.
 xdotool mousemove --window "$window_id" 365 26 click 1
-wait_for_marker ROOTGLASS_DESKTOP_RESTART_STARTED 120
+wait_for_marker ROOTGLASS_DESKTOP_RESTART_STARTED 15
 wait_for_count ROOTGLASS_DESKTOP_GUEST_READY 2 120
 echo "ROOTGLASS_DESKTOP_SMOKE_RESTART_READY"
 xdotool mousemove --window "$window_id" 425 26 click 1
