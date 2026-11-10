@@ -358,3 +358,4 @@
 {"version":1,"task_id":"IRZXIF","kind":"claim","at":"2026-11-10T18:49:52.631256079Z","agent":"codex@worker-1"}
 {"version":1,"task_id":"IRZXIF","kind":"done","at":"2026-11-10T19:46:32.201993323Z","agent":"codex@worker-1","text":"PR #120 merged; CI and Linux Xvfb screenshot evidence passed."}
 {"version":1,"task_id":"OOFC7Q","kind":"claim","at":"2026-11-10T19:49:15.015746226Z","agent":"codex@worker-1"}
+{"version":1,"task_id":"OOFC7Q","kind":"done","at":"2026-11-10T20:01:09.019261291Z","agent":"codex@worker-1","text":"PR #121 merged; four Figma states and Xvfb coverage documented."}
