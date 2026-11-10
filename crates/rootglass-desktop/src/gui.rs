@@ -185,6 +185,7 @@ impl RootglassWindow {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Type to guest console…"));
         let model = UiModel::default();
+        log_desktop_smoke_trust_policy(&model);
         let service = model.shared_service();
         let background_executor = cx.background_executor().clone();
         let _library_task = cx.spawn(async move |view, cx| {
@@ -535,8 +536,11 @@ impl RootglassWindow {
                         "ROOTGLASS_DESKTOP_PREFLIGHT_BLOCKED"
                     });
                 }
-                SignatureStatus::Untrusted(_) => {
-                    desktop_smoke_event("ROOTGLASS_DESKTOP_INSPECT_UNTRUSTED")
+                SignatureStatus::Untrusted(reason) => {
+                    desktop_smoke_event("ROOTGLASS_DESKTOP_INSPECT_UNTRUSTED");
+                    desktop_smoke_detail(format!(
+                        "ROOTGLASS_DESKTOP_SIGNATURE_UNTRUSTED reason={reason}"
+                    ));
                 }
                 SignatureStatus::Tampered(_) => {
                     desktop_smoke_event("ROOTGLASS_DESKTOP_INSPECT_TAMPERED")
@@ -548,6 +552,10 @@ impl RootglassWindow {
             UiState::Blocked(_) => desktop_smoke_event("ROOTGLASS_DESKTOP_INSPECT_BLOCKED"),
             UiState::Failed(details) if details.detail.contains("unknown signing key") => {
                 desktop_smoke_event("ROOTGLASS_DESKTOP_INSPECT_UNTRUSTED");
+                desktop_smoke_detail(format!(
+                    "ROOTGLASS_DESKTOP_SIGNATURE_UNTRUSTED detail={}",
+                    details.detail
+                ));
             }
             UiState::Failed(details)
                 if details.detail.contains("subject digest mismatch")
@@ -711,6 +719,78 @@ fn desktop_smoke_event(marker: &str) {
                 let _ = writeln!(log, "{marker}");
             }
         }
+    }
+}
+
+fn desktop_smoke_detail(detail: String) {
+    if std::env::var_os("ROOTGLASS_DESKTOP_SMOKE").is_none() {
+        return;
+    }
+    let detail = detail.replace('\n', " ").replace('\r', " ");
+    eprintln!("{detail}");
+    if let Some(path) = std::env::var_os("ROOTGLASS_DESKTOP_SMOKE_EVENT_LOG") {
+        if let Ok(mut log) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            use std::io::Write;
+            let _ = writeln!(log, "{detail}");
+        }
+    }
+}
+
+fn log_desktop_smoke_trust_policy(model: &UiModel) {
+    if std::env::var_os("ROOTGLASS_DESKTOP_SMOKE").is_none() {
+        return;
+    }
+    let expected_key_id = std::env::var("ROOTGLASS_DESKTOP_SMOKE_EXPECTED_TRUST_KEY_ID").ok();
+    let shared_service = model.shared_service();
+    match lock_service(&shared_service) {
+        Ok(mut service) => {
+            let status = service.trust_policy_status();
+            let key_ids = status
+                .trusted_publishers
+                .iter()
+                .map(|publisher| publisher.key_id.as_str())
+                .collect::<Vec<_>>()
+                .join(",");
+            let trusted_key_ids = if key_ids.is_empty() {
+                "<none>".to_string()
+            } else {
+                key_ids
+            };
+            let expected_key_present = expected_key_id.as_deref().is_some_and(|expected| {
+                status
+                    .trusted_publishers
+                    .iter()
+                    .any(|publisher| publisher.key_id == expected)
+            });
+            desktop_smoke_detail(format!(
+                "ROOTGLASS_DESKTOP_TRUST_POLICY path={} trusted_key_ids={} revoked_key_ids={} error={} expected_key_present={expected_key_present}",
+                status
+                    .config_path
+                    .as_deref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "<none>".to_string()),
+                trusted_key_ids,
+                if status.revoked_key_ids.is_empty() {
+                    "<none>".to_string()
+                } else {
+                    status.revoked_key_ids.join(",")
+                },
+                status.error.as_deref().unwrap_or("<none>")
+            ));
+            desktop_smoke_event(if expected_key_present {
+                "ROOTGLASS_DESKTOP_TRUST_POLICY_EXPECTED_KEY_PRESENT"
+            } else {
+                "ROOTGLASS_DESKTOP_TRUST_POLICY_EXPECTED_KEY_MISSING"
+            });
+        }
+        Err(error) => desktop_smoke_detail(format!(
+            "ROOTGLASS_DESKTOP_TRUST_POLICY unavailable={}",
+            error.detail
+        )),
     }
 }
 

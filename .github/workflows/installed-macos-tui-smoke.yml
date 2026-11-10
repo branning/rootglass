@@ -281,6 +281,7 @@ jobs:
           event_log="$EVIDENCE_DIR/launchservices-events.log"
           old_smoke=$(launchctl getenv ROOTGLASS_DESKTOP_SMOKE || true)
           old_event_log=$(launchctl getenv ROOTGLASS_DESKTOP_SMOKE_EVENT_LOG || true)
+          old_expected_trust_key_id=$(launchctl getenv ROOTGLASS_DESKTOP_SMOKE_EXPECTED_TRUST_KEY_ID || true)
           old_home=$(launchctl getenv HOME || true)
           old_tmpdir=$(launchctl getenv TMPDIR || true)
           restore_launch_environment() {
@@ -293,6 +294,11 @@ jobs:
               launchctl setenv ROOTGLASS_DESKTOP_SMOKE_EVENT_LOG "$old_event_log"
             else
               launchctl unsetenv ROOTGLASS_DESKTOP_SMOKE_EVENT_LOG || true
+            fi
+            if [[ -n "$old_expected_trust_key_id" ]]; then
+              launchctl setenv ROOTGLASS_DESKTOP_SMOKE_EXPECTED_TRUST_KEY_ID "$old_expected_trust_key_id"
+            else
+              launchctl unsetenv ROOTGLASS_DESKTOP_SMOKE_EXPECTED_TRUST_KEY_ID || true
             fi
             if [[ -n "$old_home" ]]; then
               launchctl setenv HOME "$old_home"
@@ -308,6 +314,8 @@ jobs:
           trap restore_launch_environment EXIT
           launchctl setenv ROOTGLASS_DESKTOP_SMOKE 1
           launchctl setenv ROOTGLASS_DESKTOP_SMOKE_EVENT_LOG "$event_log"
+          launchctl setenv ROOTGLASS_DESKTOP_SMOKE_EXPECTED_TRUST_KEY_ID \
+            "ed25519:4a079f6f512c9e1a24f83b08e84fb8508996c91e0d54a19512fabfafc82b62d0"
           launchctl setenv HOME "$TEST_HOME"
           launchctl setenv TMPDIR "$TEST_TMPDIR"
           open "$glass"
@@ -315,11 +323,17 @@ jobs:
           for _ in $(seq 1 120); do
             if [[ -f "$event_log" ]] && \
                grep -q '^ROOTGLASS_DESKTOP_OPEN_URLS_RECEIVED$' "$event_log" && \
-               grep -q '^ROOTGLASS_DESKTOP_OPEN_PATH_ACCEPTED$' "$event_log"; then
+               grep -q '^ROOTGLASS_DESKTOP_OPEN_PATH_ACCEPTED$' "$event_log" && \
+               grep -q '^ROOTGLASS_DESKTOP_TRUST_POLICY_EXPECTED_KEY_PRESENT$' "$event_log"; then
               break
             fi
             sleep 0.25
           done
+          grep -q '^ROOTGLASS_DESKTOP_TRUST_POLICY_EXPECTED_KEY_PRESENT$' "$event_log" || {
+            echo "LaunchServices app did not load the canonical example publisher trust key" >&2
+            cat "$event_log" 2>/dev/null || true
+            exit 1
+          }
           grep -q '^ROOTGLASS_DESKTOP_OPEN_URLS_RECEIVED$' "$event_log" || {
             echo "LaunchServices did not reach GPUI's open-URLs handler" >&2
             cat "$event_log" 2>/dev/null || true
