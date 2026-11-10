@@ -219,6 +219,7 @@ fn sidebar_view(cx: &App) -> Div {
     div()
         .v_flex()
         .w(px(192.0))
+        .h_full()
         .flex_shrink_0()
         .gap_2()
         .p_4()

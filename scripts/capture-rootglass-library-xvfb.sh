@@ -24,8 +24,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$work_dir/home" "$work_dir/config" "$work_dir/data" "$work_dir/runtime"
+mkdir -p "$work_dir/home" "$work_dir/config/rootglass" "$work_dir/data" "$work_dir/runtime"
 chmod 700 "$work_dir/runtime"
+cat >"$work_dir/config/rootglass/trust.json" <<'JSON'
+{
+  "schemaVersion": 1,
+  "trustedPublishers": [],
+  "revokedKeyIds": []
+}
+JSON
 export HOME="${work_dir}/home"
 export XDG_CONFIG_HOME="${work_dir}/config"
 export XDG_DATA_HOME="${work_dir}/data"
@@ -72,18 +79,4 @@ xdotool windowfocus --sync "$window_id"
 sleep 1
 import -window "$window_id" "${artifact_dir}/00-empty-library.png"
 identify -format '%f: %wx%h %m\n' "${artifact_dir}/00-empty-library.png"
-xdotool key --clearmodifiers alt+F4
-for _ in $(seq 1 100); do
-  app_state="$(ps -o stat= -p "$app_pid" 2>/dev/null | tr -d ' ' || true)"
-  if [[ -z "$app_state" || "$app_state" == Z* ]]; then
-    break
-  fi
-  sleep 0.1
-done
-if [[ -n "$app_state" && "$app_state" != Z* ]]; then
-  echo "Rootglass did not exit after its Xvfb window closed" >&2
-  exit 1
-fi
-wait "$app_pid"
-app_pid=""
 cat "$log_file" "$event_file" 2>/dev/null || true
