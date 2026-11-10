@@ -75,6 +75,7 @@ trap cleanup EXIT
 mkdir -p "$artifact_dir" "${work_dir}/home" "${work_dir}/config/rootglass" \
   "${work_dir}/data" "${work_dir}/runtime"
 chmod 700 "${work_dir}/runtime"
+ln -s "${repo_root}/runtime-assets" "${work_dir}/runtime-assets"
 
 verified_dir="${work_dir}/verified.glass"
 trusted_key="${work_dir}/trusted-seed"
