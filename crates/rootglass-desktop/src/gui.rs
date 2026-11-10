@@ -227,7 +227,6 @@ fn sidebar_view(cx: &App) -> Div {
         .text_color(cx.theme().sidebar_foreground)
         .child(div().child("rootglass").text_size(px(20.0)))
         .child(eyebrow("LOCAL WORKSPACE", cx))
-        .child(div().flex_1())
         .child(
             div()
                 .p_2()
@@ -235,6 +234,7 @@ fn sidebar_view(cx: &App) -> Div {
                 .text_color(cx.theme().sidebar_accent_foreground)
                 .child("Library"),
         )
+        .child(div().flex_1())
         .child(eyebrow("ON THIS COMPUTER", cx))
         .child(muted_text("One glass at a time", cx))
         .child(muted_text(
