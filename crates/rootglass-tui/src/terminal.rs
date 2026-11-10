@@ -733,7 +733,10 @@ fn request_state_action(
 }
 
 fn refresh_state_selection(model: &mut UiModel, worker: &mut ServiceWorker) -> Result<(), String> {
-    if matches!(model.state, UiState::Ready(_) | UiState::Blocked(_)) {
+    if matches!(
+        model.state,
+        UiState::Ready(_) | UiState::Blocked(_) | UiState::Planned(_)
+    ) {
         if let Some(path) = model.selected_path.clone() {
             request_state_action(model, worker, path, StateOperation::Refresh)?;
         }
