@@ -16,7 +16,9 @@ use gpui_kit::*;
 use rootglass_app::registry::InstalledGlass;
 use rootglass_app::ManifestValidationReport;
 use rootglass_app::RuntimeEvent;
+use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::Duration;
 
 actions!(rootglass, [OpenBundle, StopGlass, Quit]);
@@ -716,6 +718,21 @@ fn path_from_open_url(value: &str) -> Option<PathBuf> {
     url::Url::parse(value).ok()?.to_file_path().ok()
 }
 
+fn open_urls_in_view(app: &AsyncApp, view: &Entity<RootglassWindow>, urls: Vec<String>) {
+    for url in urls {
+        let Some(path) = path_from_open_url(&url) else {
+            continue;
+        };
+        let app = app.clone();
+        let view = view.clone();
+        app.spawn(async move |cx| {
+            let _ = view.update(cx, |view, cx| view.open_path(path, cx));
+        })
+        .detach();
+        break;
+    }
+}
+
 fn library_view(
     state: &UiState,
     installed_glasses: &[InstalledGlass],
@@ -962,45 +979,51 @@ fn removal_details_view(details: &RemovalDetails) -> Div {
 }
 
 pub fn run_gui(initial_glass: Option<PathBuf>) {
-    gpui_kit::application()
+    let open_url_target: Rc<RefCell<Option<(AsyncApp, Entity<RootglassWindow>)>>> =
+        Rc::new(RefCell::new(None));
+    let pending_open_urls: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+    let application = gpui_kit::application()
         .with_quit_mode(QuitMode::LastWindowClosed)
-        .with_assets(gpui_kit::assets::Assets)
-        .run(move |cx| {
-            gpui_kit::init(cx);
-            cx.bind_keys([
-                KeyBinding::new("cmd-o", OpenBundle, Some(ROOTGLASS_CONTEXT)),
-                KeyBinding::new("cmd-.", StopGlass, Some(ROOTGLASS_CONTEXT)),
-                KeyBinding::new("cmd-q", Quit, Some(ROOTGLASS_CONTEXT)),
-                KeyBinding::new("cmd-w", Quit, Some(ROOTGLASS_CONTEXT)),
-                KeyBinding::new("alt-f4", Quit, Some(ROOTGLASS_CONTEXT)),
-            ]);
-            let initial_glass = initial_glass.clone();
-            let (_, view) = gpui_kit::open_window(WindowOptions::default(), cx, move |window, cx| {
-                let initial_glass = initial_glass.clone();
-                cx.new(move |cx| {
-                    let mut view = RootglassWindow::new(window, cx);
-                    if let Some(path) = initial_glass {
-                        view.open_path(path, cx);
-                    }
-                    view
-                })
-            })
-            .expect("failed to open Rootglass window");
-            let app = cx.to_async();
-            cx.on_open_urls({
-                let view = view.clone();
-                move |urls| {
-                    desktop_smoke_event("ROOTGLASS_DESKTOP_OPEN_URLS_RECEIVED");
-                    for url in urls {
-                        let Some(path) = path_from_open_url(&url) else {
-                            continue;
-                        };
-                        let _ = app.update(|cx| view.update(cx, |view, cx| view.open_path(path, cx)));
-                        break;
-                    }
-                }
-            });
+        .with_assets(gpui_kit::assets::Assets);
+    {
+        let open_url_target = open_url_target.clone();
+        let pending_open_urls = pending_open_urls.clone();
+        application.on_open_urls(move |urls| {
+            desktop_smoke_event("ROOTGLASS_DESKTOP_OPEN_URLS_RECEIVED");
+            let target = open_url_target.borrow().clone();
+            if let Some((app, view)) = target {
+                open_urls_in_view(&app, &view, urls);
+            } else {
+                pending_open_urls.borrow_mut().extend(urls);
+            }
         });
+    }
+    application.run(move |cx| {
+        gpui_kit::init(cx);
+        cx.bind_keys([
+            KeyBinding::new("cmd-o", OpenBundle, Some(ROOTGLASS_CONTEXT)),
+            KeyBinding::new("cmd-.", StopGlass, Some(ROOTGLASS_CONTEXT)),
+            KeyBinding::new("cmd-q", Quit, Some(ROOTGLASS_CONTEXT)),
+            KeyBinding::new("cmd-w", Quit, Some(ROOTGLASS_CONTEXT)),
+            KeyBinding::new("alt-f4", Quit, Some(ROOTGLASS_CONTEXT)),
+        ]);
+        let initial_glass = initial_glass.clone();
+        let (_, view) = gpui_kit::open_window(WindowOptions::default(), cx, move |window, cx| {
+            let initial_glass = initial_glass.clone();
+            cx.new(move |cx| {
+                let mut view = RootglassWindow::new(window, cx);
+                if let Some(path) = initial_glass {
+                    view.open_path(path, cx);
+                }
+                view
+            })
+        })
+        .expect("failed to open Rootglass window");
+        let app = cx.to_async();
+        *open_url_target.borrow_mut() = Some((app.clone(), view.clone()));
+        let pending = std::mem::take(&mut *pending_open_urls.borrow_mut());
+        open_urls_in_view(&app, &view, pending);
+    });
 
     #[cfg(feature = "embedded-terminal")]
     embedded_terminal::wait_for_cleanup();
