@@ -2,6 +2,7 @@ use crate::ui_model::{BlockedDetails, FailureDetails, GlassPreview, SignatureSta
 use gpui_kit::base::StyledExt;
 use gpui_kit::component::text::TextView;
 use gpui_kit::component::*;
+use gpui_kit::gpui_component::scroll::ScrollableElement;
 use gpui_kit::*;
 use std::path::PathBuf;
 
@@ -98,7 +99,7 @@ impl RecoveryFailure {
 
     fn checks(&self, preview: Option<&GlassPreview>, guest_was_ready: bool) -> Vec<LaunchCheck> {
         match self {
-            Self::Preflight(blocked) => vec![
+            Self::Preflight(_blocked) => vec![
                 check("Bundle format", "Passed", CheckTone::Passed),
                 check("Publisher & signature", "Passed", CheckTone::Passed),
                 check(
