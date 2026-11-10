@@ -269,8 +269,8 @@ wait_for_count ROOTGLASS_DESKTOP_STATE_READY 2
 sleep 0.5
 import -window "$window_id" "${artifact_dir}/02-verified-import.png"
 
-# Toolbar order is Open, Boot, Restart, Stop. Click Boot after verified preflight.
-xdotool mousemove --window "$window_id" 285 26 click 1
+# Click START GLASS after the verified import is visibly ready.
+xdotool mousemove --window "$window_id" 305 618 click 1
 wait_for_marker ROOTGLASS_DESKTOP_BOOT_STARTED 15
 wait_for_marker ROOTGLASS_DESKTOP_GUEST_READY 120
 sleep 0.5
@@ -279,8 +279,8 @@ import -window "$window_id" "${artifact_dir}/03-guest-running.png"
 # Submit a username at the guest login prompt and wait for its password request.
 window_geometry="$(xdotool getwindowgeometry --shell "$window_id")"
 window_height="$(sed -n 's/^HEIGHT=//p' <<<"$window_geometry")"
-input_y="$((window_height - 16))"
-xdotool mousemove --window "$window_id" 180 "$input_y" click 1
+input_y="$((window_height - 80))"
+xdotool mousemove --window "$window_id" 600 "$input_y" click 1
 xdotool type --clearmodifiers --delay 20 "$serial_username"
 sleep 0.25
 import -window "$window_id" "${artifact_dir}/04-guest-username-input.png"
@@ -294,11 +294,11 @@ sleep 0.5
 import -window "$window_id" "${artifact_dir}/05-guest-password-prompt.png"
 
 # Restart, wait for a second guest-ready event, then stop through the UI.
-xdotool mousemove --window "$window_id" 365 26 click 1
+xdotool mousemove --window "$window_id" 1155 110 click 1
 wait_for_marker ROOTGLASS_DESKTOP_RESTART_STARTED 15
 wait_for_count ROOTGLASS_DESKTOP_GUEST_READY 2 120
 echo "ROOTGLASS_DESKTOP_SMOKE_RESTART_READY"
-xdotool mousemove --window "$window_id" 425 26 click 1
+xdotool mousemove --window "$window_id" 1230 110 click 1
 wait_for_marker ROOTGLASS_DESKTOP_STOPPED 120
 echo "ROOTGLASS_DESKTOP_SMOKE_STOPPED"
 xdotool windowsize --sync "$window_id" 1000 650
