@@ -9,11 +9,11 @@ use crate::ui_model::{
 use gpui_kit::actions;
 use gpui_kit::base::StyledExt;
 use gpui_kit::component::button::*;
-use gpui_kit::component::{ActiveTheme as _, Theme, ThemeMode, ThemeRegistry};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::*;
 use gpui_kit::*;
+use gpui_kit::component::{ActiveTheme as _, Theme, ThemeMode, ThemeRegistry};
 use rootglass_app::registry::InstalledGlass;
 use rootglass_app::ManifestValidationReport;
 use rootglass_app::RuntimeEvent;
@@ -177,13 +177,7 @@ impl Render for RootglassWindow {
             }
             div().flex_1().child(main)
         };
-        let mut layout = root.child(
-            div()
-                .h_flex()
-                .flex_1()
-                .child(sidebar_view(cx))
-                .child(main),
-        );
+        let mut layout = root.child(div().h_flex().flex_1().child(sidebar_view(cx)).child(main));
         if matches!(
             &self.model.state,
             UiState::Running(_) | UiState::Booting(_) | UiState::Stopping(_)
@@ -222,7 +216,10 @@ impl Render for RootglassWindow {
                 .p_2()
                 .bg(cx.theme().status_bar)
                 .child(eyebrow("LOCAL ONLY", cx))
-                .child(muted_text("Your glass and saved data stay on this computer.", cx)),
+                .child(muted_text(
+                    "Your glass and saved data stay on this computer.",
+                    cx,
+                )),
         )
     }
 }
@@ -575,10 +572,12 @@ impl RootglassWindow {
                 };
                 let _ = view.update(cx, |view, cx| {
                     let applied = match result {
-                        Ok(ArchiveOpenResult::PublisherReview(review)) => view.model.finish_inspection(
-                            &ticket,
-                            crate::ui_model::InspectionOutcome::PublisherReview(review),
-                        ),
+                        Ok(ArchiveOpenResult::PublisherReview(review)) => {
+                            view.model.finish_inspection(
+                                &ticket,
+                                crate::ui_model::InspectionOutcome::PublisherReview(review),
+                            )
+                        }
                         Ok(ArchiveOpenResult::Imported(result)) => {
                             view.model.finish_import(&ticket, result)
                         }
@@ -978,23 +977,18 @@ fn library_view(
     file_drop_active: bool,
     cx: &mut Context<RootglassWindow>,
 ) -> Div {
-    let mut view = div()
-        .v_flex()
-        .gap_2()
-        .p_2()
-        .bg(cx.theme().table)
-        .child(
-            div()
-                .h_flex()
-                .items_center()
-                .gap_2()
-                .p_2()
-                .bg(cx.theme().table_head)
-                .child(eyebrow("GLASS", cx).flex_1())
-                .child(eyebrow("VERSION", cx).w(px(84.0)))
-                .child(eyebrow("PUBLISHER", cx).w(px(160.0)))
-                .child(eyebrow("STATUS", cx).w(px(100.0))),
-        );
+    let mut view = div().v_flex().gap_2().p_2().bg(cx.theme().table).child(
+        div()
+            .h_flex()
+            .items_center()
+            .gap_2()
+            .p_2()
+            .bg(cx.theme().table_head)
+            .child(eyebrow("GLASS", cx).flex_1())
+            .child(eyebrow("VERSION", cx).w(px(84.0)))
+            .child(eyebrow("PUBLISHER", cx).w(px(160.0)))
+            .child(eyebrow("STATUS", cx).w(px(100.0))),
+    );
     if installed_glasses.is_empty() {
         view = view
             .child(div().p_3().child("No glasses are installed."))
@@ -1021,16 +1015,16 @@ fn library_view(
             } else {
                 cx.theme().foreground
             };
-            view = view
-                .child(
-                    div()
-                        .h_flex()
-                        .items_center()
-                        .gap_2()
-                        .p_2()
-                        .bg(background)
-                        .text_color(foreground)
-                        .child(div().flex_1().child(
+            view = view.child(
+                div()
+                    .h_flex()
+                    .items_center()
+                    .gap_2()
+                    .p_2()
+                    .bg(background)
+                    .text_color(foreground)
+                    .child(
+                        div().flex_1().child(
                             Button::new(format!("installed-{}", glass.content_sha256))
                                 .ghost()
                                 .label(glass.name.clone())
@@ -1038,24 +1032,21 @@ fn library_view(
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.select_bundle(path.clone(), cx);
                                 })),
-                        ))
-                        .child(div().w(px(84.0)).child(glass.version.clone()))
-                        .child(
-                            div()
-                                .w(px(160.0))
-                                .child(glass.publisher_name.clone()),
-                        )
-                        .child(
-                            div()
-                                .w(px(100.0))
-                                .text_color(if selected {
-                                    cx.theme().accent_foreground
-                                } else {
-                                    cx.theme().muted_foreground
-                                })
-                                .child(if selected { "Selected" } else { "Installed" }),
                         ),
-                );
+                    )
+                    .child(div().w(px(84.0)).child(glass.version.clone()))
+                    .child(div().w(px(160.0)).child(glass.publisher_name.clone()))
+                    .child(
+                        div()
+                            .w(px(100.0))
+                            .text_color(if selected {
+                                cx.theme().accent_foreground
+                            } else {
+                                cx.theme().muted_foreground
+                            })
+                            .child(if selected { "Selected" } else { "Installed" }),
+                    ),
+            );
         }
     }
     if let Some(error) = library_error {
@@ -1081,7 +1072,10 @@ fn library_view(
                 .child(format!("Installed {} {}", glass.name, glass.version))
                 .child(muted_text(format!("Publisher: {}", glass.publisher), cx))
                 .child(muted_text(format!("Content digest: {}", glass.digest), cx))
-                .child(muted_text(format!("Installed at: {}", glass.path.display()), cx));
+                .child(muted_text(
+                    format!("Installed at: {}", glass.path.display()),
+                    cx,
+                ));
         }
         _ => {}
     }
@@ -1128,7 +1122,10 @@ fn details_view(state: &UiState) -> Div {
         UiState::PublisherReview(review) => div()
             .v_flex()
             .child("Publisher is not trusted · Signature not verified")
-            .child(format!("Declared publisher · unverified: {}", review.publisher_name))
+            .child(format!(
+                "Declared publisher · unverified: {}",
+                review.publisher_name
+            ))
             .child(format!(
                 "Declared identity · unverified: {}",
                 review.publisher_identity
@@ -1210,7 +1207,8 @@ fn publisher_review_view(
             cx,
         ));
     if let Some(error) = &trust_policy.error {
-        trust_guidance = trust_guidance.child(div().text_color(cx.theme().danger).child(error.clone()));
+        trust_guidance =
+            trust_guidance.child(div().text_color(cx.theme().danger).child(error.clone()));
     }
 
     div()

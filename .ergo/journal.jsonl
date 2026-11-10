@@ -334,3 +334,7 @@
 {"version":1,"task_id":"SEKSNS","kind":"result","at":"2026-11-10T06:07:20.898282499Z","agent":"codex@worker-1","text":"CI 427650 passed format/tests/Clippy/CLI/x64+arm64; desktop compile stalled at apt."}
 {"version":1,"task_id":"SEKSNS","kind":"result","at":"2026-11-10T06:07:20.910159754Z","agent":"codex@worker-1","text":"Desktop compile passed in CI 427646 at 2380f71; cc3a4de only reformats a TUI test assertion."}
 {"version":1,"task_id":"SEKSNS","kind":"block","at":"2026-11-10T06:07:20.923388244Z","agent":"codex@worker-1","text":"GitHub Actions refused to start the publisher-review screenshot runner because of account payments or spending limit; restore billing and rerun the Linux screenshot."}
+{"version":1,"task_id":"SEKSNS","kind":"open","at":"2026-11-10T14:19:50.098315386Z","text":"Billing restored; screenshot and CI reruns succeeded, so publisher review work can resume."}
+{"version":1,"task_id":"SEKSNS","kind":"claim","at":"2026-11-10T14:19:50.112501883Z","agent":"codex@worker-1"}
+{"version":1,"task_id":"SEKSNS","kind":"result","at":"2026-11-10T14:19:50.126106104Z","agent":"codex@worker-1","text":"CI 42765073434 and screenshot 42766071356 passed; artifact 13771530578."}
+{"version":1,"task_id":"SEKSNS","kind":"result","at":"2026-11-10T14:19:50.13935367Z","agent":"codex@worker-1","text":"Ready matrix exposed nested desktop fmt gap; fixing it before rerunning."}
