@@ -361,21 +361,22 @@ struct BoundedTail {
 
 impl BoundedTail {
     fn push(&mut self, bytes: &[u8]) {
-        if bytes.len() >= DIAGNOSTIC_STDERR_TAIL_LIMIT {
-            self.bytes.clear();
-            self.bytes.extend(
-                bytes[bytes.len() - DIAGNOSTIC_STDERR_TAIL_LIMIT..]
-                    .iter()
-                    .copied(),
-            );
+        let overflow = self
+            .bytes
+            .len()
+            .saturating_add(bytes.len())
+            .saturating_sub(DIAGNOSTIC_STDERR_TAIL_LIMIT);
+        if overflow > 0 {
+            let drop_old = overflow.min(self.bytes.len());
+            for _ in 0..drop_old {
+                self.bytes.pop_front();
+            }
+            let drop_new = overflow - drop_old;
+            self.bytes.extend(bytes[drop_new..].iter().copied());
             self.truncated = true;
-            return;
+        } else {
+            self.bytes.extend(bytes.iter().copied());
         }
-        while self.bytes.len() + bytes.len() > DIAGNOSTIC_STDERR_TAIL_LIMIT {
-            self.bytes.pop_front();
-            self.truncated = true;
-        }
-        self.bytes.extend(bytes.iter().copied());
     }
 
     fn snapshot(&self) -> DiagnosticTail {
@@ -1171,5 +1172,14 @@ with client:
         let snapshot = tail.snapshot();
         assert_eq!(snapshot.bytes, latest);
         assert!(snapshot.truncated);
+    }
+
+    #[test]
+    fn bounded_stderr_tail_at_capacity_is_not_marked_truncated() {
+        let mut tail = BoundedTail::default();
+        tail.push(&vec![b'x'; DIAGNOSTIC_STDERR_TAIL_LIMIT]);
+
+        assert_eq!(tail.snapshot().bytes.len(), DIAGNOSTIC_STDERR_TAIL_LIMIT);
+        assert!(!tail.snapshot().truncated);
     }
 }
