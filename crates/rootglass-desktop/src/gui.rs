@@ -173,45 +173,48 @@ impl Render for RootglassWindow {
             let retry_available = failure
                 .retry_path(self.model.selected_path.as_ref())
                 .is_some();
-            let failure_content = failure_view::content(
-                &failure,
-                &glass_name,
-                preview,
-                guest_was_ready,
-                self.failure_diagnostics_open,
-                cx,
-            )
-            .child(
-                div()
-                    .h_flex()
-                    .items_center()
-                    .gap_3()
-                    .child(
-                        Button::new("retry-launch-checks")
-                            .primary()
-                            .label(if self.recovery_retrying {
-                                "CHECKING…"
-                            } else {
-                                "RETRY CHECKS"
-                            })
-                            .disabled(self.recovery_retrying || !retry_available)
-                            .on_click(cx.listener(|this, _, _, cx| this.retry_failure(cx))),
-                    )
-                    .child(
-                        Button::new("toggle-launch-diagnostics")
-                            .secondary()
-                            .label(if self.failure_diagnostics_open {
-                                "HIDE DIAGNOSTICS"
-                            } else {
-                                "VIEW DIAGNOSTICS"
-                            })
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.failure_diagnostics_open = !this.failure_diagnostics_open;
-                                cx.notify();
-                            })),
-                    ),
-            );
-            div().flex_1().min_h(px(0.0)).child(failure_content)
+            div()
+                .v_flex()
+                .flex_1()
+                .min_h(px(0.0))
+                .child(failure_view::content(
+                    &failure,
+                    &glass_name,
+                    preview,
+                    guest_was_ready,
+                    self.failure_diagnostics_open,
+                    cx,
+                ))
+                .child(
+                    div()
+                        .h_flex()
+                        .items_center()
+                        .gap_3()
+                        .child(
+                            Button::new("retry-launch-checks")
+                                .primary()
+                                .label(if self.recovery_retrying {
+                                    "CHECKING…"
+                                } else {
+                                    "RETRY CHECKS"
+                                })
+                                .disabled(self.recovery_retrying || !retry_available)
+                                .on_click(cx.listener(|this, _, _, cx| this.retry_failure(cx))),
+                        )
+                        .child(
+                            Button::new("toggle-launch-diagnostics")
+                                .secondary()
+                                .label(if self.failure_diagnostics_open {
+                                    "HIDE DIAGNOSTICS"
+                                } else {
+                                    "VIEW DIAGNOSTICS"
+                                })
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.failure_diagnostics_open = !this.failure_diagnostics_open;
+                                    cx.notify();
+                                })),
+                        ),
+                )
         } else {
             let mut main = div()
                 .v_flex()

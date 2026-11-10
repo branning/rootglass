@@ -211,7 +211,7 @@ pub(crate) fn content(
     guest_was_ready: bool,
     diagnostics_open: bool,
     cx: &App,
-) -> Div {
+) -> impl IntoElement {
     let mut checks_panel = div()
         .v_flex()
         .gap_3()
