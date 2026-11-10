@@ -297,6 +297,7 @@ impl RootglassWindow {
         let mut content = div()
             .v_flex()
             .flex_1()
+            .h_full()
             .min_h(px(0.0))
             .gap_4()
             .p_6()
@@ -407,6 +408,7 @@ impl RootglassWindow {
                 content = content.child(
                     div()
                         .v_flex()
+                        .h(px(0.0))
                         .flex_1()
                         .min_h(px(0.0))
                         .gap_3()
@@ -420,6 +422,7 @@ impl RootglassWindow {
                         )
                         .child(
                             div()
+                                .h(px(0.0))
                                 .flex_1()
                                 .min_h(px(0.0))
                                 .p_4()
@@ -434,6 +437,7 @@ impl RootglassWindow {
                         .child(
                             div()
                                 .h_flex()
+                                .flex_shrink_0()
                                 .items_center()
                                 .gap_3()
                                 .child(Input::new(&self.input).disabled(!actions.console_input))
