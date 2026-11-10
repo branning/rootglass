@@ -7,6 +7,7 @@ mkdir -p "$artifact_dir"
 artifact_dir="$(cd "$artifact_dir" && pwd)"
 work_dir="$(mktemp -d)"
 log_file="${artifact_dir}/desktop-smoke.log"
+event_file="${artifact_dir}/desktop-smoke-events.log"
 app_pid=""
 window_id=""
 
@@ -32,24 +33,24 @@ export XDG_RUNTIME_DIR="${work_dir}/runtime"
 export XDG_CURRENT_DESKTOP=GNOME
 export GDK_BACKEND=x11
 export ROOTGLASS_DESKTOP_SMOKE=1
-export ROOTGLASS_DESKTOP_SMOKE_EVENT_LOG="${artifact_dir}/desktop-smoke-events.log"
+export ROOTGLASS_DESKTOP_SMOKE_EVENT_LOG="$event_file"
 
 setsid bash -c 'cd "$1"; exec "$2"' _ "$work_dir" "$rootglass_binary" >"$log_file" 2>&1 &
 app_pid=$!
 
 for _ in $(seq 1 300); do
-  if grep -Fq ROOTGLASS_DESKTOP_WINDOW_READY "$log_file"; then
+  if [[ -f "$event_file" ]] && grep -Fq ROOTGLASS_DESKTOP_WINDOW_READY "$event_file"; then
     break
   fi
   if ! kill -0 "$app_pid" 2>/dev/null; then
-    cat "$log_file"
+    cat "$log_file" "$event_file" 2>/dev/null || true
     echo "Rootglass exited before its window opened" >&2
     exit 1
   fi
   sleep 0.1
 done
-if ! grep -Fq ROOTGLASS_DESKTOP_WINDOW_READY "$log_file"; then
-  cat "$log_file"
+if [[ ! -f "$event_file" ]] || ! grep -Fq ROOTGLASS_DESKTOP_WINDOW_READY "$event_file"; then
+  cat "$log_file" "$event_file" 2>/dev/null || true
   echo "Timed out waiting for the Rootglass window" >&2
   exit 1
 fi
@@ -62,7 +63,7 @@ for _ in $(seq 1 100); do
   sleep 0.1
 done
 if [[ -z "$window_id" ]]; then
-  cat "$log_file"
+  cat "$log_file" "$event_file" 2>/dev/null || true
   echo "Could not find the Rootglass GPUI window under Xvfb" >&2
   exit 1
 fi
@@ -85,4 +86,4 @@ if [[ -n "$app_state" && "$app_state" != Z* ]]; then
 fi
 wait "$app_pid"
 app_pid=""
-cat "$log_file"
+cat "$log_file" "$event_file" 2>/dev/null || true
