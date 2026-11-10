@@ -179,11 +179,13 @@ if [[ -z "$window_id" ]]; then
   exit 1
 fi
 xdotool windowfocus --sync "$window_id"
+xdotool windowsize --sync "$window_id" 1280 800
+sleep 0.5
+import -window "$window_id" "${artifact_dir}/00-rootglass-library.png"
 
 # Confirm the real native chooser opens and returns a user-cancel result.
-# The toolbar path works consistently across platforms and avoids assuming a
-# platform-specific modifier for the app's cmd-o shortcut.
-xdotool mousemove --window "$window_id" 170 26 click 1
+# GPUI's `cmd` binding maps to Control on Linux.
+xdotool key --clearmodifiers ctrl+o
 wait_for_marker ROOTGLASS_DESKTOP_PICKER_OPEN
 dialog_window=""
 for _ in $(seq 1 100); do
