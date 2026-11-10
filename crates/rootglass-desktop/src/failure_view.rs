@@ -2,7 +2,7 @@ use crate::ui_model::{BlockedDetails, FailureDetails, GlassPreview, SignatureSta
 use gpui_kit::base::StyledExt;
 use gpui_kit::component::text::TextView;
 use gpui_kit::component::*;
-use gpui_kit::gpui_component::scroll::ScrollableElement;
+use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::*;
 use std::path::PathBuf;
 
