@@ -199,7 +199,14 @@ impl Render for RootglassWindow {
             }
             div().flex_1().child(main)
         };
-        let mut layout = root.child(div().h_flex().flex_1().child(sidebar_view(cx)).child(main));
+        let mut layout = root.child(
+            div()
+                .h_flex()
+                .flex_1()
+                .min_h(px(0.0))
+                .child(sidebar_view(cx))
+                .child(main),
+        );
         if !is_active_run && !self.model.console.is_empty() {
             layout = layout.child(
                 div()
@@ -290,6 +297,7 @@ impl RootglassWindow {
         let mut content = div()
             .v_flex()
             .flex_1()
+            .min_h(px(0.0))
             .gap_4()
             .p_6()
             .bg(cx.theme().background)
@@ -413,7 +421,7 @@ impl RootglassWindow {
                         .child(
                             div()
                                 .flex_1()
-                                .min_h(px(200.0))
+                                .min_h(px(0.0))
                                 .p_4()
                                 .bg(cx.theme().group_box)
                                 .overflow_y_scrollbar()
