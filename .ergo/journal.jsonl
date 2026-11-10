@@ -364,3 +364,4 @@
 {"version":1,"task_id":"MFCINK","kind":"result","at":"2026-11-10T20:42:21.075677793Z","agent":"codex@worker-1","text":"Bumped desktop manifest and lockfile to 0.0.4; added GPUI notes and macOS/sample-key caveats"}
 {"version":1,"task_id":"MFCINK","kind":"result","at":"2026-11-10T21:00:59.695675763Z","agent":"codex@worker-1","text":"Release CI exposed a TUI state-refresh gap after planning; added Planned-state refresh before retrying smoke"}
 {"version":1,"task_id":"MFCINK","kind":"result","at":"2026-11-10T21:11:38.592577364Z","agent":"codex@worker-1","text":"Embedded smoke exposed missing Planned-state refresh; fix added. Local cargo unavailable; CI will validate."}
+{"version":1,"task_id":"MFCINK","kind":"result","at":"2026-11-10T21:21:02.670538643Z","agent":"codex@worker-1","text":"CI #42902893496 and embedded guest smoke #42902674382 passed; screenshots and TUI/QEMU traces are attached."}
