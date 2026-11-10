@@ -251,6 +251,14 @@ impl QemuLaunchPlan {
 pub const SERIAL_BUFFER_LIMIT: usize = 1024 * 1024;
 /// Maximum raw serial and stderr diagnostics retained on disk per run.
 pub const DIAGNOSTIC_LOG_LIMIT: u64 = 10 * 1024 * 1024;
+/// Maximum QEMU stderr output retained in memory for the desktop Logs tab.
+pub const DIAGNOSTIC_STDERR_TAIL_LIMIT: usize = 64 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiagnosticTail {
+    pub bytes: Vec<u8>,
+    pub truncated: bool,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SerialChunk {
@@ -341,6 +349,40 @@ impl BoundedLog {
         let length = available.min(bytes.len());
         if self.file.write_all(&bytes[..length]).is_ok() {
             self.written += length as u64;
+        }
+    }
+}
+
+#[derive(Default)]
+struct BoundedTail {
+    bytes: VecDeque<u8>,
+    truncated: bool,
+}
+
+impl BoundedTail {
+    fn push(&mut self, bytes: &[u8]) {
+        let overflow = self
+            .bytes
+            .len()
+            .saturating_add(bytes.len())
+            .saturating_sub(DIAGNOSTIC_STDERR_TAIL_LIMIT);
+        if overflow > 0 {
+            let drop_old = overflow.min(self.bytes.len());
+            for _ in 0..drop_old {
+                self.bytes.pop_front();
+            }
+            let drop_new = overflow - drop_old;
+            self.bytes.extend(bytes[drop_new..].iter().copied());
+            self.truncated = true;
+        } else {
+            self.bytes.extend(bytes.iter().copied());
+        }
+    }
+
+    fn snapshot(&self) -> DiagnosticTail {
+        DiagnosticTail {
+            bytes: self.bytes.iter().copied().collect(),
+            truncated: self.truncated,
         }
     }
 }
@@ -459,6 +501,7 @@ pub struct QemuProcess {
     qmp: Option<QmpClient>,
     serial: Arc<SerialBuffer>,
     diagnostic_log: PathBuf,
+    stderr_tail: Arc<Mutex<BoundedTail>>,
 }
 
 impl QemuProcess {
@@ -512,14 +555,23 @@ impl QemuProcess {
         };
         let bounded_log = Arc::new(Mutex::new(BoundedLog { file, written: 0 }));
         let serial = Arc::new(SerialBuffer::default());
-        if let Err(error) =
-            spawn_pipe_reader(stdout, Some(Arc::clone(&serial)), Arc::clone(&bounded_log))
-        {
+        let stderr_tail = Arc::new(Mutex::new(BoundedTail::default()));
+        if let Err(error) = spawn_pipe_reader(
+            stdout,
+            Some(Arc::clone(&serial)),
+            Arc::clone(&bounded_log),
+            None,
+        ) {
             let _ = child.kill();
             let _ = child.wait();
             return Err(error);
         }
-        if let Err(error) = spawn_pipe_reader(stderr, None, Arc::clone(&bounded_log)) {
+        if let Err(error) = spawn_pipe_reader(
+            stderr,
+            None,
+            Arc::clone(&bounded_log),
+            Some(Arc::clone(&stderr_tail)),
+        ) {
             let _ = child.kill();
             let _ = child.wait();
             return Err(error);
@@ -554,6 +606,7 @@ impl QemuProcess {
             qmp: Some(qmp),
             serial,
             diagnostic_log,
+            stderr_tail,
         })
     }
 
@@ -579,6 +632,17 @@ impl QemuProcess {
     /// Return the diagnostic log path for this run.
     pub fn diagnostic_log(&self) -> &std::path::Path {
         &self.diagnostic_log
+    }
+
+    /// Return a bounded snapshot of QEMU stderr, kept separate from guest serial output.
+    pub fn stderr_tail(&self) -> Result<DiagnosticTail, QemuError> {
+        self.stderr_tail
+            .lock()
+            .map(|tail| tail.snapshot())
+            .map_err(|_| QemuError::ProcessIo {
+                operation: "reading QEMU diagnostics",
+                source: std::io::Error::other("diagnostic buffer lock was poisoned"),
+            })
     }
 
     /// Poll the child without blocking the caller.
@@ -704,6 +768,7 @@ fn spawn_pipe_reader<R: Read + Send + 'static>(
     mut pipe: R,
     serial: Option<Arc<SerialBuffer>>,
     log: Arc<Mutex<BoundedLog>>,
+    stderr_tail: Option<Arc<Mutex<BoundedTail>>>,
 ) -> Result<(), QemuError> {
     thread::Builder::new()
         .name("rootglass-qemu-output".to_string())
@@ -716,6 +781,11 @@ fn spawn_pipe_reader<R: Read + Send + 'static>(
                         let bytes = &buffer[..count];
                         if let Some(serial) = &serial {
                             serial.push(bytes.to_vec());
+                        }
+                        if let Some(stderr_tail) = &stderr_tail {
+                            if let Ok(mut tail) = stderr_tail.lock() {
+                                tail.push(bytes);
+                            }
                         }
                         if let Ok(mut log) = log.lock() {
                             log.write(bytes);
@@ -912,6 +982,9 @@ with client:
         sys.exit(2)
     client.sendall(b'{"return":{}}\r\n')
     print("FAKE_QEMU_READY", flush=True)
+    if MODE == "diagnostics":
+        print("FAKE_QEMU_DIAGNOSTIC", file=sys.stderr, flush=True)
+        sys.exit(0)
     if MODE == "eof":
         sys.exit(0)
     if MODE == "crash":
@@ -1068,5 +1141,45 @@ with client:
             fs::metadata(process.diagnostic_log()).unwrap().len(),
             DIAGNOSTIC_LOG_LIMIT
         );
+    }
+
+    #[test]
+    fn qemu_stderr_tail_contains_host_diagnostics_without_serial_output() {
+        let fake = fake_qemu("diagnostics");
+        let process = plan(&fake.binary).spawn_supervised().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let tail = loop {
+            let tail = process.stderr_tail().unwrap();
+            if !tail.bytes.is_empty() {
+                break tail;
+            }
+            assert!(Instant::now() < deadline, "QEMU stderr was not collected");
+            thread::sleep(Duration::from_millis(10));
+        };
+        let text = String::from_utf8_lossy(&tail.bytes);
+        assert!(text.contains("FAKE_QEMU_DIAGNOSTIC"));
+        assert!(!text.contains("FAKE_QEMU_READY"));
+        assert!(!tail.truncated);
+    }
+
+    #[test]
+    fn bounded_stderr_tail_retains_the_latest_bytes_and_reports_truncation() {
+        let mut tail = BoundedTail::default();
+        tail.push(b"older output\n");
+        let latest = vec![b'x'; DIAGNOSTIC_STDERR_TAIL_LIMIT];
+        tail.push(&latest);
+
+        let snapshot = tail.snapshot();
+        assert_eq!(snapshot.bytes, latest);
+        assert!(snapshot.truncated);
+    }
+
+    #[test]
+    fn bounded_stderr_tail_at_capacity_is_not_marked_truncated() {
+        let mut tail = BoundedTail::default();
+        tail.push(&vec![b'x'; DIAGNOSTIC_STDERR_TAIL_LIMIT]);
+
+        assert_eq!(tail.snapshot().bytes.len(), DIAGNOSTIC_STDERR_TAIL_LIMIT);
+        assert!(!tail.snapshot().truncated);
     }
 }

@@ -2,8 +2,8 @@ use crate::{DeveloperAction, DeveloperPanel, DeveloperResult};
 use rootglass_app::registry::InstalledGlass;
 use rootglass_app::state::StateRecord;
 use rootglass_app::{
-    AppError, AppService, ManifestValidationReport, PreflightReport, RunId, RunOptions,
-    RuntimeEvent, TrustPolicyStatus, UntrustedPublisherReview,
+    AppError, AppService, DiagnosticLogSnapshot, ManifestValidationReport, PreflightReport, RunId,
+    RunOptions, RuntimeEvent, TrustPolicyStatus, UntrustedPublisherReview,
 };
 use rootglass_core::LifecycleState;
 use std::path::{Path, PathBuf};
@@ -231,6 +231,14 @@ pub trait TuiService: Send {
     fn poll_events(&mut self) -> Result<Vec<RuntimeEvent>, AppError>;
     fn write_serial(&mut self, run: &RunId, bytes: &[u8]) -> Result<(), AppError>;
 
+    fn qemu_diagnostics(&mut self, _run: &RunId) -> Result<DiagnosticLogSnapshot, AppError> {
+        Err(AppError {
+            phase: LifecycleState::Failed,
+            summary: "QEMU diagnostics are unavailable.".to_string(),
+            detail: "The active service does not expose host-side diagnostic output.".to_string(),
+        })
+    }
+
     fn trust_policy_status(&mut self) -> TrustPolicyStatus {
         TrustPolicyStatus::default()
     }
@@ -404,6 +412,10 @@ impl TuiService for AppService {
 
     fn write_serial(&mut self, run: &RunId, bytes: &[u8]) -> Result<(), AppError> {
         AppService::write_serial(self, run, bytes)
+    }
+
+    fn qemu_diagnostics(&mut self, run: &RunId) -> Result<DiagnosticLogSnapshot, AppError> {
+        AppService::qemu_diagnostics(self, run)
     }
 
     fn trust_policy_status(&mut self) -> TrustPolicyStatus {
@@ -778,6 +790,10 @@ impl UiModel {
         self.visible_installed()
             .into_iter()
             .find(|glass| &glass.package_path == path)
+    }
+
+    pub fn selected_preview(&self) -> Option<&GlassPreview> {
+        self.last_preview.as_ref()
     }
 
     pub fn visible_installed(&self) -> Vec<&InstalledGlass> {

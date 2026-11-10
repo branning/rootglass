@@ -75,6 +75,7 @@ trap cleanup EXIT
 mkdir -p "$artifact_dir" "${work_dir}/home" "${work_dir}/config/rootglass" \
   "${work_dir}/data" "${work_dir}/runtime"
 chmod 700 "${work_dir}/runtime"
+ln -s "${repo_root}/runtime-assets" "${work_dir}/runtime-assets"
 
 verified_dir="${work_dir}/verified.glass"
 trusted_key="${work_dir}/trusted-seed"
@@ -179,11 +180,13 @@ if [[ -z "$window_id" ]]; then
   exit 1
 fi
 xdotool windowfocus --sync "$window_id"
+xdotool windowsize --sync "$window_id" 1280 800
+sleep 0.5
+import -window "$window_id" "${artifact_dir}/00-rootglass-library.png"
 
-# Confirm the real native chooser opens and returns a user-cancel result.
-# The toolbar path works consistently across platforms and avoids assuming a
-# platform-specific modifier for the app's cmd-o shortcut.
-xdotool mousemove --window "$window_id" 170 26 click 1
+# Confirm the real native chooser opens and returns a user-cancel result from
+# the current Library screen's IMPORT GLASS action.
+xdotool mousemove --window "$window_id" 1210 306 click 1
 wait_for_marker ROOTGLASS_DESKTOP_PICKER_OPEN
 dialog_window=""
 for _ in $(seq 1 100); do
@@ -249,11 +252,12 @@ xdotool mousemove --window "$window_id" 320 120
 /usr/bin/python3 "${repo_root}/scripts/xdnd-drop-file.py" "$window_id" "$verified_dir"
 wait_for_marker ROOTGLASS_DESKTOP_PREFLIGHT_READY
 wait_for_marker ROOTGLASS_DESKTOP_STATE_READY
+sleep 0.5
 import -window "$window_id" "${artifact_dir}/01-verified-directory.png"
 
 xdotool mousemove --window "$window_id" 320 120
 /usr/bin/python3 "${repo_root}/scripts/xdnd-drop-file.py" "$window_id" "$untrusted_archive"
-wait_for_marker ROOTGLASS_DESKTOP_INSPECT_UNTRUSTED
+wait_for_marker ROOTGLASS_DESKTOP_PUBLISHER_REVIEW
 xdotool mousemove --window "$window_id" 320 120
 /usr/bin/python3 "${repo_root}/scripts/xdnd-drop-file.py" "$window_id" "$tampered_archive"
 wait_for_marker ROOTGLASS_DESKTOP_INSPECT_TAMPERED
@@ -262,23 +266,29 @@ xdotool mousemove --window "$window_id" 320 120
 /usr/bin/python3 "${repo_root}/scripts/xdnd-drop-file.py" "$window_id" "$verified_archive"
 wait_for_count ROOTGLASS_DESKTOP_INSPECT_VERIFIED 2
 wait_for_count ROOTGLASS_DESKTOP_STATE_READY 2
+sleep 0.5
 import -window "$window_id" "${artifact_dir}/02-verified-import.png"
 
-# Toolbar order is Open, Boot, Restart, Stop. Click Boot after verified preflight.
-xdotool mousemove --window "$window_id" 285 26 click 1
-wait_for_marker ROOTGLASS_DESKTOP_BOOT_STARTED 120
+# Click START GLASS after the verified import is visibly ready.
+xdotool mousemove --window "$window_id" 305 618 click 1
+wait_for_marker ROOTGLASS_DESKTOP_BOOT_STARTED 15
 wait_for_marker ROOTGLASS_DESKTOP_GUEST_READY 120
+sleep 0.5
 import -window "$window_id" "${artifact_dir}/03-guest-running.png"
 
 # Submit a username at the guest login prompt and wait for its password request.
 window_geometry="$(xdotool getwindowgeometry --shell "$window_id")"
 window_height="$(sed -n 's/^HEIGHT=//p' <<<"$window_geometry")"
-input_y="$((window_height - 16))"
-xdotool mousemove --window "$window_id" 180 "$input_y" click 1
-xdotool type --clearmodifiers --delay 20 "$serial_username"
+input_y="$((window_height - 68))"
+xdotool windowfocus --sync "$window_id"
+xdotool mousemove --window "$window_id" 600 "$input_y" click 1
+printf 'ROOTGLASS_DESKTOP_INPUT_FOCUS window=%s focused=%s\n' \
+  "$window_id" "$(xdotool getwindowfocus 2>/dev/null || true)"
+xdotool type --clearmodifiers --delay 80 --window "$window_id" "$serial_username"
 sleep 0.25
 import -window "$window_id" "${artifact_dir}/04-guest-username-input.png"
-xdotool key Return
+xdotool key --clearmodifiers --window "$window_id" Return
+wait_for_marker ROOTGLASS_DESKTOP_SERIAL_INPUT_REQUEST
 wait_for_marker ROOTGLASS_DESKTOP_SERIAL_INPUT_SENT
 wait_for_marker ROOTGLASS_DESKTOP_SERIAL_ECHO 45
 echo "ROOTGLASS_DESKTOP_SMOKE_SERIAL_RESPONSE"
@@ -288,11 +298,13 @@ sleep 0.5
 import -window "$window_id" "${artifact_dir}/05-guest-password-prompt.png"
 
 # Restart, wait for a second guest-ready event, then stop through the UI.
-xdotool mousemove --window "$window_id" 365 26 click 1
-wait_for_marker ROOTGLASS_DESKTOP_RESTART_STARTED 120
+xdotool mousemove --window "$window_id" 298 131 click 1
+wait_for_marker ROOTGLASS_DESKTOP_RESTART_REQUEST 15
+wait_for_marker ROOTGLASS_DESKTOP_RESTART_STARTED 15
 wait_for_count ROOTGLASS_DESKTOP_GUEST_READY 2 120
 echo "ROOTGLASS_DESKTOP_SMOKE_RESTART_READY"
-xdotool mousemove --window "$window_id" 425 26 click 1
+xdotool mousemove --window "$window_id" 366 131 click 1
+wait_for_marker ROOTGLASS_DESKTOP_STOP_REQUEST 15
 wait_for_marker ROOTGLASS_DESKTOP_STOPPED 120
 echo "ROOTGLASS_DESKTOP_SMOKE_STOPPED"
 xdotool windowsize --sync "$window_id" 1000 650
