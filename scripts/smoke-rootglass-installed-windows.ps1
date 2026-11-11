@@ -182,7 +182,7 @@ public static class RootglassSmokeWindow {
     [DllImport("user32.dll")]
     private static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
 
-    public static string ClickImportGlass(IntPtr window) {
+    public static string ClickImportGlass(IntPtr window, int usableHeight) {
         Rect client;
         if (!GetClientRect(window, out client)) {
             throw new InvalidOperationException("Could not read the Rootglass client area.");
@@ -192,7 +192,7 @@ public static class RootglassSmokeWindow {
         // usable desktop height (excluding the Windows taskbar).
         Point point = new Point {
             X = client.Right - 64,
-            Y = (int)(System.Windows.Forms.Screen.PrimaryScreen.WorkingArea.Height * 0.406)
+            Y = (int)(usableHeight * 0.406)
         };
         if (!ClientToScreen(window, ref point) || !SetCursorPos(point.X, point.Y)) {
             throw new InvalidOperationException("Could not position the pointer over Import Glass.");
@@ -236,7 +236,8 @@ public static class RootglassSmokeWindow {
     } catch {
         Write-ProgressLine "desktop screenshot capture failed: $($_.Exception.Message)"
     }
-    $clickPoint = [RootglassSmokeWindow]::ClickImportGlass($RootglassProcess.MainWindowHandle)
+    $usableHeight = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea.Height
+    $clickPoint = [RootglassSmokeWindow]::ClickImportGlass($RootglassProcess.MainWindowHandle, $usableHeight)
     Write-ProgressLine "clicked Import Glass at screen coordinates $clickPoint"
     $pickerDeadline = (Get-Date).AddSeconds(15)
     while ((Get-Date) -lt $pickerDeadline) {
