@@ -253,6 +253,19 @@ public static class RootglassSmokeWindow {
         (Get-Content -LiteralPath $pickerLog) -notcontains "ROOTGLASS_DESKTOP_PICKER_OPEN") {
         throw "Clicking Import Glass did not open the Rootglass file picker. Foreground request=$foregroundSet; active=$foregroundWindow."
     }
+    Start-Sleep -Milliseconds 1000
+    try {
+        Add-Type -AssemblyName System.Drawing
+        $screenBounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+        $bitmap = [System.Drawing.Bitmap]::new($screenBounds.Width, $screenBounds.Height)
+        $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+        $graphics.CopyFromScreen($screenBounds.Location, [System.Drawing.Point]::Empty, $screenBounds.Size)
+        $bitmap.Save((Join-Path $EvidenceDirectory "desktop-picker-open.png"), [System.Drawing.Imaging.ImageFormat]::Png)
+        $graphics.Dispose()
+        $bitmap.Dispose()
+    } catch {
+        Write-ProgressLine "picker-open screenshot capture failed: $($_.Exception.Message)"
+    }
     $dialogAutomation = $null
     $pickerControls = $null
     $fileNameControl = $null
@@ -320,6 +333,18 @@ public static class RootglassSmokeWindow {
         Start-Sleep -Milliseconds 250
     }
     if ($null -eq $dialogAutomation) {
+        try {
+            Add-Type -AssemblyName System.Drawing
+            $screenBounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bitmap = [System.Drawing.Bitmap]::new($screenBounds.Width, $screenBounds.Height)
+            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+            $graphics.CopyFromScreen($screenBounds.Location, [System.Drawing.Point]::Empty, $screenBounds.Size)
+            $bitmap.Save((Join-Path $EvidenceDirectory "desktop-picker-not-found.png"), [System.Drawing.Imaging.ImageFormat]::Png)
+            $graphics.Dispose()
+            $bitmap.Dispose()
+        } catch {
+            Write-ProgressLine "picker-timeout screenshot capture failed: $($_.Exception.Message)"
+        }
         throw "The picker-open event was recorded, but no native file dialog appeared in UI Automation. Top-level windows: $($topLevelWindows -join '; ')"
     }
     $dialogHandle = [IntPtr]$dialogAutomation.Current.NativeWindowHandle
