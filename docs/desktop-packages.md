@@ -173,7 +173,33 @@ uninstall-retention record. Its uploaded ZIP SHA-256 is
 This verifies installation, OS association/import, and offline guest operation
 on the hosted macOS runner. It does not test native picker interaction,
 accessibility, notarization, or HVF performance; no macOS acceleration claim is
-made. The macOS support declaration remains subject to maintainer approval.
+made.
+
+### Recorded v0.0.4 installed macOS arm64 result
+
+Package run [42905505796](https://github.com/branning/rootglass/actions/runs/42905505796)
+built v0.0.4 from `6fab114df7de18b5e0874b9069f0b3fcd56d6578`. The installed
+smoke [42909500277](https://github.com/branning/rootglass/actions/runs/42909500277)
+passed on macOS 15.8.2 (24H232), arm64. It copied the app to
+`/Applications`, opened the signed example through LaunchServices, and verified
+the sample publisher trust. The DMG SHA-256 is
+`034e313428c2a0de577dc29bc6affdfe66d4d94297274dbeb52efeb59ad1ef8b`; the
+example SHA-256 is
+`d65d9532903b8e1167f82a7273d29204c947b69cb00e250713cff8efd57ac522`.
+
+The smoke verified the v0.0.4 runtime manifest and bundled QEMU 11.1.3,
+including the QEMU and dynamic-library code signatures. With the runner's
+network interface down, it ran the installed TUI from outside the checkout,
+without invoking host Rust or QEMU tools. The signed Alpine guest booted,
+accepted login and `uname -a`, restarted, and stopped with no QEMU process left.
+After removing the app, the trust policy, imported library, and guest state were
+unchanged. The [smoke evidence artifact](https://github.com/branning/rootglass/actions/runs/42909500277/artifacts/13807365619)
+has SHA-256
+`5683345feb6847f91b101e645be6b5e477685804262f7706cae4dd3954aab455`.
+
+This qualifies the selected macOS arm64 preview target on the hosted OS. It does
+not test native picker interaction, accessibility, notarization, or HVF
+performance; no macOS acceleration claim is made.
 
 ## Manual installed Ubuntu package smoke
 
