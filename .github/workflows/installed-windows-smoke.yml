@@ -98,7 +98,9 @@ jobs:
                 .filename == ".github/workflows/installed-windows-smoke.yml" or
                 .filename == "scripts/smoke-rootglass-installed-windows-tui.py" or
                 .filename == "scripts/smoke-rootglass-installed-windows.ps1" or
-                .filename == "docs/desktop-packages.md"
+                .filename == "docs/desktop-packages.md" or
+                .filename == ".ergo/backlog.jsonl" or
+                .filename == ".ergo/journal.jsonl"
               )
             ' <<< "$comparison" >/dev/null || {
               echo "Package commit $package_sha differs outside the Windows smoke harness/evidence docs" >&2
