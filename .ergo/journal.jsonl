@@ -384,3 +384,4 @@
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-11T05:26:19.571762121Z","agent":"codex@worker-1","text":"#42965055931: picker/association passed; Plan was pressed before async archive import reached Ready."}
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-11T06:02:52.630539521Z","agent":"codex@worker-1","text":"Smoke #42968605213 passed import/association; boot exposed QEMU's missing bundled ROM lookup."}
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-11T06:35:08.105762328Z","agent":"codex@worker-1","text":"Smoke #42971686937 booted Alpine but timed out waiting for the TUI guest command marker."}
+{"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-11T06:37:27.839101734Z","agent":"codex@worker-1","text":"Smoke #42973551612 stopped at validation; a changelog-only change blocked package reuse."}
