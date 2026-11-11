@@ -374,3 +374,6 @@
 {"version":1,"task_id":"DBDL7V","kind":"result","at":"2026-11-11T02:43:01.338345592Z","agent":"codex@worker-1","text":"v0.0.4 smoke #42909500277 passed macOS 15.8.2 arm64; QEMU 11.1.3 signatures verified."}
 {"version":1,"task_id":"DBDL7V","kind":"result","at":"2026-11-11T02:43:01.351983505Z","agent":"codex@worker-1","text":"Offline TUI login/uname/restart/stop and uninstall retention recorded with artifact SHA-256 in docs."}
 {"version":1,"task_id":"DBDL7V","kind":"done","at":"2026-11-11T02:46:50.389669537Z","agent":"codex@worker-1","text":"Merged PR #125; v0.0.4 macOS 15.8.2 arm64 offline smoke #42909500277 qualified the selected preview target."}
+{"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-11T02:52:18.088157808Z","text":"Windows smoke #42948085030 verified installation/runtime, then hit a false positive on the installer-created app folder."}
+{"version":1,"task_id":"YFYS3W","kind":"open","at":"2026-11-11T02:52:18.101484686Z","text":"Smoke workflow is on main; fix its clean-profile preflight to inspect trust/library/state data paths, not the app install folder."}
+{"version":1,"task_id":"YFYS3W","kind":"claim","at":"2026-11-11T02:52:18.115513133Z","agent":"codex@worker-1"}

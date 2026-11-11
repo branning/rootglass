@@ -128,8 +128,14 @@ try {
     $trustPath = Join-Path $trustDirectory "trust.json"
     $libraryRoot = Join-Path $env:LOCALAPPDATA "Rootglass\library"
     $stateRoot = Join-Path $env:LOCALAPPDATA "Rootglass\states"
-    if ((Test-Path $trustDirectory) -or (Test-Path (Join-Path $env:LOCALAPPDATA "Rootglass"))) {
-        throw "Rootglass user data existed before this smoke; refusing to overwrite it."
+    $existingDataPaths = @()
+    foreach ($candidate in @($trustPath, $libraryRoot, $stateRoot)) {
+        if (Test-Path -LiteralPath $candidate) {
+            $existingDataPaths += $candidate
+        }
+    }
+    if ($existingDataPaths.Count -gt 0) {
+        throw "Rootglass user data existed before this smoke; refusing to overwrite it: $($existingDataPaths -join ', ')"
     }
     New-Item -ItemType Directory -Force -Path $trustDirectory | Out-Null
     @{
