@@ -1035,11 +1035,17 @@ impl RootglassWindow {
         if self.recovery_retrying || !self.model.actions().open {
             return;
         }
+        let can_select_mixed_paths = cx.can_select_mixed_files_and_dirs();
+        let prompt = if can_select_mixed_paths {
+            "Select a Rootglass .glass archive or directory"
+        } else {
+            "Select a Rootglass .glass archive"
+        };
         let selection = cx.prompt_for_paths(PathPromptOptions {
             files: true,
-            directories: true,
+            directories: can_select_mixed_paths,
             multiple: false,
-            prompt: Some("Select a Rootglass .glass archive or directory".into()),
+            prompt: Some(prompt.into()),
         });
         desktop_smoke_event("ROOTGLASS_DESKTOP_PICKER_OPEN");
         cx.spawn(async move |view, cx| {

@@ -254,6 +254,9 @@ public static class RootglassSmokeWindow {
         throw "Clicking Import Glass did not open the Rootglass file picker. Foreground request=$foregroundSet; active=$foregroundWindow."
     }
     $dialogAutomation = $null
+    $pickerControls = $null
+    $fileNameControl = $null
+    $openButton = $null
     $topLevelWindows = @()
     $dialogDeadline = (Get-Date).AddSeconds(15)
     while ((Get-Date) -lt $dialogDeadline) {
@@ -268,12 +271,44 @@ public static class RootglassSmokeWindow {
                 try {
                     $current = $candidate.Current
                     $windowHandle = [IntPtr]$current.NativeWindowHandle
-                    $description = "name='$($current.Name)' handle=$windowHandle pid=$($current.ProcessId)"
+                    if ($windowHandle -eq [IntPtr]::Zero -or
+                        $windowHandle -eq $RootglassProcess.MainWindowHandle) { continue }
+
+                    $candidateControls = $candidate.FindAll(
+                        [System.Windows.Automation.TreeScope]::Descendants,
+                        [System.Windows.Automation.Condition]::TrueCondition
+                    )
+                    $candidateFileName = $null
+                    $candidateOpenButton = $null
+                    $candidateControlNames = @()
+                    foreach ($control in $candidateControls) {
+                        try {
+                            $controlCurrent = $control.Current
+                            if ($controlCurrent.ControlType -eq [System.Windows.Automation.ControlType]::Edit -or
+                                $controlCurrent.ControlType -eq [System.Windows.Automation.ControlType]::Button) {
+                                $candidateControlNames += "$($controlCurrent.ControlType.ProgrammaticName) name='$($controlCurrent.Name)' id='$($controlCurrent.AutomationId)'"
+                            }
+                            if ($null -eq $candidateFileName -and
+                                $controlCurrent.ControlType -eq [System.Windows.Automation.ControlType]::Edit -and
+                                ($controlCurrent.Name -match '(?i)file name' -or $controlCurrent.AutomationId -eq '1148')) {
+                                $candidateFileName = $control
+                            }
+                            if ($null -eq $candidateOpenButton -and
+                                $controlCurrent.ControlType -eq [System.Windows.Automation.ControlType]::Button -and
+                                $controlCurrent.Name -match '^(Open|Select)(\b.*)?$') {
+                                $candidateOpenButton = $control
+                            }
+                        } catch { }
+                    }
+                    $description = "name='$($current.Name)' class='$($current.ClassName)' handle=$windowHandle pid=$($current.ProcessId) controls=[$($candidateControlNames -join '; ')]"
                     $topLevelWindows += $description
-                    if ($windowHandle -ne [IntPtr]::Zero -and
-                        $windowHandle -ne $RootglassProcess.MainWindowHandle -and
-                        $current.Name -match '(?i)open|select|rootglass') {
+                    $pickerTitle = $current.Name -match '^(Open|Select|Choose|Pick)(\b.*)?$'
+                    if ($null -ne $candidateOpenButton -and
+                        ($null -ne $candidateFileName -or $pickerTitle -or $current.ClassName -eq '#32770')) {
                         $dialogAutomation = $candidate
+                        $pickerControls = $candidateControls
+                        $fileNameControl = $candidateFileName
+                        $openButton = $candidateOpenButton
                         break
                     }
                 } catch { }
@@ -305,12 +340,7 @@ public static class RootglassSmokeWindow {
         Write-ProgressLine "native picker screenshot capture failed: $($_.Exception.Message)"
     }
 
-    $pickerControls = $dialogAutomation.FindAll(
-        [System.Windows.Automation.TreeScope]::Descendants,
-        [System.Windows.Automation.Condition]::TrueCondition
-    )
     $fileNameSet = $false
-    $openButton = $null
     $controlDescriptions = @()
     foreach ($control in $pickerControls) {
         try {
@@ -319,25 +349,18 @@ public static class RootglassSmokeWindow {
                 $current.ControlType -eq [System.Windows.Automation.ControlType]::Button) {
                 $controlDescriptions += "$($current.ControlType.ProgrammaticName) name='$($current.Name)' id='$($current.AutomationId)'"
             }
-            if (-not $fileNameSet -and
-                $current.ControlType -eq [System.Windows.Automation.ControlType]::Edit -and
-                ($current.Name -match '(?i)file name' -or $current.AutomationId -eq '1148')) {
-                try {
-                    $valuePattern = $control.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
-                    $valuePattern.SetValue($glass[0].FullName)
-                    $fileNameSet = $true
-                } catch {
-                    Write-ProgressLine "file-name UI Automation value pattern failed: $($_.Exception.Message)"
-                }
-            }
-            if ($null -eq $openButton -and
-                $current.ControlType -eq [System.Windows.Automation.ControlType]::Button -and
-                $current.Name -match '^(Open|Select)$') {
-                $openButton = $control
-            }
         } catch { }
     }
     Write-ProgressLine "native picker controls: $($controlDescriptions -join '; ')"
+    if ($null -ne $fileNameControl) {
+        try {
+            $valuePattern = $fileNameControl.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+            $valuePattern.SetValue($glass[0].FullName)
+            $fileNameSet = $true
+        } catch {
+            Write-ProgressLine "file-name UI Automation value pattern failed: $($_.Exception.Message)"
+        }
+    }
     if ($fileNameSet -and $null -ne $openButton) {
         try {
             $openInvoke = $openButton.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
