@@ -201,7 +201,7 @@ class TuiSession:
             self.capture.extend(chunk)
 
     def send(self, data: bytes) -> None:
-        self.child.write(data)
+        self.child.write(data.decode("utf-8"))
 
     def current_screen(self) -> str:
         self.drain_terminal()
