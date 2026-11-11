@@ -234,7 +234,9 @@ class TuiSession:
         after = self.current_screen()
         self.send(b"\r")
         self.wait_for_terminal(b"Guest input:", timeout, after)
-        self.send(line + b"\r")
+        self.send(b"\x1b[200~" + line + b"\x1b[201~")
+        self.wait_for_terminal(b"Guest input: " + line, timeout)
+        self.send(b"\r")
 
     def wait_for_serial(self, pattern: bytes, timeout: int, logs: list[Path] | None = None) -> bytes:
         deadline = time.monotonic() + timeout
