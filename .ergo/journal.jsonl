@@ -377,3 +377,4 @@
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-11T02:52:18.088157808Z","text":"Windows smoke #42948085030 verified installation/runtime, then hit a false positive on the installer-created app folder."}
 {"version":1,"task_id":"YFYS3W","kind":"open","at":"2026-11-11T02:52:18.101484686Z","text":"Smoke workflow is on main; fix its clean-profile preflight to inspect trust/library/state data paths, not the app install folder."}
 {"version":1,"task_id":"YFYS3W","kind":"claim","at":"2026-11-11T02:52:18.115513133Z","agent":"codex@worker-1"}
+{"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-11T03:02:47.216448146Z","agent":"codex@worker-1","text":"Windows cells reached the GPUI picker smoke; Ctrl+O is not an app shortcut, so the harness must activate Import Glass."}

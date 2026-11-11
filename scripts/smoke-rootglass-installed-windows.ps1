@@ -176,7 +176,8 @@ public static class RootglassSmokeWindow {
     }
     [void][RootglassSmokeWindow]::SetForegroundWindow($RootglassProcess.MainWindowHandle)
     Start-Sleep -Milliseconds 500
-    [System.Windows.Forms.SendKeys]::SendWait("^o")
+    [System.Windows.Forms.SendKeys]::SendWait("{TAB}")
+    [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
     $pickerDeadline = (Get-Date).AddSeconds(15)
     while ((Get-Date) -lt $pickerDeadline) {
         $pickerEvents = if (Test-Path -LiteralPath $pickerLog) { Get-Content -LiteralPath $pickerLog } else { @() }
@@ -185,7 +186,7 @@ public static class RootglassSmokeWindow {
     }
     if (-not (Test-Path -LiteralPath $pickerLog) -or
         (Get-Content -LiteralPath $pickerLog) -notcontains "ROOTGLASS_DESKTOP_PICKER_OPEN") {
-        throw "Ctrl+O did not open the Rootglass file picker."
+        throw "Tab and Enter did not activate the Import Glass button."
     }
     [System.Windows.Forms.SendKeys]::SendWait("%n")
     [System.Windows.Forms.SendKeys]::SendWait($glass[0].FullName)
