@@ -247,6 +247,12 @@ requires a configured Windows 11 x64 runner or a clean maintainer host. Do not
 claim full Windows support from these hosted cells alone; the platform decision
 remains subject to maintainer approval.
 
+The current bundled Chocolatey QEMU package does not provide the `whpx`
+accelerator. Rootglass therefore selects TCG on Windows and discloses software
+emulation in the launch plan. Do not enable WHPX selection until the packaged
+QEMU runtime is verified to support it. A guest that requires WHPX fails
+preflight before QEMU starts.
+
 ## Remaining release limits
 
 - App and installer signing, macOS notarization, and release provenance are not configured. No signing credentials are stored in the repository.

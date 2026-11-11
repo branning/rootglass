@@ -342,7 +342,7 @@ Avoid silently changing signed `kernel_args` during runtime; runtime-required ro
 | macOS Intel | GPUI may run but aarch64 guest generally needs TCG | Explicit slow fallback and usability decision; no false HVF claim |
 | Ubuntu 24.04 aarch64 | GPUI Kit + QEMU; KVM only if device and guest architecture permit | Build, boot; KVM-specific tests on a KVM-capable runner |
 | Ubuntu 24.04 x86_64 | GPUI Kit + QEMU TCG | Build, boot, sane timeout and diagnostics |
-| Windows 11 (x86_64 / ARM64 separately) | GPUI Kit + packaged QEMU; WHPX only on compatible CPU/guest path | Build, installer, guest console, stop, QMP endpoints and no orphaned process |
+| Windows 11 (x86_64 / ARM64 separately) | GPUI Kit + packaged QEMU TCG; WHPX only after the packaged QEMU is verified to include it | Build, installer, guest console, stop, QMP endpoints and no orphaned process |
 
 Do not conflate a GitHub `ubuntu-24.04-arm` runner with KVM-enabled hardware. Hosted boot matrix can validate TCG on two host architectures; real acceleration tests require a qualifying self-hosted/larger runner or actual supported hardware.
 

@@ -166,7 +166,11 @@ impl HostCapabilities {
         Self {
             platform,
             hvf_available: platform == HostPlatform::MacOs && detect_hvf_available(),
-            whpx_available: platform == HostPlatform::Windows,
+            // The Windows QEMU package currently bundled with Rootglass does
+            // not include WHPX, so platform identity alone is not enough to
+            // select that accelerator. Use TCG until the shipped QEMU runtime
+            // can be probed for WHPX support.
+            whpx_available: false,
             kvm_available: platform == HostPlatform::Linux
                 && cfg!(target_arch = "aarch64")
                 && Path::new("/dev/kvm").exists(),
@@ -653,6 +657,18 @@ mod tests {
     fn uses_tcg_when_macos_hvf_is_unavailable_and_acceleration_is_optional() {
         let mut runtime = RootglassRuntime::new();
         let capabilities = HostCapabilities::without_acceleration(HostPlatform::MacOs);
+
+        let request = runtime
+            .prepare_launch_with_host("../../examples/hello-world.glass", &capabilities)
+            .expect("sample glass can use software emulation");
+
+        assert_eq!(request.accelerator, None);
+    }
+
+    #[test]
+    fn uses_tcg_when_windows_whpx_is_unavailable_and_acceleration_is_optional() {
+        let mut runtime = RootglassRuntime::new();
+        let capabilities = HostCapabilities::without_acceleration(HostPlatform::Windows);
 
         let request = runtime
             .prepare_launch_with_host("../../examples/hello-world.glass", &capabilities)

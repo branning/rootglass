@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+## v0.0.6 preview
+
+### Windows import and guest startup
+
+- Open `.glass` archives in the Windows native picker.
+- Use TCG software emulation on Windows because the bundled QEMU does not
+  include WHPX support. Windows guests that require hardware acceleration fail
+  preflight with a clear unavailable-accelerator error.
+
+### Release assets
+
+Includes Linux x86_64, macOS arm64, and Windows x86_64 installers with matching
+versioned offline QEMU runtimes, runtime checksums, and the signed Hello World
+`.glass` example with its SHA-256 checksum. The example uses the public
+development key and disposable `rootglass-ci` guest password; it is for
+verification only. The desktop app does not trust the example key by default.
+
+### Verification status
+
+The installed Windows smoke exercises archive import, `.glass` association,
+guest boot, serial input, restart, and stop on Windows Server 2025 x64. This
+does not qualify Windows 11 x64 or native Windows 11 ARM64. Linux clean-install
+qualification remains open. No general WHPX, HVF, or KVM acceleration claim is
+made.
+
+### macOS first launch
+
+The DMG is unsigned and not notarized. After mounting it, drag `Rootglass.app`
+to Applications. If Gatekeeper reports that the app is damaged, run
+`xattr -dr com.apple.quarantine /Applications/Rootglass.app` in Terminal. This
+workaround does not sign or notarize the app.
+
 ## v0.0.5 preview
 
 This refreshes the v0.0.4 preview as a new, versioned package set. It contains
