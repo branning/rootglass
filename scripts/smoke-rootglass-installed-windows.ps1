@@ -243,18 +243,6 @@ public static class RootglassSmokeWindow {
         $importMethod = "mouse click at screen coordinates $clickPoint"
     }
     Write-ProgressLine "activated Import Glass with $importMethod"
-    try {
-        Add-Type -AssemblyName System.Drawing
-        $screenBounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-        $bitmap = [System.Drawing.Bitmap]::new($screenBounds.Width, $screenBounds.Height)
-        $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-        $graphics.CopyFromScreen($screenBounds.Location, [System.Drawing.Point]::Empty, $screenBounds.Size)
-        $bitmap.Save((Join-Path $EvidenceDirectory "desktop-after-picker-click.png"), [System.Drawing.Imaging.ImageFormat]::Png)
-        $graphics.Dispose()
-        $bitmap.Dispose()
-    } catch {
-        Write-ProgressLine "post-click desktop screenshot capture failed: $($_.Exception.Message)"
-    }
     $pickerDeadline = (Get-Date).AddSeconds(15)
     while ((Get-Date) -lt $pickerDeadline) {
         $pickerEvents = if (Test-Path -LiteralPath $pickerLog) { Get-Content -LiteralPath $pickerLog } else { @() }
@@ -265,9 +253,106 @@ public static class RootglassSmokeWindow {
         (Get-Content -LiteralPath $pickerLog) -notcontains "ROOTGLASS_DESKTOP_PICKER_OPEN") {
         throw "Clicking Import Glass did not open the Rootglass file picker. Foreground request=$foregroundSet; active=$foregroundWindow."
     }
-    [System.Windows.Forms.SendKeys]::SendWait("%n")
-    [System.Windows.Forms.SendKeys]::SendWait($glass[0].FullName)
-    [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
+    $dialogAutomation = $null
+    $topLevelWindows = @()
+    $dialogDeadline = (Get-Date).AddSeconds(15)
+    while ((Get-Date) -lt $dialogDeadline) {
+        try {
+            $topLevelWindows = @()
+            $desktopAutomation = [System.Windows.Automation.AutomationElement]::RootElement
+            $windows = $desktopAutomation.FindAll(
+                [System.Windows.Automation.TreeScope]::Children,
+                [System.Windows.Automation.Condition]::TrueCondition
+            )
+            foreach ($candidate in $windows) {
+                try {
+                    $current = $candidate.Current
+                    $windowHandle = [IntPtr]$current.NativeWindowHandle
+                    $description = "name='$($current.Name)' handle=$windowHandle pid=$($current.ProcessId)"
+                    $topLevelWindows += $description
+                    if ($windowHandle -ne [IntPtr]::Zero -and
+                        $windowHandle -ne $RootglassProcess.MainWindowHandle -and
+                        $current.Name -match '(?i)open|select|rootglass') {
+                        $dialogAutomation = $candidate
+                        break
+                    }
+                } catch { }
+            }
+        } catch {
+            Write-ProgressLine "native picker UI Automation search failed: $($_.Exception.Message)"
+        }
+        if ($null -ne $dialogAutomation) { break }
+        Start-Sleep -Milliseconds 250
+    }
+    if ($null -eq $dialogAutomation) {
+        throw "The picker-open event was recorded, but no native file dialog appeared in UI Automation. Top-level windows: $($topLevelWindows -join '; ')"
+    }
+    $dialogHandle = [IntPtr]$dialogAutomation.Current.NativeWindowHandle
+    $dialogForeground = [RootglassSmokeWindow]::SetForegroundWindow($dialogHandle)
+    [void][RootglassSmokeWindow]::SetActiveWindow($dialogHandle)
+    Start-Sleep -Milliseconds 500
+    Write-ProgressLine "focused native picker '$($dialogAutomation.Current.Name)' handle=$dialogHandle foreground=$dialogForeground"
+    try {
+        Add-Type -AssemblyName System.Drawing
+        $screenBounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+        $bitmap = [System.Drawing.Bitmap]::new($screenBounds.Width, $screenBounds.Height)
+        $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+        $graphics.CopyFromScreen($screenBounds.Location, [System.Drawing.Point]::Empty, $screenBounds.Size)
+        $bitmap.Save((Join-Path $EvidenceDirectory "desktop-native-picker.png"), [System.Drawing.Imaging.ImageFormat]::Png)
+        $graphics.Dispose()
+        $bitmap.Dispose()
+    } catch {
+        Write-ProgressLine "native picker screenshot capture failed: $($_.Exception.Message)"
+    }
+
+    $pickerControls = $dialogAutomation.FindAll(
+        [System.Windows.Automation.TreeScope]::Descendants,
+        [System.Windows.Automation.Condition]::TrueCondition
+    )
+    $fileNameSet = $false
+    $openButton = $null
+    $controlDescriptions = @()
+    foreach ($control in $pickerControls) {
+        try {
+            $current = $control.Current
+            if ($current.ControlType -eq [System.Windows.Automation.ControlType]::Edit -or
+                $current.ControlType -eq [System.Windows.Automation.ControlType]::Button) {
+                $controlDescriptions += "$($current.ControlType.ProgrammaticName) name='$($current.Name)' id='$($current.AutomationId)'"
+            }
+            if (-not $fileNameSet -and
+                $current.ControlType -eq [System.Windows.Automation.ControlType]::Edit -and
+                ($current.Name -match '(?i)file name' -or $current.AutomationId -eq '1148')) {
+                try {
+                    $valuePattern = $control.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+                    $valuePattern.SetValue($glass[0].FullName)
+                    $fileNameSet = $true
+                } catch {
+                    Write-ProgressLine "file-name UI Automation value pattern failed: $($_.Exception.Message)"
+                }
+            }
+            if ($null -eq $openButton -and
+                $current.ControlType -eq [System.Windows.Automation.ControlType]::Button -and
+                $current.Name -match '^(Open|Select)$') {
+                $openButton = $control
+            }
+        } catch { }
+    }
+    Write-ProgressLine "native picker controls: $($controlDescriptions -join '; ')"
+    if ($fileNameSet -and $null -ne $openButton) {
+        try {
+            $openInvoke = $openButton.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+            $openInvoke.Invoke()
+            Write-ProgressLine "selected the example through UI Automation"
+        } catch {
+            Write-ProgressLine "native picker Open button invoke failed; using keyboard fallback: $($_.Exception.Message)"
+            [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
+        }
+    } else {
+        [System.Windows.Forms.SendKeys]::SendWait("%n")
+        [System.Windows.Forms.SendKeys]::SendWait($glass[0].FullName)
+        [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
+        Write-ProgressLine "selected the example through native dialog keyboard input"
+    }
     $pickerMarkers = @(
         "ROOTGLASS_DESKTOP_OPEN_PATH_ACCEPTED",
         "ROOTGLASS_DESKTOP_OPEN_PATH_ARCHIVE",
