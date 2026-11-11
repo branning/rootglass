@@ -377,6 +377,7 @@ def run(binary: Path, glass: Path, output: Path) -> None:
     session = TuiSession(binary, glass, output)
     try:
         session.wait_for_terminal(b"Rootglass Examples", 60)
+        session.wait_for_terminal(b"Preflight", 60)
         after = session.current_screen()
         session.send(b"p")
         session.wait_for_terminal(b"Verified launch plan", 40, after)
