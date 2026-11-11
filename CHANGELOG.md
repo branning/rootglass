@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+## v0.0.5 preview
+
+This refreshes the v0.0.4 preview as a new, versioned package set. It contains
+no user-facing application behavior changes from v0.0.4.
+
+### Release assets
+
+Includes Linux x86_64, macOS arm64, and Windows x86_64 installers with matching
+versioned offline QEMU runtimes, runtime checksums, and the signed Hello World
+`.glass` example with its SHA-256 checksum. The example uses the public
+development key and disposable `rootglass-ci` guest password; it is for
+verification only. The desktop app does not trust the example key by default.
+
+The v0.0.4 macOS arm64 package passed the installed-app offline guest smoke.
+Linux and complete Windows 11 clean-host qualification remain open.
+
+### macOS first launch
+
+The DMG is unsigned and not notarized. After mounting it, drag `Rootglass.app`
+to Applications. If Gatekeeper reports that the app is damaged, run
+`xattr -dr com.apple.quarantine /Applications/Rootglass.app` in Terminal. This
+workaround does not sign or notarize the app.
+
 ## v0.0.4 preview
 
 ### GPUI desktop experience
