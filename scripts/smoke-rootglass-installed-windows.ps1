@@ -155,18 +155,6 @@ try {
 using System;
 using System.Runtime.InteropServices;
 public static class RootglassSmokeWindow {
-    [StructLayout(LayoutKind.Sequential)]
-    private struct Rect {
-        public int Left;
-        public int Top;
-        public int Right;
-        public int Bottom;
-    }
-    [StructLayout(LayoutKind.Sequential)]
-    private struct Point {
-        public int X;
-        public int Y;
-    }
     [DllImport("user32.dll")]
     public static extern bool SetForegroundWindow(IntPtr window);
     [DllImport("user32.dll")]
@@ -174,33 +162,22 @@ public static class RootglassSmokeWindow {
     [DllImport("user32.dll")]
     public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")]
-    private static extern bool GetClientRect(IntPtr window, out Rect rect);
-    [DllImport("user32.dll")]
-    private static extern bool ClientToScreen(IntPtr window, ref Point point);
-    [DllImport("user32.dll")]
     private static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")]
     private static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
 
-    public static string ClickImportGlass(IntPtr window, int usableHeight) {
-        Rect client;
-        if (!GetClientRect(window, out client)) {
-            throw new InvalidOperationException("Could not read the Rootglass client area.");
-        }
-        // The desktop smoke runner opens Rootglass maximized. Import Glass is
-        // in the upper-right of the library view, at 94% width and 41% of the
-        // usable desktop height (excluding the Windows taskbar).
-        Point point = new Point {
-            X = client.Right - 64,
-            Y = (int)(usableHeight * 0.406)
-        };
-        if (!ClientToScreen(window, ref point) || !SetCursorPos(point.X, point.Y)) {
+    public static string ClickImportGlass(int screenWidth, int screenHeight) {
+        // Fallback for runners where the accessibility tree does not expose the
+        // GPUI button. The runner uses a 1024x768 desktop with Rootglass maximized.
+        int x = screenWidth - 64;
+        int y = (int)(screenHeight * 0.38);
+        if (!SetCursorPos(x, y)) {
             throw new InvalidOperationException("Could not position the pointer over Import Glass.");
         }
         mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero);
         System.Threading.Thread.Sleep(50);
         mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);
-        return point.X + "," + point.Y;
+        return x + "," + y;
     }
 }
 "@
@@ -236,9 +213,48 @@ public static class RootglassSmokeWindow {
     } catch {
         Write-ProgressLine "desktop screenshot capture failed: $($_.Exception.Message)"
     }
-    $usableHeight = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea.Height
-    $clickPoint = [RootglassSmokeWindow]::ClickImportGlass($RootglassProcess.MainWindowHandle, $usableHeight)
-    Write-ProgressLine "clicked Import Glass at screen coordinates $clickPoint"
+    $importMethod = ""
+    try {
+        Add-Type -AssemblyName UIAutomationClient
+        Add-Type -AssemblyName UIAutomationTypes
+        $windowAutomation = [System.Windows.Automation.AutomationElement]::FromHandle($RootglassProcess.MainWindowHandle)
+        $elements = $windowAutomation.FindAll(
+            [System.Windows.Automation.TreeScope]::Descendants,
+            [System.Windows.Automation.Condition]::TrueCondition
+        )
+        foreach ($element in $elements) {
+            if ($element.Current.Name -match '(?i)import glass') {
+                try {
+                    $invoke = $element.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+                    $invoke.Invoke()
+                    $importMethod = "UI Automation InvokePattern"
+                    break
+                } catch {
+                    Write-ProgressLine "matching UI Automation element had no usable invoke pattern: $($_.Exception.Message)"
+                }
+            }
+        }
+    } catch {
+        Write-ProgressLine "UI Automation lookup failed: $($_.Exception.Message)"
+    }
+    if (-not $importMethod) {
+        $primaryBounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+        $clickPoint = [RootglassSmokeWindow]::ClickImportGlass($primaryBounds.Width, $primaryBounds.Height)
+        $importMethod = "mouse click at screen coordinates $clickPoint"
+    }
+    Write-ProgressLine "activated Import Glass with $importMethod"
+    try {
+        Add-Type -AssemblyName System.Drawing
+        $screenBounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+        $bitmap = [System.Drawing.Bitmap]::new($screenBounds.Width, $screenBounds.Height)
+        $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+        $graphics.CopyFromScreen($screenBounds.Location, [System.Drawing.Point]::Empty, $screenBounds.Size)
+        $bitmap.Save((Join-Path $EvidenceDirectory "desktop-after-picker-click.png"), [System.Drawing.Imaging.ImageFormat]::Png)
+        $graphics.Dispose()
+        $bitmap.Dispose()
+    } catch {
+        Write-ProgressLine "post-click desktop screenshot capture failed: $($_.Exception.Message)"
+    }
     $pickerDeadline = (Get-Date).AddSeconds(15)
     while ((Get-Date) -lt $pickerDeadline) {
         $pickerEvents = if (Test-Path -LiteralPath $pickerLog) { Get-Content -LiteralPath $pickerLog } else { @() }
