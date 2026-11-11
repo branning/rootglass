@@ -157,6 +157,12 @@ using System.Runtime.InteropServices;
 public static class RootglassSmokeWindow {
     [DllImport("user32.dll")]
     public static extern bool SetForegroundWindow(IntPtr window);
+    [DllImport("user32.dll")]
+    public static extern IntPtr SetActiveWindow(IntPtr window);
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")]
+    public static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extraInfo);
 }
 "@
     $pickerLog = Join-Path $EvidenceDirectory "picker-events.log"
@@ -174,10 +180,28 @@ public static class RootglassSmokeWindow {
     if ($RootglassProcess.MainWindowHandle -eq [IntPtr]::Zero) {
         throw "Installed Rootglass did not expose a foreground window for the picker smoke."
     }
-    [void][RootglassSmokeWindow]::SetForegroundWindow($RootglassProcess.MainWindowHandle)
+    $foregroundSet = [RootglassSmokeWindow]::SetForegroundWindow($RootglassProcess.MainWindowHandle)
+    [void][RootglassSmokeWindow]::SetActiveWindow($RootglassProcess.MainWindowHandle)
     Start-Sleep -Milliseconds 500
-    [System.Windows.Forms.SendKeys]::SendWait("{TAB}")
-    [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
+    $foregroundWindow = [RootglassSmokeWindow]::GetForegroundWindow()
+    Write-ProgressLine "foreground request=$foregroundSet target=$($RootglassProcess.MainWindowHandle) active=$foregroundWindow"
+    try {
+        Add-Type -AssemblyName System.Drawing
+        $screenBounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+        $bitmap = [System.Drawing.Bitmap]::new($screenBounds.Width, $screenBounds.Height)
+        $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+        $graphics.CopyFromScreen($screenBounds.Location, [System.Drawing.Point]::Empty, $screenBounds.Size)
+        $bitmap.Save((Join-Path $EvidenceDirectory "desktop-before-picker.png"), [System.Drawing.Imaging.ImageFormat]::Png)
+        $graphics.Dispose()
+        $bitmap.Dispose()
+    } catch {
+        Write-ProgressLine "desktop screenshot capture failed: $($_.Exception.Message)"
+    }
+    [RootglassSmokeWindow]::keybd_event(0x11, 0, 0, [UIntPtr]::Zero)
+    [RootglassSmokeWindow]::keybd_event(0x4f, 0, 0, [UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 50
+    [RootglassSmokeWindow]::keybd_event(0x4f, 0, 0x0002, [UIntPtr]::Zero)
+    [RootglassSmokeWindow]::keybd_event(0x11, 0, 0x0002, [UIntPtr]::Zero)
     $pickerDeadline = (Get-Date).AddSeconds(15)
     while ((Get-Date) -lt $pickerDeadline) {
         $pickerEvents = if (Test-Path -LiteralPath $pickerLog) { Get-Content -LiteralPath $pickerLog } else { @() }
@@ -186,7 +210,7 @@ public static class RootglassSmokeWindow {
     }
     if (-not (Test-Path -LiteralPath $pickerLog) -or
         (Get-Content -LiteralPath $pickerLog) -notcontains "ROOTGLASS_DESKTOP_PICKER_OPEN") {
-        throw "Tab and Enter did not activate the Import Glass button."
+        throw "Ctrl+O did not open the Rootglass file picker. Foreground request=$foregroundSet; active=$foregroundWindow."
     }
     [System.Windows.Forms.SendKeys]::SendWait("%n")
     [System.Windows.Forms.SendKeys]::SendWait($glass[0].FullName)
