@@ -379,3 +379,4 @@
 {"version":1,"task_id":"YFYS3W","kind":"claim","at":"2026-11-11T02:52:18.115513133Z","agent":"codex@worker-1"}
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-11T03:02:47.216448146Z","agent":"codex@worker-1","text":"Windows cells reached the GPUI picker smoke; Ctrl+O is not an app shortcut, so the harness must activate Import Glass."}
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-11T03:13:00.249019477Z","agent":"codex@worker-1","text":"Smoke #42950143833: Ctrl+O and Tab+Enter did not reach picker; adding native key input and focus screenshot."}
+{"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-11T05:13:02.44445195Z","agent":"codex@worker-1","text":"Smoke #42962751916 shows the native archive picker; UIA misses it, so use the verified foreground keyboard path."}
