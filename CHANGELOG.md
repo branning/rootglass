@@ -7,6 +7,8 @@
 ### Windows import and guest startup
 
 - Open `.glass` archives in the Windows native picker.
+- Pass QEMU ordinary Windows paths for runtime resources, kernels, and disks so
+  the installed runtime can find its bundled firmware files.
 - Use TCG software emulation on Windows because the bundled QEMU does not
   include WHPX support. Windows guests that require hardware acceleration fail
   preflight with a clear unavailable-accelerator error.

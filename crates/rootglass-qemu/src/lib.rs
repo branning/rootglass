@@ -117,7 +117,7 @@ impl QemuLaunchPlan {
         };
         let mut args = Vec::new();
         if let Some(data_dir) = bundled_qemu_data_dir(&binary.path) {
-            args.extend(["-L".to_string(), data_dir.display().to_string()]);
+            args.extend(["-L".to_string(), qemu_path_argument(&data_dir)]);
         }
         args.extend([
             "-machine".to_string(),
@@ -129,17 +129,17 @@ impl QemuLaunchPlan {
             "-smp".to_string(),
             request.cpus.to_string(),
             "-kernel".to_string(),
-            request.kernel.display().to_string(),
+            qemu_path_argument(&request.kernel),
         ]);
 
         if let Some(device_tree) = &request.device_tree {
             args.push("-dtb".to_string());
-            args.push(device_tree.display().to_string());
+            args.push(qemu_path_argument(device_tree));
         }
 
         if let Some(initrd) = &request.initrd {
             args.push("-initrd".to_string());
-            args.push(initrd.display().to_string());
+            args.push(qemu_path_argument(initrd));
         }
 
         // On QEMU's aarch64 virt machine, the generated virtio-mmio block
@@ -150,7 +150,7 @@ impl QemuLaunchPlan {
             args.push("-drive".to_string());
             args.push(format!(
                 "if=none,file={},format=raw,id=state",
-                overlay.display()
+                qemu_path_argument(overlay)
             ));
             args.push("-device".to_string());
             args.push("virtio-blk-device,drive=state".to_string());
@@ -160,7 +160,7 @@ impl QemuLaunchPlan {
             "-drive".to_string(),
             format!(
                 "if=none,file={},format=raw,readonly=on,id=rootfs",
-                request.rootfs.display()
+                qemu_path_argument(&request.rootfs)
             ),
             "-device".to_string(),
             "virtio-blk-device,drive=rootfs".to_string(),
@@ -244,6 +244,20 @@ impl QemuLaunchPlan {
     /// still needs an actual QEMU host validation before it is advertised.
     pub fn spawn_supervised(&self) -> Result<QemuProcess, QemuError> {
         QemuProcess::spawn(self)
+    }
+}
+
+fn qemu_path_argument(path: &Path) -> String {
+    // Windows canonical paths may use the verbatim `\\?\` prefix. The
+    // bundled Windows QEMU uses that same path in `-L` resource lookup and
+    // fails to find ROM files, so pass ordinary paths when they fit.
+    let path = path.to_string_lossy();
+    if let Some(unc_path) = path.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{unc_path}")
+    } else if let Some(local_path) = path.strip_prefix(r"\\?\") {
+        local_path.to_string()
+    } else {
+        path.into_owned()
     }
 }
 
@@ -909,6 +923,22 @@ mod tests {
         let plan = QemuLaunchPlan::for_launch_request(&request);
         assert_eq!(plan.accelerator, Accelerator::Kvm);
         assert!(plan.command_line().contains("-accel kvm"));
+    }
+
+    #[test]
+    fn strips_windows_verbatim_prefix_from_paths_passed_to_qemu() {
+        assert_eq!(
+            qemu_path_argument(Path::new(r"\\?\C:\Rootglass\runtime\share\qemu")),
+            r"C:\Rootglass\runtime\share\qemu"
+        );
+        assert_eq!(
+            qemu_path_argument(Path::new(r"\\?\UNC\server\share\kernel")),
+            r"\\server\share\kernel"
+        );
+        assert_eq!(
+            qemu_path_argument(Path::new(r"C:\Rootglass\runtime\boot\kernel")),
+            r"C:\Rootglass\runtime\boot\kernel"
+        );
     }
 
     #[test]
