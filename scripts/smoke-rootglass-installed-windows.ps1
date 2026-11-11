@@ -188,10 +188,11 @@ public static class RootglassSmokeWindow {
             throw new InvalidOperationException("Could not read the Rootglass client area.");
         }
         // The desktop smoke runner opens Rootglass maximized. Import Glass is
-        // in the upper-right of the library view, at 94% width and 41% height.
+        // in the upper-right of the library view, at 94% width and 41% of the
+        // usable desktop height (excluding the Windows taskbar).
         Point point = new Point {
             X = client.Right - 64,
-            Y = (int)(client.Bottom * 0.406)
+            Y = (int)(System.Windows.Forms.Screen.PrimaryScreen.WorkingArea.Height * 0.406)
         };
         if (!ClientToScreen(window, ref point) || !SetCursorPos(point.X, point.Y)) {
             throw new InvalidOperationException("Could not position the pointer over Import Glass.");
