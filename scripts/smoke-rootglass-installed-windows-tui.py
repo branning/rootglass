@@ -397,20 +397,28 @@ def run(binary: Path, glass: Path, output: Path) -> None:
         session.send_console_line(FIXTURE_PASSWORD)
         session.wait_for_serial(rb"(?m)#\s*$", LOGIN_TIMEOUT)
 
-        command = (
-            b"printf 'ROOTGLASS_TUI_SMOKE_BEGIN\\n'; uname -a; "
-            b"printf 'ROOTGLASS_TUI_SMOKE_DONE\\n'"
-        )
-        session.send_console_line(command)
+        begin_marker = b"ROOTGLASS_TUI_SMOKE_BEGIN"
+        done_marker = b"ROOTGLASS_TUI_SMOKE_DONE"
+        first_logs = serial_logs(log_directory)
+        session.send_console_line(b"echo " + begin_marker)
         session.wait_for_serial(
-            rb"ROOTGLASS_TUI_SMOKE_DONE(?:\r\n|\n|\r)", COMMAND_TIMEOUT
+            rb"(?m)^ROOTGLASS_TUI_SMOKE_BEGIN$", COMMAND_TIMEOUT, first_logs
+        )
+        session.send_console_line(b"uname -a")
+        session.wait_for_serial(
+            rb"(?m)^Linux rootglass-hello\b.*\baarch64\b",
+            COMMAND_TIMEOUT,
+            first_logs,
+        )
+        session.send_console_line(b"echo " + done_marker)
+        session.wait_for_serial(
+            rb"(?m)^ROOTGLASS_TUI_SMOKE_DONE$", COMMAND_TIMEOUT, first_logs
         )
         session.wait_for_terminal(b"ROOTGLASS_TUI_SMOKE_DONE", COMMAND_TIMEOUT)
-        first_logs = serial_logs(log_directory)
         uname = guest_uname(
             read_serial_paths(first_logs),
-            b"ROOTGLASS_TUI_SMOKE_BEGIN",
-            b"ROOTGLASS_TUI_SMOKE_DONE",
+            begin_marker,
+            done_marker,
         )
         session.save_screenshot()
 
@@ -433,19 +441,27 @@ def run(binary: Path, glass: Path, output: Path) -> None:
         session.wait_for_terminal(b"Password:", 20)
         session.send_console_line(FIXTURE_PASSWORD)
         session.wait_for_serial(rb"(?m)#\s*$", LOGIN_TIMEOUT, [restart_log])
-        restart_command = (
-            b"printf 'ROOTGLASS_TUI_RESTART_BEGIN\\n'; uname -a; "
-            b"printf 'ROOTGLASS_TUI_RESTART_DONE\\n'"
-        )
-        session.send_console_line(restart_command)
+        restart_begin_marker = b"ROOTGLASS_TUI_RESTART_BEGIN"
+        restart_done_marker = b"ROOTGLASS_TUI_RESTART_DONE"
+        session.send_console_line(b"echo " + restart_begin_marker)
         session.wait_for_serial(
-            rb"ROOTGLASS_TUI_RESTART_DONE(?:\r\n|\n|\r)", COMMAND_TIMEOUT, [restart_log]
+            rb"(?m)^ROOTGLASS_TUI_RESTART_BEGIN$", COMMAND_TIMEOUT, [restart_log]
+        )
+        session.send_console_line(b"uname -a")
+        session.wait_for_serial(
+            rb"(?m)^Linux rootglass-hello\b.*\baarch64\b",
+            COMMAND_TIMEOUT,
+            [restart_log],
+        )
+        session.send_console_line(b"echo " + restart_done_marker)
+        session.wait_for_serial(
+            rb"(?m)^ROOTGLASS_TUI_RESTART_DONE$", COMMAND_TIMEOUT, [restart_log]
         )
         session.wait_for_terminal(b"ROOTGLASS_TUI_RESTART_DONE", COMMAND_TIMEOUT)
         restarted_uname = guest_uname(
             read_serial_paths([restart_log]),
-            b"ROOTGLASS_TUI_RESTART_BEGIN",
-            b"ROOTGLASS_TUI_RESTART_DONE",
+            restart_begin_marker,
+            restart_done_marker,
         )
         if restarted_uname != uname:
             raise SmokeFailure("guest uname changed across restart")
