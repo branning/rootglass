@@ -155,6 +155,18 @@ try {
 using System;
 using System.Runtime.InteropServices;
 public static class RootglassSmokeWindow {
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Rect {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Point {
+        public int X;
+        public int Y;
+    }
     [DllImport("user32.dll")]
     public static extern bool SetForegroundWindow(IntPtr window);
     [DllImport("user32.dll")]
@@ -162,7 +174,33 @@ public static class RootglassSmokeWindow {
     [DllImport("user32.dll")]
     public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")]
-    public static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extraInfo);
+    private static extern bool GetClientRect(IntPtr window, out Rect rect);
+    [DllImport("user32.dll")]
+    private static extern bool ClientToScreen(IntPtr window, ref Point point);
+    [DllImport("user32.dll")]
+    private static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")]
+    private static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
+
+    public static string ClickImportGlass(IntPtr window) {
+        Rect client;
+        if (!GetClientRect(window, out client)) {
+            throw new InvalidOperationException("Could not read the Rootglass client area.");
+        }
+        // The desktop smoke runner opens Rootglass maximized. Import Glass is
+        // in the upper-right of the library view, at 94% width and 41% height.
+        Point point = new Point {
+            X = client.Right - 64,
+            Y = (int)(client.Bottom * 0.406)
+        };
+        if (!ClientToScreen(window, ref point) || !SetCursorPos(point.X, point.Y)) {
+            throw new InvalidOperationException("Could not position the pointer over Import Glass.");
+        }
+        mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero);
+        System.Threading.Thread.Sleep(50);
+        mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);
+        return point.X + "," + point.Y;
+    }
 }
 "@
     $pickerLog = Join-Path $EvidenceDirectory "picker-events.log"
@@ -197,11 +235,8 @@ public static class RootglassSmokeWindow {
     } catch {
         Write-ProgressLine "desktop screenshot capture failed: $($_.Exception.Message)"
     }
-    [RootglassSmokeWindow]::keybd_event(0x11, 0, 0, [UIntPtr]::Zero)
-    [RootglassSmokeWindow]::keybd_event(0x4f, 0, 0, [UIntPtr]::Zero)
-    Start-Sleep -Milliseconds 50
-    [RootglassSmokeWindow]::keybd_event(0x4f, 0, 0x0002, [UIntPtr]::Zero)
-    [RootglassSmokeWindow]::keybd_event(0x11, 0, 0x0002, [UIntPtr]::Zero)
+    $clickPoint = [RootglassSmokeWindow]::ClickImportGlass($RootglassProcess.MainWindowHandle)
+    Write-ProgressLine "clicked Import Glass at screen coordinates $clickPoint"
     $pickerDeadline = (Get-Date).AddSeconds(15)
     while ((Get-Date) -lt $pickerDeadline) {
         $pickerEvents = if (Test-Path -LiteralPath $pickerLog) { Get-Content -LiteralPath $pickerLog } else { @() }
@@ -210,7 +245,7 @@ public static class RootglassSmokeWindow {
     }
     if (-not (Test-Path -LiteralPath $pickerLog) -or
         (Get-Content -LiteralPath $pickerLog) -notcontains "ROOTGLASS_DESKTOP_PICKER_OPEN") {
-        throw "Ctrl+O did not open the Rootglass file picker. Foreground request=$foregroundSet; active=$foregroundWindow."
+        throw "Clicking Import Glass did not open the Rootglass file picker. Foreground request=$foregroundSet; active=$foregroundWindow."
     }
     [System.Windows.Forms.SendKeys]::SendWait("%n")
     [System.Windows.Forms.SendKeys]::SendWait($glass[0].FullName)
