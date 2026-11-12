@@ -99,6 +99,7 @@ jobs:
                 .filename == "scripts/smoke-rootglass-installed-windows-tui.py" or
                 .filename == "scripts/smoke-rootglass-installed-windows.ps1" or
                 .filename == "docs/desktop-packages.md" or
+                .filename == "CHANGELOG.md" or
                 .filename == ".ergo/backlog.jsonl" or
                 .filename == ".ergo/journal.jsonl"
               )

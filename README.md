@@ -32,7 +32,7 @@ The native desktop shell uses [GPUI Kit](https://github.com/longbridge/gpui-kit)
 
 ### macOS preview first-launch caveat
 
-The macOS preview DMGs, including v0.0.2 through v0.0.5, are unsigned and not notarized. After mounting the DMG, drag `Rootglass.app` to the Applications folder. If macOS reports that the app is damaged, recursively remove quarantine from the installed app bundle in Terminal:
+The macOS preview DMGs, including v0.0.2 through v0.0.6, are unsigned and not notarized. After mounting the DMG, drag `Rootglass.app` to the Applications folder. If macOS reports that the app is damaged, recursively remove quarantine from the installed app bundle in Terminal:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/Rootglass.app

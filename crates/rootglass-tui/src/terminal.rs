@@ -23,11 +23,14 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError};
 use std::sync::{Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const TICK_RATE: Duration = Duration::from_millis(50);
+const CONSOLE_QUERY_WAIT: Duration = Duration::from_secs(5);
 const MAX_PENDING_SERVICE_REQUESTS: usize = 64;
 const MAX_INPUT_BYTES: usize = 8_192;
+const CURSOR_POSITION_QUERY: &[u8] = b"\x1b[6n";
+const CURSOR_POSITION_RESPONSE: &[u8] = b"\x1b[1;80R";
 
 pub(crate) fn trace_tui(message: impl AsRef<str>) {
     static TRACE_FILE: OnceLock<Option<Mutex<std::fs::File>>> = OnceLock::new();
@@ -115,6 +118,7 @@ fn run_event_loop(
     let mut input = InputBuffer::default();
     loop {
         worker.drain_ready(model, poll_pending)?;
+        worker.flush_expired_console_input()?;
         let prompt = input.prompt();
         terminal
             .draw(|frame| render_with_prompt(frame, model, prompt.as_deref()))
@@ -556,7 +560,7 @@ fn handle_console_key(
             let text = std::mem::take(&mut input.text);
             input.clear();
             if let Some((run, bytes)) = model.input_request(&text) {
-                worker.write_serial(run, bytes)?;
+                worker.write_console_input(run, bytes)?;
             }
         }
         KeyCode::Backspace => {
@@ -1045,6 +1049,106 @@ struct ServiceWorker {
     completions: Receiver<WorkerCompletion>,
     thread: Option<JoinHandle<()>>,
     in_flight: usize,
+    terminal_queries: TerminalQueryResponder,
+    console_input: ConsoleInputGate,
+}
+
+#[derive(Default)]
+struct TerminalQueryResponder {
+    run: Option<RunId>,
+    tail: Vec<u8>,
+}
+
+#[derive(Default)]
+struct ConsoleInputGate {
+    pending: Option<PendingConsoleInput>,
+}
+
+struct PendingConsoleInput {
+    run: RunId,
+    bytes: Vec<u8>,
+    deadline: Instant,
+}
+
+impl ConsoleInputGate {
+    fn begin(&mut self, run: RunId, bytes: Vec<u8>, now: Instant) {
+        if bytes.is_empty() {
+            return;
+        }
+        if let Some(pending) = self.pending.as_mut() {
+            if pending.run == run {
+                pending.bytes.extend_from_slice(&bytes);
+                pending.deadline = now + CONSOLE_QUERY_WAIT;
+                return;
+            }
+        }
+
+        self.pending = Some(PendingConsoleInput {
+            run,
+            bytes,
+            deadline: now + CONSOLE_QUERY_WAIT,
+        });
+    }
+
+    fn release_after_query(&mut self, run: &RunId) -> Option<Vec<u8>> {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| &pending.run == run)
+        {
+            self.pending.take().map(|pending| pending.bytes)
+        } else {
+            None
+        }
+    }
+
+    fn take_expired(&mut self, now: Instant) -> Option<(RunId, Vec<u8>)> {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| now >= pending.deadline)
+        {
+            self.pending
+                .take()
+                .map(|pending| (pending.run, pending.bytes))
+        } else {
+            None
+        }
+    }
+
+    fn observe_output(&mut self, run: &RunId, now: Instant) {
+        let Some(pending) = self.pending.as_mut() else {
+            return;
+        };
+        if &pending.run != run {
+            return;
+        }
+        // Serial output can contain unrelated activity while the guest services a
+        // cursor query. Keep the full quiet window instead of inferring that the
+        // guest is ready for the buffered console line.
+        pending.deadline = now + CONSOLE_QUERY_WAIT;
+    }
+}
+
+impl TerminalQueryResponder {
+    fn cursor_position_queries(&mut self, run: &RunId, bytes: &[u8]) -> usize {
+        if self.run.as_ref() != Some(run) {
+            self.run = Some(run.clone());
+            self.tail.clear();
+        }
+
+        let mut combined = std::mem::take(&mut self.tail);
+        combined.extend_from_slice(bytes);
+        let count = combined
+            .windows(CURSOR_POSITION_QUERY.len())
+            .filter(|window| *window == CURSOR_POSITION_QUERY)
+            .count();
+        let tail_start = combined
+            .len()
+            .saturating_sub(CURSOR_POSITION_QUERY.len() - 1);
+        self.tail.extend_from_slice(&combined[tail_start..]);
+        count
+    }
 }
 
 impl ServiceWorker {
@@ -1060,6 +1164,8 @@ impl ServiceWorker {
             completions: completion_rx,
             thread: Some(thread),
             in_flight: 0,
+            terminal_queries: TerminalQueryResponder::default(),
+            console_input: ConsoleInputGate::default(),
         })
     }
 
@@ -1131,6 +1237,25 @@ impl ServiceWorker {
 
     fn write_serial(&mut self, run: RunId, bytes: Vec<u8>) -> Result<(), String> {
         self.send(WorkerRequest::WriteSerial(run, bytes))
+    }
+
+    fn write_console_input(&mut self, run: RunId, bytes: Vec<u8>) -> Result<(), String> {
+        self.console_input.begin(run, bytes, Instant::now());
+        Ok(())
+    }
+
+    fn flush_expired_console_input(&mut self) -> Result<(), String> {
+        self.flush_expired_console_input_at(Instant::now())
+    }
+
+    fn flush_expired_console_input_at(&mut self, now: Instant) -> Result<(), String> {
+        if let Some((run, bytes)) = self.console_input.take_expired(now) {
+            trace_tui("sent complete buffered console input after cursor-query wait expired");
+            if !bytes.is_empty() {
+                self.write_serial(run, bytes)?;
+            }
+        }
+        Ok(())
     }
 
     fn developer(&mut self, request: DeveloperRequest) -> Result<(), String> {
@@ -1318,6 +1443,41 @@ impl ServiceWorker {
             }
             WorkerCompletion::Polled(result) => {
                 *poll_pending = false;
+                if let Ok(events) = &result {
+                    let mut response_run = None;
+                    let mut responses = Vec::new();
+                    for event in events {
+                        if let RuntimeEvent::SerialChunk { run, bytes, .. } = event {
+                            if model.run_id.as_ref() != Some(run) {
+                                continue;
+                            }
+                            let query_count =
+                                self.terminal_queries.cursor_position_queries(run, bytes);
+                            if query_count > 0 {
+                                response_run = Some(run.clone());
+                                for _ in 0..query_count {
+                                    responses.extend_from_slice(CURSOR_POSITION_RESPONSE);
+                                }
+                            } else {
+                                self.console_input.observe_output(run, Instant::now());
+                            }
+                        }
+                    }
+                    if let Some(run) = response_run {
+                        trace_tui(format!(
+                            "answered {} guest terminal cursor-position query/queries",
+                            responses.len() / CURSOR_POSITION_RESPONSE.len()
+                        ));
+                        let pending = self.console_input.release_after_query(&run);
+                        self.write_serial(run.clone(), responses)?;
+                        if let Some(bytes) = pending {
+                            trace_tui(
+                                "sent complete buffered console line after cursor-query response",
+                            );
+                            self.write_serial(run, bytes)?;
+                        }
+                    }
+                }
                 match &result {
                     Ok(events) => {
                         let serial = events
@@ -1734,6 +1894,114 @@ mod tests {
     use std::rc::Rc;
     use std::sync::{Arc, Barrier, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn terminal_query_responder_handles_split_repeated_and_new_run_queries() {
+        let mut responder = TerminalQueryResponder::default();
+        let first_run = RunId(7);
+
+        assert_eq!(
+            responder.cursor_position_queries(&first_run, b"prompt\x1b["),
+            0
+        );
+        assert_eq!(
+            responder.cursor_position_queries(&first_run, b"6n next\x1b[6n"),
+            2
+        );
+
+        assert_eq!(
+            responder.cursor_position_queries(&first_run, b"still\x1b["),
+            0
+        );
+        let second_run = RunId(8);
+        assert_eq!(responder.cursor_position_queries(&second_run, b"6n"), 0);
+        assert_eq!(
+            responder.cursor_position_queries(&second_run, b"\x1b[6n"),
+            1
+        );
+    }
+
+    #[test]
+    fn console_input_gate_holds_the_full_line_until_query_reply() {
+        let now = Instant::now();
+        let run = RunId(7);
+        let mut gate = ConsoleInputGate::default();
+
+        gate.begin(run.clone(), b"echo READY\n".to_vec(), now);
+        assert_eq!(
+            gate.release_after_query(&RunId(8)),
+            None,
+            "a query from another run must not release pending input"
+        );
+        assert_eq!(
+            gate.release_after_query(&run),
+            Some(b"echo READY\n".to_vec()),
+            "the complete line is released after the guest query is answered"
+        );
+        assert_eq!(
+            gate.take_expired(now + CONSOLE_QUERY_WAIT),
+            None,
+            "query response releases the input exactly once"
+        );
+    }
+
+    #[test]
+    fn console_input_gate_flushes_the_full_line_after_timeout_and_appends_same_run_input() {
+        let now = Instant::now();
+        let run = RunId(7);
+        let mut gate = ConsoleInputGate::default();
+
+        gate.begin(run.clone(), b"echo ".to_vec(), now);
+        gate.begin(run.clone(), b"READY\n".to_vec(), now);
+        assert_eq!(
+            gate.take_expired(now + Duration::from_millis(200)),
+            None,
+            "the complete line is held while the guest's cursor query is drained"
+        );
+        assert_eq!(
+            gate.take_expired(now + CONSOLE_QUERY_WAIT),
+            Some((run, b"echo READY\n".to_vec()))
+        );
+    }
+
+    #[test]
+    fn console_input_gate_extends_fallback_while_guest_output_is_arriving() {
+        let now = Instant::now();
+        let run = RunId(7);
+        let mut gate = ConsoleInputGate::default();
+
+        gate.begin(run.clone(), b"echo READY\n".to_vec(), now);
+        gate.observe_output(&run, now + Duration::from_millis(400));
+        assert_eq!(
+            gate.take_expired(now + CONSOLE_QUERY_WAIT),
+            None,
+            "serial output extends the wait for a split or delayed cursor query"
+        );
+        assert_eq!(
+            gate.take_expired(now + Duration::from_millis(5_500)),
+            Some((run, b"echo READY\n".to_vec()))
+        );
+    }
+
+    #[test]
+    fn console_input_gate_keeps_full_wait_after_unrelated_output() {
+        let now = Instant::now();
+        let run = RunId(7);
+        let mut gate = ConsoleInputGate::default();
+
+        gate.begin(run.clone(), b"echo READY\n".to_vec(), now);
+        let output_at = now + Duration::from_millis(20);
+        gate.observe_output(&run, output_at);
+        assert_eq!(
+            gate.take_expired(output_at + CONSOLE_QUERY_WAIT - Duration::from_millis(1)),
+            None,
+            "leave the full query window after unrelated serial output"
+        );
+        assert_eq!(
+            gate.take_expired(output_at + CONSOLE_QUERY_WAIT),
+            Some((run, b"echo READY\n".to_vec()))
+        );
+    }
 
     #[derive(Clone)]
     struct FakeTerminalOps {
@@ -2535,10 +2803,64 @@ mod tests {
         .expect("console line is sent");
         worker
             .drain_until_idle(&mut model)
-            .expect("serial write finishes");
+            .expect("console input is queued while the terminal query is checked");
+        assert!(calls.lock().unwrap().is_empty());
+
+        worker
+            .flush_expired_console_input_at(Instant::now() + CONSOLE_QUERY_WAIT)
+            .expect("the full input line is released after the query timeout");
+        worker
+            .drain_until_idle(&mut model)
+            .expect("the complete console line is written");
 
         assert_eq!(*calls.lock().unwrap(), ["serial:id\n"]);
         assert_eq!(input.mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn terminal_query_is_answered_before_the_complete_console_line_is_released() {
+        let service = FakeService::default();
+        let calls = Arc::clone(&service.calls);
+        let mut model = UiModel::with_service(
+            service,
+            UiState::Running(crate::RunDetails {
+                name: "Example".to_string(),
+                status: "Running".to_string(),
+                elapsed: String::new(),
+            }),
+        );
+        let run = RunId(7);
+        model.run_id = Some(run.clone());
+        let mut worker = ServiceWorker::spawn(model.shared_service()).expect("worker starts");
+        worker
+            .write_console_input(run.clone(), b"echo READY\n".to_vec())
+            .expect("complete console line is queued");
+        worker
+            .drain_until_idle(&mut model)
+            .expect("queued console input remains held pending the terminal query");
+        assert!(calls.lock().unwrap().is_empty());
+
+        let mut poll_pending = true;
+        worker
+            .apply_completion(
+                &mut model,
+                &mut poll_pending,
+                WorkerCompletion::Polled(Ok(vec![RuntimeEvent::SerialChunk {
+                    run,
+                    bytes: CURSOR_POSITION_QUERY.to_vec(),
+                    truncated: false,
+                }])),
+            )
+            .expect("cursor-position query is answered");
+        worker
+            .drain_until_idle(&mut model)
+            .expect("query response and complete console line finish");
+
+        assert_eq!(
+            *calls.lock().unwrap(),
+            ["serial:\u{1b}[1;80R", "serial:echo READY\n"]
+        );
+        assert!(!poll_pending);
     }
 
     #[test]

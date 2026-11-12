@@ -50,7 +50,10 @@ def terminal_screen(output: bytes):
 
 
 def terminal_screen_text(output: bytes) -> str:
-    return "\n".join(terminal_screen(output).display)
+    # On Windows, cursor-forward updates can overwrite spaces with the TUI's
+    # horizontal borders in Pyte's retained screen. Treat those cells as the
+    # spaces they represent when matching prompts.
+    return "\n".join(terminal_screen(output).display).replace("─", " ")
 
 
 def save_terminal_screenshot(output: bytes, destination: Path) -> None:
@@ -201,7 +204,7 @@ class TuiSession:
             self.capture.extend(chunk)
 
     def send(self, data: bytes) -> None:
-        self.child.write(data)
+        self.child.write(data.decode("utf-8"))
 
     def current_screen(self) -> str:
         self.drain_terminal()
@@ -230,11 +233,31 @@ class TuiSession:
             f"Current terminal screen:\n{visible_tail}"
         )
 
+    def wait_for_terminal_without(self, needle: bytes, timeout: int) -> None:
+        deadline = time.monotonic() + timeout
+        text = needle.decode("utf-8", errors="replace")
+        screen = ""
+        while time.monotonic() < deadline:
+            self.drain_terminal()
+            screen = terminal_screen_text(bytes(self.capture))
+            if text not in screen:
+                return
+            self.check_for_startup_failure(clean_terminal(self.capture))
+            self.check_child()
+            time.sleep(0.05)
+        visible_tail = "\n".join(screen.splitlines()[-8:])
+        raise SmokeFailure(
+            f"TUI kept {text!r} visible after Enter\nCurrent terminal screen:\n{visible_tail}"
+        )
+
     def send_console_line(self, line: bytes, timeout: int = 15) -> None:
         after = self.current_screen()
         self.send(b"\r")
         self.wait_for_terminal(b"Guest input:", timeout, after)
-        self.send(line + b"\r")
+        self.send(b"\x1b[200~" + line + b"\x1b[201~")
+        self.wait_for_terminal(b"Guest input: " + line, timeout)
+        self.send(b"\r")
+        self.wait_for_terminal_without(b"Guest input:", min(timeout, 5))
 
     def wait_for_serial(self, pattern: bytes, timeout: int, logs: list[Path] | None = None) -> bytes:
         deadline = time.monotonic() + timeout
@@ -279,12 +302,14 @@ class TuiSession:
         self.drain_terminal()
         self.terminal_log.write_bytes(self.capture)
         (self.output / "tui-terminal.txt").write_bytes(clean_terminal(self.capture))
-        try:
-            save_terminal_screenshot(
-                bytes(self.capture), self.output / "tui-terminal-screenshot.png"
-            )
-        except Exception as error:  # preserve the primary smoke failure and raw transcript
-            (self.output / "screenshot-error.txt").write_text(str(error), encoding="utf-8")
+        screenshot = self.output / "tui-terminal-screenshot.png"
+        if not screenshot.exists():
+            try:
+                save_terminal_screenshot(bytes(self.capture), screenshot)
+            except Exception as error:  # preserve the primary smoke failure and raw transcript
+                (self.output / "screenshot-error.txt").write_text(
+                    str(error), encoding="utf-8"
+                )
         for index, path in enumerate(serial_logs(Path(tempfile.gettempdir()))):
             try:
                 (self.output / f"qemu-{index}.log").write_bytes(path.read_bytes())
@@ -310,15 +335,14 @@ class TuiSession:
         self.child.close(force=True)
 
 
-def guest_uname(serial: bytes, begin_marker: bytes, done_marker: bytes) -> bytes:
-    lines = [line.strip() for line in serial.replace(b"\r", b"").splitlines()]
-    try:
-        begin = lines.index(begin_marker)
-        done = lines.index(done_marker, begin + 1)
-    except ValueError as error:
-        raise SmokeFailure("guest command completion markers were not emitted") from error
+def guest_uname(serial: bytes) -> bytes:
     uname = next(
-        (line for line in lines[begin + 1 : done] if line.startswith(b"Linux rootglass-hello")),
+        (
+            line.strip()
+            for line in clean_terminal(serial).splitlines()
+            if line.strip().startswith(b"Linux rootglass-hello")
+            and b"aarch64" in line
+        ),
         None,
     )
     if uname is None or b"aarch64" not in uname:
@@ -377,6 +401,7 @@ def run(binary: Path, glass: Path, output: Path) -> None:
     session = TuiSession(binary, glass, output)
     try:
         session.wait_for_terminal(b"Rootglass Examples", 60)
+        session.wait_for_terminal(b"Preflight", 60)
         after = session.current_screen()
         session.send(b"p")
         session.wait_for_terminal(b"Verified launch plan", 40, after)
@@ -394,21 +419,15 @@ def run(binary: Path, glass: Path, output: Path) -> None:
         session.send_console_line(FIXTURE_PASSWORD)
         session.wait_for_serial(rb"(?m)#\s*$", LOGIN_TIMEOUT)
 
-        command = (
-            b"printf 'ROOTGLASS_TUI_SMOKE_BEGIN\\n'; uname -a; "
-            b"printf 'ROOTGLASS_TUI_SMOKE_DONE\\n'"
-        )
-        session.send_console_line(command)
-        session.wait_for_serial(
-            rb"ROOTGLASS_TUI_SMOKE_DONE(?:\r\n|\n|\r)", COMMAND_TIMEOUT
-        )
-        session.wait_for_terminal(b"ROOTGLASS_TUI_SMOKE_DONE", COMMAND_TIMEOUT)
         first_logs = serial_logs(log_directory)
-        uname = guest_uname(
-            read_serial_paths(first_logs),
-            b"ROOTGLASS_TUI_SMOKE_BEGIN",
-            b"ROOTGLASS_TUI_SMOKE_DONE",
+        session.send_console_line(b"uname -a")
+        session.wait_for_serial(
+            rb"(?ms)^Linux rootglass-hello\b.*\baarch64\b.*^rootglass-hello:~#\s*$",
+            COMMAND_TIMEOUT,
+            first_logs,
         )
+        session.wait_for_terminal(b"Linux rootglass-hello", COMMAND_TIMEOUT)
+        uname = guest_uname(read_serial_paths(first_logs))
         session.save_screenshot()
 
         previous_logs = set(first_logs)
@@ -430,22 +449,26 @@ def run(binary: Path, glass: Path, output: Path) -> None:
         session.wait_for_terminal(b"Password:", 20)
         session.send_console_line(FIXTURE_PASSWORD)
         session.wait_for_serial(rb"(?m)#\s*$", LOGIN_TIMEOUT, [restart_log])
-        restart_command = (
-            b"printf 'ROOTGLASS_TUI_RESTART_BEGIN\\n'; uname -a; "
-            b"printf 'ROOTGLASS_TUI_RESTART_DONE\\n'"
-        )
-        session.send_console_line(restart_command)
+        session.send_console_line(b"id")
         session.wait_for_serial(
-            rb"ROOTGLASS_TUI_RESTART_DONE(?:\r\n|\n|\r)", COMMAND_TIMEOUT, [restart_log]
+            rb"(?ms)^uid=0\(root\).*\n.*^rootglass-hello:~#\s*$",
+            COMMAND_TIMEOUT,
+            [restart_log],
         )
-        session.wait_for_terminal(b"ROOTGLASS_TUI_RESTART_DONE", COMMAND_TIMEOUT)
-        restarted_uname = guest_uname(
-            read_serial_paths([restart_log]),
-            b"ROOTGLASS_TUI_RESTART_BEGIN",
-            b"ROOTGLASS_TUI_RESTART_DONE",
+        session.wait_for_terminal(b"uid=0(root)", COMMAND_TIMEOUT)
+        restarted_serial = clean_terminal(read_serial_paths([restart_log]))
+        root_id = next(
+            (
+                line.strip()
+                for line in restarted_serial.splitlines()
+                if line.startswith(b"uid=0(root)")
+            ),
+            None,
         )
-        if restarted_uname != uname:
-            raise SmokeFailure("guest uname changed across restart")
+        if root_id is None:
+            raise SmokeFailure(
+                "guest id command did not confirm the root login after restart"
+            )
 
         session.save_screenshot()
         session.send(b"s")
@@ -469,11 +492,12 @@ def run(binary: Path, glass: Path, output: Path) -> None:
         if qemu_processes(qemu_binary):
             raise SmokeFailure("bundled QEMU remained after Rootglass exited")
 
-        (output / "guest-uname.txt").write_bytes(
-            b"initial: " + uname + b"\nrestarted: " + restarted_uname + b"\n"
+        (output / "guest-commands.txt").write_bytes(
+            b"initial uname: " + uname + b"\nrestarted guest id: " + root_id + b"\n"
         )
         session.save_evidence()
-        print(f"Guest boot and restart passed: {restarted_uname.decode(errors='replace')}")
+        print(f"Guest boot and uname passed: {uname.decode(errors='replace')}")
+        print(f"Guest restart and id passed: {root_id.decode(errors='replace')}")
         print("Guest stop passed; no bundled QEMU process remained.")
     except Exception:
         session.save_evidence()
