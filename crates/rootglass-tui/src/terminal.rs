@@ -1071,25 +1071,23 @@ struct PendingConsoleInput {
 }
 
 impl ConsoleInputGate {
-    fn begin(&mut self, run: RunId, bytes: Vec<u8>, now: Instant) -> Option<Vec<u8>> {
+    fn begin(&mut self, run: RunId, bytes: Vec<u8>, now: Instant) {
         if bytes.is_empty() {
-            return None;
+            return;
         }
         if let Some(pending) = self.pending.as_mut() {
             if pending.run == run {
                 pending.bytes.extend_from_slice(&bytes);
                 pending.deadline = now + CONSOLE_QUERY_WAIT;
-                return None;
+                return;
             }
         }
 
-        let first_byte = bytes[0];
         self.pending = Some(PendingConsoleInput {
             run,
             bytes,
             deadline: now + CONSOLE_QUERY_WAIT,
         });
-        Some(vec![first_byte])
     }
 
     fn release_after_query(&mut self, run: &RunId) -> Option<Vec<u8>> {
@@ -1098,9 +1096,7 @@ impl ConsoleInputGate {
             .as_ref()
             .is_some_and(|pending| &pending.run == run)
         {
-            self.pending
-                .take()
-                .map(|pending| pending.bytes.get(1..).unwrap_or_default().to_vec())
+            self.pending.take().map(|pending| pending.bytes)
         } else {
             None
         }
@@ -1112,10 +1108,9 @@ impl ConsoleInputGate {
             .as_ref()
             .is_some_and(|pending| now >= pending.deadline)
         {
-            self.pending.take().map(|pending| {
-                let remaining = pending.bytes.get(1..).unwrap_or_default().to_vec();
-                (pending.run, remaining)
-            })
+            self.pending
+                .take()
+                .map(|pending| (pending.run, pending.bytes))
         } else {
             None
         }
@@ -1128,9 +1123,9 @@ impl ConsoleInputGate {
         if &pending.run != run {
             return;
         }
-        // Serial output can contain the first input character for unrelated reasons
-        // (for example, an `e` in boot output). Keep the full quiet window instead
-        // of treating a byte match as proof that the guest echoed our input.
+        // Serial output can contain unrelated activity while the guest services a
+        // cursor query. Keep the full quiet window instead of inferring that the
+        // guest is ready for the buffered console line.
         pending.deadline = now + CONSOLE_QUERY_WAIT;
     }
 }
@@ -1245,9 +1240,7 @@ impl ServiceWorker {
     }
 
     fn write_console_input(&mut self, run: RunId, bytes: Vec<u8>) -> Result<(), String> {
-        if let Some(first_byte) = self.console_input.begin(run.clone(), bytes, Instant::now()) {
-            self.write_serial(run, first_byte)?;
-        }
+        self.console_input.begin(run, bytes, Instant::now());
         Ok(())
     }
 
@@ -1257,7 +1250,7 @@ impl ServiceWorker {
 
     fn flush_expired_console_input_at(&mut self, now: Instant) -> Result<(), String> {
         if let Some((run, bytes)) = self.console_input.take_expired(now) {
-            trace_tui("released remaining console input after cursor-query wait expired");
+            trace_tui("sent complete buffered console input after cursor-query wait expired");
             if !bytes.is_empty() {
                 self.write_serial(run, bytes)?;
             }
@@ -1479,7 +1472,7 @@ impl ServiceWorker {
                         self.write_serial(run.clone(), responses)?;
                         if let Some(bytes) = pending {
                             trace_tui(
-                                "replayed complete console input after cursor-query response",
+                                "sent complete buffered console line after cursor-query response",
                             );
                             self.write_serial(run, bytes)?;
                         }
@@ -1934,11 +1927,7 @@ mod tests {
         let run = RunId(7);
         let mut gate = ConsoleInputGate::default();
 
-        assert_eq!(
-            gate.begin(run.clone(), b"echo READY\n".to_vec(), now),
-            Some(b"e".to_vec()),
-            "the first byte prompts the guest to issue its terminal query"
-        );
+        gate.begin(run.clone(), b"echo READY\n".to_vec(), now);
         assert_eq!(
             gate.release_after_query(&RunId(8)),
             None,
@@ -1946,8 +1935,8 @@ mod tests {
         );
         assert_eq!(
             gate.release_after_query(&run),
-            Some(b"cho READY\n".to_vec()),
-            "the first byte was already sent to prompt the guest's query"
+            Some(b"echo READY\n".to_vec()),
+            "the complete line is released after the guest query is answered"
         );
         assert_eq!(
             gate.take_expired(now + CONSOLE_QUERY_WAIT),
@@ -1957,24 +1946,21 @@ mod tests {
     }
 
     #[test]
-    fn console_input_gate_flushes_after_query_timeout_and_appends_same_run_input() {
+    fn console_input_gate_flushes_the_full_line_after_timeout_and_appends_same_run_input() {
         let now = Instant::now();
         let run = RunId(7);
         let mut gate = ConsoleInputGate::default();
 
-        assert_eq!(
-            gate.begin(run.clone(), b"echo ".to_vec(), now),
-            Some(b"e".to_vec())
-        );
-        assert_eq!(gate.begin(run.clone(), b"READY\n".to_vec(), now), None);
+        gate.begin(run.clone(), b"echo ".to_vec(), now);
+        gate.begin(run.clone(), b"READY\n".to_vec(), now);
         assert_eq!(
             gate.take_expired(now + Duration::from_millis(200)),
             None,
-            "the remainder is held while the guest's cursor query is drained"
+            "the complete line is held while the guest's cursor query is drained"
         );
         assert_eq!(
             gate.take_expired(now + CONSOLE_QUERY_WAIT),
-            Some((run, b"cho READY\n".to_vec()))
+            Some((run, b"echo READY\n".to_vec()))
         );
     }
 
@@ -1984,10 +1970,7 @@ mod tests {
         let run = RunId(7);
         let mut gate = ConsoleInputGate::default();
 
-        assert_eq!(
-            gate.begin(run.clone(), b"echo READY\n".to_vec(), now),
-            Some(b"e".to_vec())
-        );
+        gate.begin(run.clone(), b"echo READY\n".to_vec(), now);
         gate.observe_output(&run, now + Duration::from_millis(400));
         assert_eq!(
             gate.take_expired(now + CONSOLE_QUERY_WAIT),
@@ -1996,40 +1979,27 @@ mod tests {
         );
         assert_eq!(
             gate.take_expired(now + Duration::from_millis(5_500)),
-            Some((run, b"cho READY\n".to_vec()))
+            Some((run, b"echo READY\n".to_vec()))
         );
     }
 
     #[test]
-    fn console_input_gate_keeps_full_wait_after_unrelated_matching_output() {
+    fn console_input_gate_keeps_full_wait_after_unrelated_output() {
         let now = Instant::now();
         let run = RunId(7);
         let mut gate = ConsoleInputGate::default();
 
-        assert_eq!(
-            gate.begin(run.clone(), b"echo READY\n".to_vec(), now),
-            Some(b"e".to_vec())
-        );
+        gate.begin(run.clone(), b"echo READY\n".to_vec(), now);
         let output_at = now + Duration::from_millis(20);
         gate.observe_output(&run, output_at);
         assert_eq!(
             gate.take_expired(output_at + CONSOLE_QUERY_WAIT - Duration::from_millis(1)),
             None,
-            "leave the full query window after unrelated output containing the first byte"
+            "leave the full query window after unrelated serial output"
         );
         assert_eq!(
             gate.take_expired(output_at + CONSOLE_QUERY_WAIT),
-            Some((run.clone(), b"cho READY\n".to_vec()))
-        );
-
-        assert_eq!(
-            gate.begin(run.clone(), b"echo READY\n".to_vec(), now),
-            Some(b"e".to_vec())
-        );
-        assert_eq!(
-            gate.release_after_query(&run),
-            Some(b"cho READY\n".to_vec()),
-            "answer the guest query before sending the remaining input"
+            Some((run, b"echo READY\n".to_vec()))
         );
     }
 
@@ -2833,22 +2803,22 @@ mod tests {
         .expect("console line is sent");
         worker
             .drain_until_idle(&mut model)
-            .expect("the first byte is sent to prompt a terminal query");
-        assert_eq!(*calls.lock().unwrap(), ["serial:i"]);
+            .expect("console input is queued while the terminal query is checked");
+        assert!(calls.lock().unwrap().is_empty());
 
         worker
             .flush_expired_console_input_at(Instant::now() + CONSOLE_QUERY_WAIT)
-            .expect("input gate expires");
+            .expect("the full input line is released after the query timeout");
         worker
             .drain_until_idle(&mut model)
-            .expect("the remaining console line finishes after the query timeout");
+            .expect("the complete console line is written");
 
-        assert_eq!(*calls.lock().unwrap(), ["serial:i", "serial:d\n"]);
+        assert_eq!(*calls.lock().unwrap(), ["serial:id\n"]);
         assert_eq!(input.mode, InputMode::Normal);
     }
 
     #[test]
-    fn terminal_query_is_answered_before_the_remaining_console_line_is_released() {
+    fn terminal_query_is_answered_before_the_complete_console_line_is_released() {
         let service = FakeService::default();
         let calls = Arc::clone(&service.calls);
         let mut model = UiModel::with_service(
@@ -2864,10 +2834,11 @@ mod tests {
         let mut worker = ServiceWorker::spawn(model.shared_service()).expect("worker starts");
         worker
             .write_console_input(run.clone(), b"echo READY\n".to_vec())
-            .expect("first byte is sent to the guest");
+            .expect("complete console line is queued");
         worker
             .drain_until_idle(&mut model)
-            .expect("first-byte write finishes");
+            .expect("queued console input remains held pending the terminal query");
+        assert!(calls.lock().unwrap().is_empty());
 
         let mut poll_pending = true;
         worker
@@ -2883,11 +2854,11 @@ mod tests {
             .expect("cursor-position query is answered");
         worker
             .drain_until_idle(&mut model)
-            .expect("query response and replayed line finish");
+            .expect("query response and complete console line finish");
 
         assert_eq!(
             *calls.lock().unwrap(),
-            ["serial:e", "serial:\u{1b}[1;80R", "serial:cho READY\n"]
+            ["serial:\u{1b}[1;80R", "serial:echo READY\n"]
         );
         assert!(!poll_pending);
     }
