@@ -1069,7 +1069,9 @@ impl TerminalQueryResponder {
             .windows(CURSOR_POSITION_QUERY.len())
             .filter(|window| *window == CURSOR_POSITION_QUERY)
             .count();
-        let tail_start = combined.len().saturating_sub(CURSOR_POSITION_QUERY.len() - 1);
+        let tail_start = combined
+            .len()
+            .saturating_sub(CURSOR_POSITION_QUERY.len() - 1);
         self.tail.extend_from_slice(&combined[tail_start..]);
         count
     }
@@ -1795,13 +1797,25 @@ mod tests {
         let mut responder = TerminalQueryResponder::default();
         let first_run = RunId(7);
 
-        assert_eq!(responder.cursor_position_queries(&first_run, b"prompt\x1b["), 0);
-        assert_eq!(responder.cursor_position_queries(&first_run, b"6n next\x1b[6n"), 2);
+        assert_eq!(
+            responder.cursor_position_queries(&first_run, b"prompt\x1b["),
+            0
+        );
+        assert_eq!(
+            responder.cursor_position_queries(&first_run, b"6n next\x1b[6n"),
+            2
+        );
 
-        assert_eq!(responder.cursor_position_queries(&first_run, b"still\x1b["), 0);
+        assert_eq!(
+            responder.cursor_position_queries(&first_run, b"still\x1b["),
+            0
+        );
         let second_run = RunId(8);
         assert_eq!(responder.cursor_position_queries(&second_run, b"6n"), 0);
-        assert_eq!(responder.cursor_position_queries(&second_run, b"\x1b[6n"), 1);
+        assert_eq!(
+            responder.cursor_position_queries(&second_run, b"\x1b[6n"),
+            1
+        );
     }
 
     #[derive(Clone)]
