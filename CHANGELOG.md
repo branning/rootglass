@@ -23,11 +23,14 @@ verification only. The desktop app does not trust the example key by default.
 
 ### Verification status
 
-The Windows Server 2025 x64 smoke has verified example import through the
-picker and file association and boot through the Alpine login prompt. Guest
-command, restart, and stop checks are pending. This does not qualify Windows 11
-x64 or native Windows 11 ARM64. Linux clean-install qualification remains open.
-No general WHPX, HVF, or KVM acceleration claim is made.
+The [Windows Server 2025 x64 installed smoke](https://github.com/branning/rootglass/actions/runs/43203983228)
+verified picker and file-association import, runtime checksums, Alpine boot and
+login, `uname -a`, restart, `id`, stop with QEMU cleanup, uninstall, and
+retention of user trust, library, and guest-state data. The command probes are
+short; longer pasted console lines have not been qualified. This does not
+qualify Windows 11 x64 or native Windows 11 ARM64. Linux clean-install
+qualification remains open. No general WHPX, HVF, or KVM acceleration claim is
+made.
 
 ### macOS first launch
 

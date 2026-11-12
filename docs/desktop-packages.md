@@ -235,10 +235,15 @@ Both cells install the Windows x64 NSIS package, verify its checksum and
 runtime inventory, check the `.glass` file association, import the signed
 example, and run the installed Ratatui workflow through a Windows pseudoterminal
 with outbound Internet traffic blocked for Rootglass and QEMU. The guest boots,
-accepts serial login and `uname -a`, restarts, and stops. The workflow verifies
-that QEMU exits, uninstalls the app, and confirms trust configuration, imported
-library data, and guest state remain. A TUI screenshot, serial logs, runtime
-inventory, association events, and uninstall record are retained for 14 days.
+accepts serial login, runs `uname -a`, restarts, runs `id`, and stops. The
+workflow verifies that QEMU exits, uninstalls the app, and confirms trust
+configuration, imported library data, and guest state remain. A TUI screenshot,
+serial logs, runtime inventory, association events, and uninstall record are
+retained for 14 days. The Windows Server 2025 x64 result is recorded in [run
+43203983228](https://github.com/branning/rootglass/actions/runs/43203983228).
+
+The installed smoke uses short guest commands; it does not qualify arbitrary
+long pasted console lines.
 
 The hosted x64 cell is Windows Server 2025, not Windows 11. The ARM64 cell is
 Windows 11 ARM64 running the x64 app and QEMU under Windows emulation; it does
