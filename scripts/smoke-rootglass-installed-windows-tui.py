@@ -233,6 +233,23 @@ class TuiSession:
             f"Current terminal screen:\n{visible_tail}"
         )
 
+    def wait_for_terminal_without(self, needle: bytes, timeout: int) -> None:
+        deadline = time.monotonic() + timeout
+        text = needle.decode("utf-8", errors="replace")
+        screen = ""
+        while time.monotonic() < deadline:
+            self.drain_terminal()
+            screen = terminal_screen_text(bytes(self.capture))
+            if text not in screen:
+                return
+            self.check_for_startup_failure(clean_terminal(self.capture))
+            self.check_child()
+            time.sleep(0.05)
+        visible_tail = "\n".join(screen.splitlines()[-8:])
+        raise SmokeFailure(
+            f"TUI kept {text!r} visible after Enter\nCurrent terminal screen:\n{visible_tail}"
+        )
+
     def send_console_line(self, line: bytes, timeout: int = 15) -> None:
         after = self.current_screen()
         self.send(b"\r")
@@ -240,6 +257,7 @@ class TuiSession:
         self.send(b"\x1b[200~" + line + b"\x1b[201~")
         self.wait_for_terminal(b"Guest input: " + line, timeout)
         self.send(b"\r")
+        self.wait_for_terminal_without(b"Guest input:", min(timeout, 5))
 
     def wait_for_serial(self, pattern: bytes, timeout: int, logs: list[Path] | None = None) -> bytes:
         deadline = time.monotonic() + timeout
@@ -409,15 +427,22 @@ def run(binary: Path, glass: Path, output: Path) -> None:
         session.wait_for_serial(
             rb"(?m)^ROOTGLASS_TUI_SMOKE_BEGIN$", COMMAND_TIMEOUT, first_logs
         )
+        session.wait_for_serial(
+            rb"(?ms)^ROOTGLASS_TUI_SMOKE_BEGIN$.*^rootglass-hello:~#\s*$",
+            COMMAND_TIMEOUT,
+            first_logs,
+        )
         session.send_console_line(b"uname -a")
         session.wait_for_serial(
-            rb"(?m)^Linux rootglass-hello\b.*\baarch64\b",
+            rb"(?ms)^Linux rootglass-hello\b.*\baarch64\b.*^rootglass-hello:~#\s*$",
             COMMAND_TIMEOUT,
             first_logs,
         )
         session.send_console_line(b"echo " + done_marker)
         session.wait_for_serial(
-            rb"(?m)^ROOTGLASS_TUI_SMOKE_DONE$", COMMAND_TIMEOUT, first_logs
+            rb"(?ms)^ROOTGLASS_TUI_SMOKE_DONE$.*^rootglass-hello:~#\s*$",
+            COMMAND_TIMEOUT,
+            first_logs,
         )
         session.wait_for_terminal(b"ROOTGLASS_TUI_SMOKE_DONE", COMMAND_TIMEOUT)
         uname = guest_uname(
