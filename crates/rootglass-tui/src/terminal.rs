@@ -27,7 +27,6 @@ use std::time::{Duration, Instant};
 
 const TICK_RATE: Duration = Duration::from_millis(50);
 const CONSOLE_QUERY_WAIT: Duration = Duration::from_secs(2);
-const CONSOLE_ECHO_QUERY_GRACE: Duration = Duration::from_millis(750);
 const MAX_PENDING_SERVICE_REQUESTS: usize = 64;
 const MAX_INPUT_BYTES: usize = 8_192;
 const CURSOR_POSITION_QUERY: &[u8] = b"\x1b[6n";
@@ -1069,7 +1068,6 @@ struct PendingConsoleInput {
     run: RunId,
     bytes: Vec<u8>,
     deadline: Instant,
-    first_byte_echoed: bool,
 }
 
 impl ConsoleInputGate {
@@ -1090,7 +1088,6 @@ impl ConsoleInputGate {
             run,
             bytes,
             deadline: now + CONSOLE_QUERY_WAIT,
-            first_byte_echoed: false,
         });
         Some(vec![first_byte])
     }
@@ -1124,25 +1121,17 @@ impl ConsoleInputGate {
         }
     }
 
-    fn observe_output(&mut self, run: &RunId, bytes: &[u8], now: Instant) {
+    fn observe_output(&mut self, run: &RunId, now: Instant) {
         let Some(pending) = self.pending.as_mut() else {
             return;
         };
         if &pending.run != run {
             return;
         }
-        let Some(first_byte) = pending.bytes.first().copied() else {
-            return;
-        };
-        if first_byte.is_ascii_graphic() && bytes.contains(&first_byte) {
-            pending.first_byte_echoed = true;
-        }
-        pending.deadline = now
-            + if pending.first_byte_echoed {
-                CONSOLE_ECHO_QUERY_GRACE
-            } else {
-                CONSOLE_QUERY_WAIT
-            };
+        // Serial output can contain the first input character for unrelated reasons
+        // (for example, an `e` in boot output). Keep the full quiet window instead
+        // of treating a byte match as proof that the guest echoed our input.
+        pending.deadline = now + CONSOLE_QUERY_WAIT;
     }
 }
 
@@ -1477,8 +1466,7 @@ impl ServiceWorker {
                                     responses.extend_from_slice(CURSOR_POSITION_RESPONSE);
                                 }
                             } else {
-                                self.console_input
-                                    .observe_output(run, bytes, Instant::now());
+                                self.console_input.observe_output(run, Instant::now());
                             }
                         }
                     }
@@ -2000,7 +1988,7 @@ mod tests {
             gate.begin(run.clone(), b"echo READY\n".to_vec(), now),
             Some(b"e".to_vec())
         );
-        gate.observe_output(&run, b"prompt output", now + Duration::from_millis(400));
+        gate.observe_output(&run, now + Duration::from_millis(400));
         assert_eq!(
             gate.take_expired(now + CONSOLE_QUERY_WAIT),
             None,
@@ -2013,7 +2001,7 @@ mod tests {
     }
 
     #[test]
-    fn console_input_gate_waits_after_echo_then_releases_tail() {
+    fn console_input_gate_keeps_full_wait_after_unrelated_matching_output() {
         let now = Instant::now();
         let run = RunId(7);
         let mut gate = ConsoleInputGate::default();
@@ -2022,15 +2010,15 @@ mod tests {
             gate.begin(run.clone(), b"echo READY\n".to_vec(), now),
             Some(b"e".to_vec())
         );
-        let echoed_at = now + Duration::from_millis(20);
-        gate.observe_output(&run, b"e\r", echoed_at);
+        let output_at = now + Duration::from_millis(20);
+        gate.observe_output(&run, output_at);
         assert_eq!(
-            gate.take_expired(echoed_at + CONSOLE_ECHO_QUERY_GRACE - Duration::from_millis(1)),
+            gate.take_expired(output_at + CONSOLE_QUERY_WAIT - Duration::from_millis(1)),
             None,
-            "leave time for a cursor query after the first-byte echo"
+            "leave the full query window after unrelated output containing the first byte"
         );
         assert_eq!(
-            gate.take_expired(echoed_at + CONSOLE_ECHO_QUERY_GRACE),
+            gate.take_expired(output_at + CONSOLE_QUERY_WAIT),
             Some((run.clone(), b"cho READY\n".to_vec()))
         );
 
