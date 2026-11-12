@@ -966,7 +966,6 @@ mod supervisor_tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     struct FakeQemu {
         root: PathBuf,
@@ -980,15 +979,20 @@ mod supervisor_tests {
     }
 
     fn fake_qemu(mode: &str) -> FakeQemu {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "rootglass-fake-qemu-{}-{nonce}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&root).unwrap();
+        static NEXT_FAKE_QEMU_ID: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
+        let root = loop {
+            let id = NEXT_FAKE_QEMU_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let candidate = std::env::temp_dir().join(format!(
+                "rootglass-fake-qemu-{}-{id}",
+                std::process::id()
+            ));
+            match fs::create_dir(&candidate) {
+                Ok(()) => break candidate,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("create fake QEMU fixture directory: {error}"),
+            }
+        };
         let binary = root.join("fake-qemu.py");
         let script = r##"#!/usr/bin/env python3
 import os
