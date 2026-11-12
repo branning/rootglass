@@ -387,3 +387,5 @@
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-11T06:37:27.839101734Z","agent":"codex@worker-1","text":"Smoke #42973551612 stopped at validation; a changelog-only change blocked package reuse."}
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-11T06:52:31.964288934Z","agent":"codex@worker-1","text":"Smoke #42973762227 booted Alpine; a long serial command was truncated before its marker."}
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-12T04:29:05.499539907Z","agent":"codex@worker-1","text":"Windows x64 smoke #42975540941 booted; TUI input stalled after guest ESC[6n cursor query."}
+{"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-12T05:08:48.4234927Z","agent":"codex@worker-1","text":"Windows smoke #43157043525 booted, but ESC[6n corrupted guest input; serial input gate needs installed retest."}
+{"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-12T05:08:48.443438634Z","agent":"codex@worker-1","text":"Input gate fix: TUI 57/57 tests, Clippy and rustfmt pass; Windows package smoke pending."}

@@ -23,9 +23,10 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError};
 use std::sync::{Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const TICK_RATE: Duration = Duration::from_millis(50);
+const CONSOLE_QUERY_WAIT: Duration = Duration::from_millis(200);
 const MAX_PENDING_SERVICE_REQUESTS: usize = 64;
 const MAX_INPUT_BYTES: usize = 8_192;
 const CURSOR_POSITION_QUERY: &[u8] = b"\x1b[6n";
@@ -117,6 +118,7 @@ fn run_event_loop(
     let mut input = InputBuffer::default();
     loop {
         worker.drain_ready(model, poll_pending)?;
+        worker.flush_expired_console_input()?;
         let prompt = input.prompt();
         terminal
             .draw(|frame| render_with_prompt(frame, model, prompt.as_deref()))
@@ -558,7 +560,7 @@ fn handle_console_key(
             let text = std::mem::take(&mut input.text);
             input.clear();
             if let Some((run, bytes)) = model.input_request(&text) {
-                worker.write_serial(run, bytes)?;
+                worker.write_console_input(run, bytes)?;
             }
         }
         KeyCode::Backspace => {
@@ -1048,12 +1050,83 @@ struct ServiceWorker {
     thread: Option<JoinHandle<()>>,
     in_flight: usize,
     terminal_queries: TerminalQueryResponder,
+    console_input: ConsoleInputGate,
 }
 
 #[derive(Default)]
 struct TerminalQueryResponder {
     run: Option<RunId>,
     tail: Vec<u8>,
+}
+
+#[derive(Default)]
+struct ConsoleInputGate {
+    pending: Option<PendingConsoleInput>,
+}
+
+struct PendingConsoleInput {
+    run: RunId,
+    bytes: Vec<u8>,
+    deadline: Instant,
+}
+
+impl ConsoleInputGate {
+    fn begin(&mut self, run: RunId, bytes: Vec<u8>, now: Instant) -> Option<Vec<u8>> {
+        if bytes.is_empty() {
+            return None;
+        }
+        if let Some(pending) = self.pending.as_mut() {
+            if pending.run == run {
+                pending.bytes.extend_from_slice(&bytes);
+                return None;
+            }
+        }
+
+        let first_byte = bytes[0];
+        let remainder = bytes[1..].to_vec();
+        self.pending = (!remainder.is_empty()).then_some(PendingConsoleInput {
+            run,
+            bytes: remainder,
+            deadline: now + CONSOLE_QUERY_WAIT,
+        });
+        Some(vec![first_byte])
+    }
+
+    fn release_after_query(&mut self, run: &RunId) -> Option<Vec<u8>> {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| &pending.run == run)
+        {
+            self.pending.take().map(|pending| pending.bytes)
+        } else {
+            None
+        }
+    }
+
+    fn take_expired(&mut self, now: Instant) -> Option<(RunId, Vec<u8>)> {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| now >= pending.deadline)
+        {
+            self.pending
+                .take()
+                .map(|pending| (pending.run, pending.bytes))
+        } else {
+            None
+        }
+    }
+
+    fn cancel(&mut self, run: &RunId) {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| &pending.run == run)
+        {
+            self.pending = None;
+        }
+    }
 }
 
 impl TerminalQueryResponder {
@@ -1091,6 +1164,7 @@ impl ServiceWorker {
             thread: Some(thread),
             in_flight: 0,
             terminal_queries: TerminalQueryResponder::default(),
+            console_input: ConsoleInputGate::default(),
         })
     }
 
@@ -1162,6 +1236,28 @@ impl ServiceWorker {
 
     fn write_serial(&mut self, run: RunId, bytes: Vec<u8>) -> Result<(), String> {
         self.send(WorkerRequest::WriteSerial(run, bytes))
+    }
+
+    fn write_console_input(&mut self, run: RunId, bytes: Vec<u8>) -> Result<(), String> {
+        if let Some(first_byte) = self.console_input.begin(run.clone(), bytes, Instant::now()) {
+            if let Err(error) = self.write_serial(run.clone(), first_byte) {
+                self.console_input.cancel(&run);
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    fn flush_expired_console_input(&mut self) -> Result<(), String> {
+        self.flush_expired_console_input_at(Instant::now())
+    }
+
+    fn flush_expired_console_input_at(&mut self, now: Instant) -> Result<(), String> {
+        if let Some((run, bytes)) = self.console_input.take_expired(now) {
+            trace_tui("released buffered console input after cursor-query timeout");
+            self.write_serial(run, bytes)?;
+        }
+        Ok(())
     }
 
     fn developer(&mut self, request: DeveloperRequest) -> Result<(), String> {
@@ -1372,7 +1468,14 @@ impl ServiceWorker {
                             "answered {} guest terminal cursor-position query/queries",
                             responses.len() / CURSOR_POSITION_RESPONSE.len()
                         ));
-                        self.write_serial(run, responses)?;
+                        let pending = self.console_input.release_after_query(&run);
+                        self.write_serial(run.clone(), responses)?;
+                        if let Some(bytes) = pending {
+                            trace_tui(
+                                "released buffered console input after cursor-query response",
+                            );
+                            self.write_serial(run, bytes)?;
+                        }
                     }
                 }
                 match &result {
@@ -1815,6 +1918,49 @@ mod tests {
         assert_eq!(
             responder.cursor_position_queries(&second_run, b"\x1b[6n"),
             1
+        );
+    }
+
+    #[test]
+    fn console_input_gate_waits_for_query_reply_then_releases_remaining_bytes() {
+        let now = Instant::now();
+        let run = RunId(7);
+        let mut gate = ConsoleInputGate::default();
+
+        assert_eq!(
+            gate.begin(run.clone(), b"echo READY\n".to_vec(), now),
+            Some(b"e".to_vec())
+        );
+        assert_eq!(
+            gate.release_after_query(&RunId(8)),
+            None,
+            "a query from another run must not release pending input"
+        );
+        assert_eq!(
+            gate.release_after_query(&run),
+            Some(b"cho READY\n".to_vec())
+        );
+        assert_eq!(
+            gate.take_expired(now + CONSOLE_QUERY_WAIT),
+            None,
+            "query response releases the input exactly once"
+        );
+    }
+
+    #[test]
+    fn console_input_gate_flushes_after_query_timeout_and_appends_same_run_input() {
+        let now = Instant::now();
+        let run = RunId(7);
+        let mut gate = ConsoleInputGate::default();
+
+        assert_eq!(
+            gate.begin(run.clone(), b"echo ".to_vec(), now),
+            Some(b"e".to_vec())
+        );
+        assert_eq!(gate.begin(run.clone(), b"READY\n".to_vec(), now), None);
+        assert_eq!(
+            gate.take_expired(now + CONSOLE_QUERY_WAIT),
+            Some((run, b"cho READY\n".to_vec()))
         );
     }
 
@@ -2619,8 +2765,16 @@ mod tests {
         worker
             .drain_until_idle(&mut model)
             .expect("serial write finishes");
+        assert_eq!(*calls.lock().unwrap(), ["serial:i"]);
 
-        assert_eq!(*calls.lock().unwrap(), ["serial:id\n"]);
+        worker
+            .flush_expired_console_input_at(Instant::now() + CONSOLE_QUERY_WAIT)
+            .expect("input gate expires");
+        worker
+            .drain_until_idle(&mut model)
+            .expect("remaining serial input finishes");
+
+        assert_eq!(*calls.lock().unwrap(), ["serial:i", "serial:d\n"]);
         assert_eq!(input.mode, InputMode::Normal);
     }
 
