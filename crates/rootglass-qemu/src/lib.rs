@@ -983,10 +983,8 @@ mod supervisor_tests {
             std::sync::atomic::AtomicU64::new(0);
         let root = loop {
             let id = NEXT_FAKE_QEMU_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let candidate = std::env::temp_dir().join(format!(
-                "rootglass-fake-qemu-{}-{id}",
-                std::process::id()
-            ));
+            let candidate = std::env::temp_dir()
+                .join(format!("rootglass-fake-qemu-{}-{id}", std::process::id()));
             match fs::create_dir(&candidate) {
                 Ok(()) => break candidate,
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
