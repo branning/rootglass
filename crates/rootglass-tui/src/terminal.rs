@@ -28,6 +28,8 @@ use std::time::Duration;
 const TICK_RATE: Duration = Duration::from_millis(50);
 const MAX_PENDING_SERVICE_REQUESTS: usize = 64;
 const MAX_INPUT_BYTES: usize = 8_192;
+const CURSOR_POSITION_QUERY: &[u8] = b"\x1b[6n";
+const CURSOR_POSITION_RESPONSE: &[u8] = b"\x1b[1;80R";
 
 pub(crate) fn trace_tui(message: impl AsRef<str>) {
     static TRACE_FILE: OnceLock<Option<Mutex<std::fs::File>>> = OnceLock::new();
@@ -1045,6 +1047,32 @@ struct ServiceWorker {
     completions: Receiver<WorkerCompletion>,
     thread: Option<JoinHandle<()>>,
     in_flight: usize,
+    terminal_queries: TerminalQueryResponder,
+}
+
+#[derive(Default)]
+struct TerminalQueryResponder {
+    run: Option<RunId>,
+    tail: Vec<u8>,
+}
+
+impl TerminalQueryResponder {
+    fn cursor_position_queries(&mut self, run: &RunId, bytes: &[u8]) -> usize {
+        if self.run.as_ref() != Some(run) {
+            self.run = Some(run.clone());
+            self.tail.clear();
+        }
+
+        let mut combined = std::mem::take(&mut self.tail);
+        combined.extend_from_slice(bytes);
+        let count = combined
+            .windows(CURSOR_POSITION_QUERY.len())
+            .filter(|window| *window == CURSOR_POSITION_QUERY)
+            .count();
+        let tail_start = combined.len().saturating_sub(CURSOR_POSITION_QUERY.len() - 1);
+        self.tail.extend_from_slice(&combined[tail_start..]);
+        count
+    }
 }
 
 impl ServiceWorker {
@@ -1060,6 +1088,7 @@ impl ServiceWorker {
             completions: completion_rx,
             thread: Some(thread),
             in_flight: 0,
+            terminal_queries: TerminalQueryResponder::default(),
         })
     }
 
@@ -1318,6 +1347,32 @@ impl ServiceWorker {
             }
             WorkerCompletion::Polled(result) => {
                 *poll_pending = false;
+                if let Ok(events) = &result {
+                    let mut response_run = None;
+                    let mut responses = Vec::new();
+                    for event in events {
+                        if let RuntimeEvent::SerialChunk { run, bytes, .. } = event {
+                            if model.run_id.as_ref() != Some(run) {
+                                continue;
+                            }
+                            let query_count =
+                                self.terminal_queries.cursor_position_queries(run, bytes);
+                            if query_count > 0 {
+                                response_run = Some(run.clone());
+                                for _ in 0..query_count {
+                                    responses.extend_from_slice(CURSOR_POSITION_RESPONSE);
+                                }
+                            }
+                        }
+                    }
+                    if let Some(run) = response_run {
+                        trace_tui(format!(
+                            "answered {} guest terminal cursor-position query/queries",
+                            responses.len() / CURSOR_POSITION_RESPONSE.len()
+                        ));
+                        self.write_serial(run, responses)?;
+                    }
+                }
                 match &result {
                     Ok(events) => {
                         let serial = events
@@ -1734,6 +1789,20 @@ mod tests {
     use std::rc::Rc;
     use std::sync::{Arc, Barrier, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn terminal_query_responder_handles_split_repeated_and_new_run_queries() {
+        let mut responder = TerminalQueryResponder::default();
+        let first_run = RunId(7);
+
+        assert_eq!(responder.cursor_position_queries(&first_run, b"prompt\x1b["), 0);
+        assert_eq!(responder.cursor_position_queries(&first_run, b"6n next\x1b[6n"), 2);
+
+        assert_eq!(responder.cursor_position_queries(&first_run, b"still\x1b["), 0);
+        let second_run = RunId(8);
+        assert_eq!(responder.cursor_position_queries(&second_run, b"6n"), 0);
+        assert_eq!(responder.cursor_position_queries(&second_run, b"\x1b[6n"), 1);
+    }
 
     #[derive(Clone)]
     struct FakeTerminalOps {

@@ -386,3 +386,4 @@
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-11T06:35:08.105762328Z","agent":"codex@worker-1","text":"Smoke #42971686937 booted Alpine but timed out waiting for the TUI guest command marker."}
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-11T06:37:27.839101734Z","agent":"codex@worker-1","text":"Smoke #42973551612 stopped at validation; a changelog-only change blocked package reuse."}
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-11T06:52:31.964288934Z","agent":"codex@worker-1","text":"Smoke #42973762227 booted Alpine; a long serial command was truncated before its marker."}
+{"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-12T04:29:05.499539907Z","agent":"codex@worker-1","text":"Windows x64 smoke #42975540941 booted; TUI input stalled after guest ESC[6n cursor query."}
