@@ -50,7 +50,10 @@ def terminal_screen(output: bytes):
 
 
 def terminal_screen_text(output: bytes) -> str:
-    return "\n".join(terminal_screen(output).display)
+    # On Windows, cursor-forward updates can overwrite spaces with the TUI's
+    # horizontal borders in Pyte's retained screen. Treat those cells as the
+    # spaces they represent when matching prompts.
+    return "\n".join(terminal_screen(output).display).replace("─", " ")
 
 
 def save_terminal_screenshot(output: bytes, destination: Path) -> None:
