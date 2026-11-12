@@ -281,12 +281,14 @@ class TuiSession:
         self.drain_terminal()
         self.terminal_log.write_bytes(self.capture)
         (self.output / "tui-terminal.txt").write_bytes(clean_terminal(self.capture))
-        try:
-            save_terminal_screenshot(
-                bytes(self.capture), self.output / "tui-terminal-screenshot.png"
-            )
-        except Exception as error:  # preserve the primary smoke failure and raw transcript
-            (self.output / "screenshot-error.txt").write_text(str(error), encoding="utf-8")
+        screenshot = self.output / "tui-terminal-screenshot.png"
+        if not screenshot.exists():
+            try:
+                save_terminal_screenshot(bytes(self.capture), screenshot)
+            except Exception as error:  # preserve the primary smoke failure and raw transcript
+                (self.output / "screenshot-error.txt").write_text(
+                    str(error), encoding="utf-8"
+                )
         for index, path in enumerate(serial_logs(Path(tempfile.gettempdir()))):
             try:
                 (self.output / f"qemu-{index}.log").write_bytes(path.read_bytes())
