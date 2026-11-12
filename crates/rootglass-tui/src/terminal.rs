@@ -1101,9 +1101,9 @@ impl ConsoleInputGate {
             .as_ref()
             .is_some_and(|pending| &pending.run == run)
         {
-            self.pending.take().map(|pending| {
-                pending.bytes.get(1..).unwrap_or_default().to_vec()
-            })
+            self.pending
+                .take()
+                .map(|pending| pending.bytes.get(1..).unwrap_or_default().to_vec())
         } else {
             None
         }
