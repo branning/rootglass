@@ -26,7 +26,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 const TICK_RATE: Duration = Duration::from_millis(50);
-const CONSOLE_QUERY_WAIT: Duration = Duration::from_secs(2);
+const CONSOLE_QUERY_WAIT: Duration = Duration::from_secs(5);
 const MAX_PENDING_SERVICE_REQUESTS: usize = 64;
 const MAX_INPUT_BYTES: usize = 8_192;
 const CURSOR_POSITION_QUERY: &[u8] = b"\x1b[6n";
@@ -1995,7 +1995,7 @@ mod tests {
             "serial output extends the wait for a split or delayed cursor query"
         );
         assert_eq!(
-            gate.take_expired(now + Duration::from_millis(2_500)),
+            gate.take_expired(now + Duration::from_millis(5_500)),
             Some((run, b"cho READY\n".to_vec()))
         );
     }
