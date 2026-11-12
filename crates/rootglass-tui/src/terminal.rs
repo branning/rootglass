@@ -27,7 +27,6 @@ use std::time::{Duration, Instant};
 
 const TICK_RATE: Duration = Duration::from_millis(50);
 const CONSOLE_QUERY_WAIT: Duration = Duration::from_secs(2);
-const CONSOLE_ECHO_QUERY_GRACE: Duration = Duration::from_millis(300);
 const MAX_PENDING_SERVICE_REQUESTS: usize = 64;
 const MAX_INPUT_BYTES: usize = 8_192;
 const CURSOR_POSITION_QUERY: &[u8] = b"\x1b[6n";
@@ -1101,13 +1100,7 @@ impl ConsoleInputGate {
             .as_ref()
             .is_some_and(|pending| &pending.run == run)
         {
-            self.pending.take().map(|pending| {
-                if pending.first_byte_echoed {
-                    pending.bytes.get(1..).unwrap_or_default().to_vec()
-                } else {
-                    pending.bytes
-                }
-            })
+            self.pending.take().map(|pending| pending.bytes)
         } else {
             None
         }
@@ -1135,18 +1128,27 @@ impl ConsoleInputGate {
         if &pending.run != run {
             return;
         }
+        pending.deadline = now + CONSOLE_QUERY_WAIT;
         let Some(first_byte) = pending.bytes.first().copied() else {
             return;
         };
         if first_byte.is_ascii_graphic() && bytes.last() == Some(&first_byte) {
             pending.first_byte_echoed = true;
         }
-        pending.deadline = now
-            + if pending.first_byte_echoed {
-                CONSOLE_ECHO_QUERY_GRACE
-            } else {
-                CONSOLE_QUERY_WAIT
-            };
+    }
+
+    fn release_after_echo(&mut self) -> Option<(RunId, Vec<u8>)> {
+        if !self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.first_byte_echoed)
+        {
+            return None;
+        }
+        self.pending.take().map(|pending| {
+            let remaining = pending.bytes.get(1..).unwrap_or_default().to_vec();
+            (pending.run, remaining)
+        })
     }
 }
 
@@ -1473,8 +1475,6 @@ impl ServiceWorker {
                             if model.run_id.as_ref() != Some(run) {
                                 continue;
                             }
-                            self.console_input
-                                .observe_output(run, bytes, Instant::now());
                             let query_count =
                                 self.terminal_queries.cursor_position_queries(run, bytes);
                             if query_count > 0 {
@@ -1482,6 +1482,9 @@ impl ServiceWorker {
                                 for _ in 0..query_count {
                                     responses.extend_from_slice(CURSOR_POSITION_RESPONSE);
                                 }
+                            } else {
+                                self.console_input
+                                    .observe_output(run, bytes, Instant::now());
                             }
                         }
                     }
@@ -1493,10 +1496,15 @@ impl ServiceWorker {
                         let pending = self.console_input.release_after_query(&run);
                         self.write_serial(run.clone(), responses)?;
                         if let Some(bytes) = pending {
-                            trace_tui("released pending console input after cursor-query response");
-                            if !bytes.is_empty() {
-                                self.write_serial(run, bytes)?;
-                            }
+                            trace_tui(
+                                "replayed complete console input after cursor-query response",
+                            );
+                            self.write_serial(run, bytes)?;
+                        }
+                    } else if let Some((run, bytes)) = self.console_input.release_after_echo() {
+                        trace_tui("released remaining console input after first-byte echo");
+                        if !bytes.is_empty() {
+                            self.write_serial(run, bytes)?;
                         }
                     }
                 }
@@ -2015,7 +2023,7 @@ mod tests {
     }
 
     #[test]
-    fn console_input_gate_waits_for_query_after_first_byte_echo() {
+    fn console_input_gate_releases_tail_after_echo_and_replays_line_after_query() {
         let now = Instant::now();
         let run = RunId(7);
         let mut gate = ConsoleInputGate::default();
@@ -2025,12 +2033,11 @@ mod tests {
             Some(b"e".to_vec())
         );
         gate.observe_output(&run, b"e", now + Duration::from_millis(20));
-        assert_eq!(gate.take_expired(now + Duration::from_millis(20)), None);
         assert_eq!(
-            gate.release_after_query(&run),
-            Some(b"cho READY\n".to_vec()),
-            "answer the guest query before sending the pending tail"
+            gate.release_after_echo(),
+            Some((run.clone(), b"cho READY\n".to_vec()))
         );
+        assert_eq!(gate.take_expired(now + CONSOLE_QUERY_WAIT), None);
 
         assert_eq!(
             gate.begin(run.clone(), b"echo READY\n".to_vec(), now),
@@ -2040,28 +2047,6 @@ mod tests {
             gate.release_after_query(&run),
             Some(b"echo READY\n".to_vec()),
             "the first byte may have been consumed as the query response"
-        );
-    }
-
-    #[test]
-    fn console_input_gate_releases_echoed_tail_after_query_grace() {
-        let now = Instant::now();
-        let run = RunId(7);
-        let mut gate = ConsoleInputGate::default();
-
-        assert_eq!(
-            gate.begin(run.clone(), b"echo READY\n".to_vec(), now),
-            Some(b"e".to_vec())
-        );
-        gate.observe_output(&run, b"e", now + Duration::from_millis(20));
-        assert_eq!(
-            gate.take_expired(now + Duration::from_millis(319)),
-            None,
-            "leave time for a cursor query following the first-byte echo"
-        );
-        assert_eq!(
-            gate.take_expired(now + Duration::from_millis(320)),
-            Some((run, b"cho READY\n".to_vec()))
         );
     }
 
@@ -2880,7 +2865,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_query_with_first_byte_echo_releases_tail_after_response() {
+    fn terminal_query_is_answered_before_the_complete_console_line_is_replayed() {
         let service = FakeService::default();
         let calls = Arc::clone(&service.calls);
         let mut model = UiModel::with_service(
@@ -2902,67 +2887,6 @@ mod tests {
             .expect("first-byte write finishes");
 
         let mut poll_pending = true;
-        worker
-            .apply_completion(
-                &mut model,
-                &mut poll_pending,
-                WorkerCompletion::Polled(Ok(vec![RuntimeEvent::SerialChunk {
-                    run,
-                    bytes: [CURSOR_POSITION_QUERY, b"e"].concat(),
-                    truncated: false,
-                }])),
-            )
-            .expect("cursor-position query is answered");
-        worker
-            .drain_until_idle(&mut model)
-            .expect("query response and replayed line finish");
-
-        assert_eq!(
-            *calls.lock().unwrap(),
-            ["serial:e", "serial:\u{1b}[1;80R", "serial:cho READY\n"]
-        );
-        assert!(!poll_pending);
-    }
-
-    #[test]
-    fn terminal_query_after_first_byte_echo_is_answered_before_console_tail() {
-        let service = FakeService::default();
-        let calls = Arc::clone(&service.calls);
-        let mut model = UiModel::with_service(
-            service,
-            UiState::Running(crate::RunDetails {
-                name: "Example".to_string(),
-                status: "Running".to_string(),
-                elapsed: String::new(),
-            }),
-        );
-        let run = RunId(7);
-        model.run_id = Some(run.clone());
-        let mut worker = ServiceWorker::spawn(model.shared_service()).expect("worker starts");
-        worker
-            .write_console_input(run.clone(), b"echo READY\n".to_vec())
-            .expect("first byte is sent to the guest");
-        worker
-            .drain_until_idle(&mut model)
-            .expect("first-byte write finishes");
-
-        let mut poll_pending = true;
-        worker
-            .apply_completion(
-                &mut model,
-                &mut poll_pending,
-                WorkerCompletion::Polled(Ok(vec![RuntimeEvent::SerialChunk {
-                    run: run.clone(),
-                    bytes: b"e".to_vec(),
-                    truncated: false,
-                }])),
-            )
-            .expect("first-byte echo is observed without releasing the tail");
-        worker
-            .drain_until_idle(&mut model)
-            .expect("no tail is written before the terminal query is answered");
-        assert_eq!(*calls.lock().unwrap(), ["serial:e"]);
-
         worker
             .apply_completion(
                 &mut model,
@@ -2973,15 +2897,16 @@ mod tests {
                     truncated: false,
                 }])),
             )
-            .expect("cursor-position query is answered before the tail");
+            .expect("cursor-position query is answered");
         worker
             .drain_until_idle(&mut model)
-            .expect("cursor response and tail finish");
+            .expect("query response and replayed line finish");
 
         assert_eq!(
             *calls.lock().unwrap(),
-            ["serial:e", "serial:\u{1b}[1;80R", "serial:cho READY\n"]
+            ["serial:e", "serial:\u{1b}[1;80R", "serial:echo READY\n"]
         );
+        assert!(!poll_pending);
     }
 
     #[test]
