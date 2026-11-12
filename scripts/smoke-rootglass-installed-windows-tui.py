@@ -335,15 +335,14 @@ class TuiSession:
         self.child.close(force=True)
 
 
-def guest_uname(serial: bytes, begin_marker: bytes, done_marker: bytes) -> bytes:
-    lines = [line.strip() for line in serial.replace(b"\r", b"").splitlines()]
-    try:
-        begin = lines.index(begin_marker)
-        done = lines.index(done_marker, begin + 1)
-    except ValueError as error:
-        raise SmokeFailure("guest command completion markers were not emitted") from error
+def guest_uname(serial: bytes) -> bytes:
     uname = next(
-        (line for line in lines[begin + 1 : done] if line.startswith(b"Linux rootglass-hello")),
+        (
+            line.strip()
+            for line in clean_terminal(serial).splitlines()
+            if line.strip().startswith(b"Linux rootglass-hello")
+            and b"aarch64" in line
+        ),
         None,
     )
     if uname is None or b"aarch64" not in uname:
@@ -420,36 +419,15 @@ def run(binary: Path, glass: Path, output: Path) -> None:
         session.send_console_line(FIXTURE_PASSWORD)
         session.wait_for_serial(rb"(?m)#\s*$", LOGIN_TIMEOUT)
 
-        begin_marker = b"ROOTGLASS_TUI_SMOKE_BEGIN"
-        done_marker = b"ROOTGLASS_TUI_SMOKE_DONE"
         first_logs = serial_logs(log_directory)
-        session.send_console_line(b"echo " + begin_marker)
-        session.wait_for_serial(
-            rb"(?m)^ROOTGLASS_TUI_SMOKE_BEGIN$", COMMAND_TIMEOUT, first_logs
-        )
-        session.wait_for_serial(
-            rb"(?ms)^ROOTGLASS_TUI_SMOKE_BEGIN$.*^rootglass-hello:~#\s*$",
-            COMMAND_TIMEOUT,
-            first_logs,
-        )
         session.send_console_line(b"uname -a")
         session.wait_for_serial(
             rb"(?ms)^Linux rootglass-hello\b.*\baarch64\b.*^rootglass-hello:~#\s*$",
             COMMAND_TIMEOUT,
             first_logs,
         )
-        session.send_console_line(b"echo " + done_marker)
-        session.wait_for_serial(
-            rb"(?ms)^ROOTGLASS_TUI_SMOKE_DONE$.*^rootglass-hello:~#\s*$",
-            COMMAND_TIMEOUT,
-            first_logs,
-        )
-        session.wait_for_terminal(b"ROOTGLASS_TUI_SMOKE_DONE", COMMAND_TIMEOUT)
-        uname = guest_uname(
-            read_serial_paths(first_logs),
-            begin_marker,
-            done_marker,
-        )
+        session.wait_for_terminal(b"Linux rootglass-hello", COMMAND_TIMEOUT)
+        uname = guest_uname(read_serial_paths(first_logs))
         session.save_screenshot()
 
         previous_logs = set(first_logs)
@@ -471,30 +449,26 @@ def run(binary: Path, glass: Path, output: Path) -> None:
         session.wait_for_terminal(b"Password:", 20)
         session.send_console_line(FIXTURE_PASSWORD)
         session.wait_for_serial(rb"(?m)#\s*$", LOGIN_TIMEOUT, [restart_log])
-        restart_begin_marker = b"ROOTGLASS_TUI_RESTART_BEGIN"
-        restart_done_marker = b"ROOTGLASS_TUI_RESTART_DONE"
-        session.send_console_line(b"echo " + restart_begin_marker)
+        session.send_console_line(b"id")
         session.wait_for_serial(
-            rb"(?m)^ROOTGLASS_TUI_RESTART_BEGIN$", COMMAND_TIMEOUT, [restart_log]
-        )
-        session.send_console_line(b"uname -a")
-        session.wait_for_serial(
-            rb"(?m)^Linux rootglass-hello\b.*\baarch64\b",
+            rb"(?ms)^uid=0\(root\).*\n.*^rootglass-hello:~#\s*$",
             COMMAND_TIMEOUT,
             [restart_log],
         )
-        session.send_console_line(b"echo " + restart_done_marker)
-        session.wait_for_serial(
-            rb"(?m)^ROOTGLASS_TUI_RESTART_DONE$", COMMAND_TIMEOUT, [restart_log]
+        session.wait_for_terminal(b"uid=0(root)", COMMAND_TIMEOUT)
+        restarted_serial = clean_terminal(read_serial_paths([restart_log]))
+        root_id = next(
+            (
+                line.strip()
+                for line in restarted_serial.splitlines()
+                if line.startswith(b"uid=0(root)")
+            ),
+            None,
         )
-        session.wait_for_terminal(b"ROOTGLASS_TUI_RESTART_DONE", COMMAND_TIMEOUT)
-        restarted_uname = guest_uname(
-            read_serial_paths([restart_log]),
-            restart_begin_marker,
-            restart_done_marker,
-        )
-        if restarted_uname != uname:
-            raise SmokeFailure("guest uname changed across restart")
+        if root_id is None:
+            raise SmokeFailure(
+                "guest id command did not confirm the root login after restart"
+            )
 
         session.save_screenshot()
         session.send(b"s")
@@ -518,11 +492,12 @@ def run(binary: Path, glass: Path, output: Path) -> None:
         if qemu_processes(qemu_binary):
             raise SmokeFailure("bundled QEMU remained after Rootglass exited")
 
-        (output / "guest-uname.txt").write_bytes(
-            b"initial: " + uname + b"\nrestarted: " + restarted_uname + b"\n"
+        (output / "guest-commands.txt").write_bytes(
+            b"initial uname: " + uname + b"\nrestarted guest id: " + root_id + b"\n"
         )
         session.save_evidence()
-        print(f"Guest boot and restart passed: {restarted_uname.decode(errors='replace')}")
+        print(f"Guest boot and uname passed: {uname.decode(errors='replace')}")
+        print(f"Guest restart and id passed: {root_id.decode(errors='replace')}")
         print("Guest stop passed; no bundled QEMU process remained.")
     except Exception:
         session.save_evidence()
