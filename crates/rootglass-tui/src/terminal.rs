@@ -26,7 +26,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 const TICK_RATE: Duration = Duration::from_millis(50);
-const CONSOLE_QUERY_WAIT: Duration = Duration::from_millis(200);
+const CONSOLE_QUERY_WAIT: Duration = Duration::from_millis(500);
 const MAX_PENDING_SERVICE_REQUESTS: usize = 64;
 const MAX_INPUT_BYTES: usize = 8_192;
 const CURSOR_POSITION_QUERY: &[u8] = b"\x1b[6n";
@@ -1118,6 +1118,14 @@ impl ConsoleInputGate {
         }
     }
 
+    fn observe_output(&mut self, run: &RunId, now: Instant) {
+        if let Some(pending) = self.pending.as_mut() {
+            if &pending.run == run {
+                pending.deadline = now + CONSOLE_QUERY_WAIT;
+            }
+        }
+    }
+
     fn cancel(&mut self, run: &RunId) {
         if self
             .pending
@@ -1453,6 +1461,7 @@ impl ServiceWorker {
                             if model.run_id.as_ref() != Some(run) {
                                 continue;
                             }
+                            self.console_input.observe_output(run, Instant::now());
                             let query_count =
                                 self.terminal_queries.cursor_position_queries(run, bytes);
                             if query_count > 0 {
@@ -1959,7 +1968,34 @@ mod tests {
         );
         assert_eq!(gate.begin(run.clone(), b"READY\n".to_vec(), now), None);
         assert_eq!(
+            gate.take_expired(now + Duration::from_millis(200)),
+            None,
+            "initial input is held while the guest's cursor query is drained"
+        );
+        assert_eq!(
             gate.take_expired(now + CONSOLE_QUERY_WAIT),
+            Some((run, b"cho READY\n".to_vec()))
+        );
+    }
+
+    #[test]
+    fn console_input_gate_extends_fallback_while_guest_output_is_arriving() {
+        let now = Instant::now();
+        let run = RunId(7);
+        let mut gate = ConsoleInputGate::default();
+
+        assert_eq!(
+            gate.begin(run.clone(), b"echo READY\n".to_vec(), now),
+            Some(b"e".to_vec())
+        );
+        gate.observe_output(&run, now + Duration::from_millis(400));
+        assert_eq!(
+            gate.take_expired(now + CONSOLE_QUERY_WAIT),
+            None,
+            "serial output extends the wait for a split or delayed cursor query"
+        );
+        assert_eq!(
+            gate.take_expired(now + Duration::from_millis(900)),
             Some((run, b"cho READY\n".to_vec()))
         );
     }
