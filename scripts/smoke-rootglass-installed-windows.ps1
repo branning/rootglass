@@ -156,6 +156,9 @@ using System;
 using System.Runtime.InteropServices;
 using System.Text;
 public static class RootglassSmokeWindow {
+    private const int SW_MAXIMIZE = 3;
+    private const int SW_RESTORE = 9;
+
     [DllImport("user32.dll")]
     public static extern bool SetForegroundWindow(IntPtr window);
     [DllImport("user32.dll")]
@@ -170,19 +173,90 @@ public static class RootglassSmokeWindow {
     private static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")]
     private static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindowAsync(IntPtr window, int command);
+    [DllImport("user32.dll")]
+    private static extern bool BringWindowToTop(IntPtr window);
+    [DllImport("user32.dll")]
+    private static extern IntPtr SetFocus(IntPtr window);
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool AttachThreadInput(uint attach, uint attachTo, bool attachInput);
 
-    public static string ClickImportGlass(int screenWidth, int screenHeight) {
-        // Fallback for runners where the accessibility tree does not expose the
-        // GPUI button. The runner uses a 1024x768 desktop with Rootglass maximized.
-        int x = screenWidth - 64;
-        int y = (int)(screenHeight * 0.38);
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+    [DllImport("user32.dll")]
+    private static extern bool GetClientRect(IntPtr window, out RECT rect);
+    [DllImport("user32.dll")]
+    private static extern bool ClientToScreen(IntPtr window, ref POINT point);
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT {
+        public int X;
+        public int Y;
+        public POINT(int x, int y) { X = x; Y = y; }
+    }
+
+    public static bool ActivateWindow(IntPtr window) {
+        if (window == IntPtr.Zero) return false;
+        uint currentThread = GetCurrentThreadId();
+        IntPtr foreground = GetForegroundWindow();
+        uint foregroundThread = foreground == IntPtr.Zero ? 0 : GetWindowThreadProcessId(foreground, out _);
+        uint targetThread = GetWindowThreadProcessId(window, out _);
+        bool attachedForeground = false;
+        bool attachedTarget = false;
+        try {
+            if (foregroundThread != 0 && foregroundThread != currentThread) {
+                attachedForeground = AttachThreadInput(currentThread, foregroundThread, true);
+            }
+            if (targetThread != 0 && targetThread != currentThread && targetThread != foregroundThread) {
+                attachedTarget = AttachThreadInput(currentThread, targetThread, true);
+            }
+            ShowWindowAsync(window, SW_RESTORE);
+            ShowWindowAsync(window, SW_MAXIMIZE);
+            BringWindowToTop(window);
+            for (int attempt = 0; attempt < 10; attempt++) {
+                SetForegroundWindow(window);
+                SetActiveWindow(window);
+                SetFocus(window);
+                if (GetForegroundWindow() == window) return true;
+                System.Threading.Thread.Sleep(100);
+            }
+            return GetForegroundWindow() == window;
+        } finally {
+            if (attachedTarget) AttachThreadInput(currentThread, targetThread, false);
+            if (attachedForeground) AttachThreadInput(currentThread, foregroundThread, false);
+        }
+    }
+
+    public static string ClickAt(int x, int y) {
         if (!SetCursorPos(x, y)) {
-            throw new InvalidOperationException("Could not position the pointer over Import Glass.");
+            throw new InvalidOperationException("Could not position the pointer at " + x + "," + y + ".");
         }
         mouse_event(0x0002, 0, 0, 0, UIntPtr.Zero);
         System.Threading.Thread.Sleep(50);
         mouse_event(0x0004, 0, 0, 0, UIntPtr.Zero);
         return x + "," + y;
+    }
+
+    public static string ClickImportGlass(IntPtr window) {
+        RECT client;
+        if (window == IntPtr.Zero || !GetClientRect(window, out client)) {
+            throw new InvalidOperationException("Could not read the Rootglass client area for the Import Glass fallback.");
+        }
+        POINT point = new POINT(client.Right - 88, 82);
+        if (!ClientToScreen(window, ref point)) {
+            throw new InvalidOperationException("Could not map the Import Glass button location to screen coordinates.");
+        }
+        // The import button is the rightmost control in the library header.
+        return ClickAt(point.X, point.Y);
     }
 
     public static string DescribeWindow(IntPtr window) {
@@ -198,7 +272,94 @@ public static class RootglassSmokeWindow {
     $env:ROOTGLASS_DESKTOP_SMOKE = "1"
     $env:ROOTGLASS_DESKTOP_SMOKE_EVENT_LOG = $pickerLog
     $env:ROOTGLASS_DESKTOP_SMOKE_EXPECTED_TRUST_KEY_ID = "ed25519:4a079f6f512c9e1a24f83b08e84fb8508996c91e0d54a19512fabfafc82b62d0"
+    Add-Type -AssemblyName UIAutomationClient
+    Add-Type -AssemblyName UIAutomationTypes
+    function Get-WindowsPrivacyOobePage {
+        $desktop = [System.Windows.Automation.AutomationElement]::RootElement
+        $windows = $desktop.FindAll(
+            [System.Windows.Automation.TreeScope]::Children,
+            [System.Windows.Automation.Condition]::TrueCondition
+        )
+        foreach ($candidate in $windows) {
+            try {
+                $controls = $candidate.FindAll(
+                    [System.Windows.Automation.TreeScope]::Descendants,
+                    [System.Windows.Automation.Condition]::TrueCondition
+                )
+                $names = @()
+                foreach ($control in $controls) {
+                    try {
+                        $name = $control.Current.Name
+                        if ($name) { $names += $name }
+                    } catch { }
+                }
+                if (($names -join " ") -match '(?i)choose privacy settings for your device') {
+                    return [pscustomobject]@{
+                        Window = $candidate
+                        Controls = @($controls)
+                        Summary = $names -join "; "
+                    }
+                }
+            } catch { }
+        }
+        return $null
+    }
+    function Complete-WindowsPrivacyOobe {
+        $attempts = 0
+        while ($attempts -lt 3) {
+            $page = Get-WindowsPrivacyOobePage
+            if ($null -eq $page) {
+                if ($attempts -gt 0) { Write-ProgressLine "Windows privacy first-run setup completed" }
+                return
+            }
+            Write-ProgressLine "Windows privacy first-run page detected; disabling optional settings before continuing"
+            $disabledToggles = 0
+            foreach ($control in $page.Controls) {
+                try {
+                    $toggle = $control.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
+                    if ($toggle.Current.ToggleState -eq [System.Windows.Automation.ToggleState]::On) {
+                        $toggle.Toggle()
+                        $disabledToggles++
+                    }
+                } catch { }
+            }
+            $nextButton = $null
+            foreach ($control in $page.Controls) {
+                try {
+                    if ($control.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button -and
+                        $control.Current.Name -match '^(Next|Accept)$') {
+                        $nextButton = $control
+                        break
+                    }
+                } catch { }
+            }
+            if ($null -ne $nextButton) {
+                try {
+                    $invoke = $nextButton.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+                    $invoke.Invoke()
+                    Write-ProgressLine "advanced the Windows privacy page through UI Automation; disabled $disabledToggles optional toggles"
+                } catch {
+                    [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
+                    Write-ProgressLine "UI Automation could not activate Next; sent Enter after disabling $disabledToggles optional toggles"
+                }
+            } else {
+                $oobeHandle = [IntPtr]$page.Window.Current.NativeWindowHandle
+                if ($oobeHandle -ne [IntPtr]::Zero) {
+                    [void][RootglassSmokeWindow]::ActivateWindow($oobeHandle)
+                }
+                [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
+                Write-ProgressLine "advanced the detected Windows privacy page with Enter; disabled $disabledToggles optional toggles"
+            }
+            $attempts++
+            Start-Sleep -Seconds 2
+        }
+        $remainingPage = Get-WindowsPrivacyOobePage
+        if ($null -ne $remainingPage) {
+            throw "Windows first-run privacy page remained after three attempts: $($remainingPage.Summary)"
+        }
+    }
     Write-ProgressLine "opening the example through the GPUI file picker"
+    Complete-WindowsPrivacyOobe
     $RootglassProcess = Start-Process -FilePath $RootglassExe -PassThru
     $windowDeadline = (Get-Date).AddSeconds(30)
     while ((Get-Date) -lt $windowDeadline) {
@@ -209,8 +370,7 @@ public static class RootglassSmokeWindow {
     if ($RootglassProcess.MainWindowHandle -eq [IntPtr]::Zero) {
         throw "Installed Rootglass did not expose a foreground window for the picker smoke."
     }
-    $foregroundSet = [RootglassSmokeWindow]::SetForegroundWindow($RootglassProcess.MainWindowHandle)
-    [void][RootglassSmokeWindow]::SetActiveWindow($RootglassProcess.MainWindowHandle)
+    $foregroundSet = [RootglassSmokeWindow]::ActivateWindow($RootglassProcess.MainWindowHandle)
     Start-Sleep -Milliseconds 500
     $foregroundWindow = [RootglassSmokeWindow]::GetForegroundWindow()
     Write-ProgressLine "foreground request=$foregroundSet target=$($RootglassProcess.MainWindowHandle) active=$foregroundWindow"
@@ -226,17 +386,20 @@ public static class RootglassSmokeWindow {
     } catch {
         Write-ProgressLine "desktop screenshot capture failed: $($_.Exception.Message)"
     }
+    if ($foregroundWindow -ne $RootglassProcess.MainWindowHandle) {
+        throw "Could not bring installed Rootglass to the foreground. $([RootglassSmokeWindow]::DescribeWindow($foregroundWindow))"
+    }
     $importMethod = ""
+    $importBounds = $null
     try {
-        Add-Type -AssemblyName UIAutomationClient
-        Add-Type -AssemblyName UIAutomationTypes
         $windowAutomation = [System.Windows.Automation.AutomationElement]::FromHandle($RootglassProcess.MainWindowHandle)
         $elements = $windowAutomation.FindAll(
             [System.Windows.Automation.TreeScope]::Descendants,
             [System.Windows.Automation.Condition]::TrueCondition
         )
         foreach ($element in $elements) {
-            if ($element.Current.Name -match '(?i)import glass') {
+            if ($element.Current.Name -match '(?i)import glass|open.*bundle' -or
+                $element.Current.AutomationId -ieq 'open-glass') {
                 try {
                     $invoke = $element.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
                     $invoke.Invoke()
@@ -244,6 +407,7 @@ public static class RootglassSmokeWindow {
                     break
                 } catch {
                     Write-ProgressLine "matching UI Automation element had no usable invoke pattern: $($_.Exception.Message)"
+                    $importBounds = $element.Current.BoundingRectangle
                 }
             }
         }
@@ -251,9 +415,15 @@ public static class RootglassSmokeWindow {
         Write-ProgressLine "UI Automation lookup failed: $($_.Exception.Message)"
     }
     if (-not $importMethod) {
-        $primaryBounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-        $clickPoint = [RootglassSmokeWindow]::ClickImportGlass($primaryBounds.Width, $primaryBounds.Height)
-        $importMethod = "mouse click at screen coordinates $clickPoint"
+        if ($null -ne $importBounds -and $importBounds.Width -gt 0 -and $importBounds.Height -gt 0) {
+            $x = [int]($importBounds.Left + $importBounds.Width / 2)
+            $y = [int]($importBounds.Top + $importBounds.Height / 2)
+            $clickPoint = [RootglassSmokeWindow]::ClickAt($x, $y)
+            $importMethod = "mouse click on the accessible Import Glass bounds at $clickPoint"
+        } else {
+            $clickPoint = [RootglassSmokeWindow]::ClickImportGlass($RootglassProcess.MainWindowHandle)
+            $importMethod = "mouse click on the library header Import Glass location at $clickPoint"
+        }
     }
     Write-ProgressLine "activated Import Glass with $importMethod"
     $pickerDeadline = (Get-Date).AddSeconds(15)
