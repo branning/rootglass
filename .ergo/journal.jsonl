@@ -448,3 +448,5 @@
 {"version":1,"task_id":"46ESQA","kind":"open","at":"2026-11-14T23:22:13.17133463Z","text":"Opening the independent headless foundation slice; specialized-image feature epics remain staged behind their milestone gate."}
 {"version":1,"task_id":"46ESQA","kind":"claim","at":"2026-11-14T23:22:13.189600271Z","agent":"codex@specialized-images"}
 {"version":1,"task_id":"46ESQA","kind":"result","at":"2026-11-14T23:31:53.728159594Z","agent":"codex@specialized-images","text":"Headless build/dependency check passed earlier; TUI test pending CI (cargo unavailable here)."}
+{"version":1,"task_id":"46ESQA","kind":"result","at":"2026-11-14T23:43:38.771857646Z","agent":"codex@specialized-images","text":"CI 43653742992 and embedded/PTY smoke 43653742939 passed."}
+{"version":1,"task_id":"46ESQA","kind":"done","at":"2026-11-14T23:44:23.797549264Z","agent":"codex@specialized-images","text":"Merged PR #135 at fc91e3f; CI and embedded guest smoke passed."}
