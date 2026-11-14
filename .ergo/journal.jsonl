@@ -440,3 +440,4 @@
 {"version":1,"task_id":"4ONLKU","kind":"open","at":"2026-11-14T22:35:33.984606291Z","text":"Opening RG-22 now that its RG-20 prerequisite is merged."}
 {"version":1,"task_id":"4ONLKU","kind":"claim","at":"2026-11-14T22:35:34.000715847Z","agent":"codex@specialized-images"}
 {"version":1,"task_id":"4ONLKU","kind":"result","at":"2026-11-14T22:42:19.106246027Z","agent":"codex@specialized-images","text":"Checks: 12 CLI tests, including configured trust and malformed config; fmt and clippy passed."}
+{"version":1,"task_id":"4ONLKU","kind":"done","at":"2026-11-14T22:46:31.870943835Z","agent":"codex@specialized-images","text":"Merged PR #133 at e7c438e6; CI run 43649525250 passed all 7 jobs."}
