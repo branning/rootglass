@@ -437,3 +437,6 @@
 {"version":1,"task_id":"IIYOU2","kind":"claim","at":"2026-11-14T22:07:40.687021378Z","agent":"codex@specialized-images"}
 {"version":1,"task_id":"IIYOU2","kind":"result","at":"2026-11-14T22:18:54.077887189Z","agent":"codex@specialized-images","text":"Checks: app/CLI/QEMU tests 61 passed; fmt, clippy, headless desktop check passed."}
 {"version":1,"task_id":"IIYOU2","kind":"done","at":"2026-11-14T22:35:25.546338965Z","agent":"codex@specialized-images","text":"Merged PR #132 at 66dc1e65; CI runs 43647471664 and 43647471702 passed."}
+{"version":1,"task_id":"4ONLKU","kind":"open","at":"2026-11-14T22:35:33.984606291Z","text":"Opening RG-22 now that its RG-20 prerequisite is merged."}
+{"version":1,"task_id":"4ONLKU","kind":"claim","at":"2026-11-14T22:35:34.000715847Z","agent":"codex@specialized-images"}
+{"version":1,"task_id":"4ONLKU","kind":"result","at":"2026-11-14T22:42:19.106246027Z","agent":"codex@specialized-images","text":"Checks: 12 CLI tests, including configured trust and malformed config; fmt and clippy passed."}
