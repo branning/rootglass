@@ -602,6 +602,13 @@ impl QemuProcess {
         command.stdin(Stdio::piped());
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            // Keep terminal SIGINT directed at the supervising CLI. It can
+            // then request guest shutdown through QMP before terminating QEMU.
+            command.process_group(0);
+        }
         let mut child = command.spawn().map_err(|source| QemuError::Spawn {
             command: command_line,
             source,
@@ -1215,6 +1222,26 @@ with client:
             .err()
             .expect("missing QEMU binary must fail to spawn");
         assert!(matches!(error, QemuError::Spawn { .. }));
+    }
+
+    #[test]
+    fn supervised_qemu_uses_a_separate_process_group() {
+        let fake = fake_qemu("hold");
+        let process = plan(&fake.binary).spawn_supervised().unwrap();
+        let stat = fs::read_to_string(format!("/proc/{}/stat", process.child.id()))
+            .expect("Linux reports the supervised child process group");
+        let fields = stat
+            .rsplit_once(')')
+            .expect("process stat has a command name")
+            .1
+            .split_whitespace()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            fields[2].parse::<u32>().unwrap(),
+            process.child.id(),
+            "the child process group must be separate so terminal SIGINT reaches the CLI"
+        );
+        drop(process);
     }
 
     #[test]

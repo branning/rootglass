@@ -12,6 +12,6 @@ rootglass-manifest.workspace = true
 rootglass-qemu.workspace = true
 rootglass-signature.workspace = true
 rootglass-tui.workspace = true
+signal-hook = "0.3"
 
 [dev-dependencies]
-libc.workspace = true

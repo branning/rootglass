@@ -1,16 +1,29 @@
-use rootglass_app::{AppService, GlassSummary};
+use rootglass_app::{AppService, GlassSummary, RuntimeEvent};
 use rootglass_manifest::Glass;
 use rootglass_signature::{
     load_signing_key, package_glass_directory, package_glass_directory_at, sign_glass_directory,
     sign_glass_directory_at, SigningReport,
 };
+use signal_hook::low_level;
+use signal_hook::{consts, flag, SigId};
+use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
+use std::thread;
+use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct HeadlessRunOptions {
     glass_path: PathBuf,
     trust_path: Option<PathBuf>,
+    shutdown_timeout: Duration,
 }
+
+const DEFAULT_HEADLESS_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(60);
+const HEADLESS_QMP_QUIT_TIMEOUT: Duration = Duration::from_secs(2);
+const HEADLESS_RUN_USAGE: &str =
+    "usage: rootglass run --headless <path-to.glass> [--trust <file>] [--shutdown-timeout <seconds>]";
 
 pub fn run_with_frontends(
     args: Vec<String>,
@@ -85,11 +98,12 @@ fn parse_headless_run_args(args: &[String]) -> Result<HeadlessRunOptions, String
     if args.first().map(String::as_str) != Some("run")
         || args.get(1).map(String::as_str) != Some("--headless")
     {
-        return Err("usage: rootglass run --headless <path-to.glass> [--trust <file>]".to_string());
+        return Err(HEADLESS_RUN_USAGE.to_string());
     }
 
     let mut glass_path = None;
     let mut trust_path = None;
+    let mut shutdown_timeout = None;
     let mut index = 2;
     while index < args.len() {
         match args[index].as_str() {
@@ -106,15 +120,32 @@ fn parse_headless_run_args(args: &[String]) -> Result<HeadlessRunOptions, String
                 trust_path = Some(PathBuf::from(path));
                 index += 2;
             }
+            "--shutdown-timeout" => {
+                if shutdown_timeout.is_some() {
+                    return Err("--shutdown-timeout may be specified only once".to_string());
+                }
+                let Some(seconds) = args.get(index + 1) else {
+                    return Err("--shutdown-timeout requires a number of seconds".to_string());
+                };
+                if seconds.starts_with('-') {
+                    return Err("--shutdown-timeout must be zero or greater".to_string());
+                }
+                let seconds = seconds
+                    .parse::<u64>()
+                    .map_err(|_| "--shutdown-timeout requires a number of seconds".to_string())?;
+                let timeout = Duration::from_secs(seconds);
+                if std::time::Instant::now().checked_add(timeout).is_none() {
+                    return Err("--shutdown-timeout is too large".to_string());
+                }
+                shutdown_timeout = Some(timeout);
+                index += 2;
+            }
             option if option.starts_with('-') => {
                 return Err(format!("unexpected run option '{option}'"));
             }
             path => {
                 if glass_path.is_some() {
-                    return Err(
-                        "usage: rootglass run --headless <path-to.glass> [--trust <file>]"
-                            .to_string(),
-                    );
+                    return Err(HEADLESS_RUN_USAGE.to_string());
                 }
                 glass_path = Some(PathBuf::from(path));
                 index += 1;
@@ -122,12 +153,11 @@ fn parse_headless_run_args(args: &[String]) -> Result<HeadlessRunOptions, String
         }
     }
 
-    let glass_path = glass_path.ok_or_else(|| {
-        "usage: rootglass run --headless <path-to.glass> [--trust <file>]".to_string()
-    })?;
+    let glass_path = glass_path.ok_or_else(|| HEADLESS_RUN_USAGE.to_string())?;
     Ok(HeadlessRunOptions {
         glass_path,
         trust_path,
+        shutdown_timeout: shutdown_timeout.unwrap_or(DEFAULT_HEADLESS_SHUTDOWN_TIMEOUT),
     })
 }
 
@@ -284,12 +314,155 @@ fn boot_glass(glass_path: PathBuf) -> Result<(), String> {
 fn run_headless_glass(options: HeadlessRunOptions) -> Result<i32, String> {
     let mut service = headless_service(options.trust_path)?;
     let glass_root = resolve_glass_root(&service, options.glass_path)?;
-    let status = service
-        .run_headless(&glass_root)
+    let signals = ShutdownSignals::install()?;
+    let run = service
+        .start_headless(&glass_root)
         .map_err(|error| error.to_string())?;
-    status
-        .code()
-        .ok_or_else(|| format!("QEMU terminated without an exit code: {status}"))
+    run_headless_session(&mut service, &run, options.shutdown_timeout, &signals)
+}
+
+struct ShutdownSignals {
+    pending: Arc<AtomicBool>,
+    registrations: Vec<SigId>,
+}
+
+impl ShutdownSignals {
+    fn install() -> Result<Self, String> {
+        let pending = Arc::new(AtomicBool::new(false));
+        let mut registrations = Vec::new();
+        for signal in [consts::SIGINT, consts::SIGTERM] {
+            match flag::register(signal, Arc::clone(&pending)) {
+                Ok(registration) => registrations.push(registration),
+                Err(error) => {
+                    for registration in registrations {
+                        low_level::unregister(registration);
+                    }
+                    return Err(format!(
+                        "failed to install shutdown signal handler: {error}"
+                    ));
+                }
+            }
+        }
+        Ok(Self {
+            pending,
+            registrations,
+        })
+    }
+
+    fn is_pending(&self) -> bool {
+        self.pending.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for ShutdownSignals {
+    fn drop(&mut self) {
+        for registration in self.registrations.drain(..) {
+            low_level::unregister(registration);
+        }
+    }
+}
+
+fn run_headless_session(
+    service: &mut AppService,
+    run: &rootglass_app::RunId,
+    shutdown_timeout: Duration,
+    signals: &ShutdownSignals,
+) -> Result<i32, String> {
+    let input = spawn_console_input_reader();
+    let mut input_open = true;
+    let stdout = std::io::stdout();
+    let mut output = stdout.lock();
+
+    loop {
+        if signals.is_pending() {
+            let status = service
+                .stop_with_timeouts(run, shutdown_timeout, HEADLESS_QMP_QUIT_TIMEOUT)
+                .map_err(|error| error.to_string())?;
+            return status.code().ok_or_else(|| {
+                format!("QEMU was terminated without an exit code during shutdown: {status}")
+            });
+        }
+
+        if input_open {
+            loop {
+                match input.try_recv() {
+                    Ok(Ok(bytes)) => {
+                        if let Err(error) = service.write_serial(run, &bytes) {
+                            let _ = service.stop_with_timeouts(
+                                run,
+                                Duration::from_secs(1),
+                                Duration::from_secs(1),
+                            );
+                            return Err(error.to_string());
+                        }
+                    }
+                    Ok(Err(error)) => {
+                        let _ = service.stop_with_timeouts(
+                            run,
+                            Duration::from_secs(1),
+                            Duration::from_secs(1),
+                        );
+                        return Err(format!("guest console input failed: {error}"));
+                    }
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        input_open = false;
+                        break;
+                    }
+                }
+            }
+        }
+
+        match service
+            .poll_event(Duration::from_millis(50))
+            .map_err(|error| error.to_string())?
+        {
+            Some(RuntimeEvent::SerialChunk { bytes, .. }) => {
+                if let Err(error) = output.write_all(&bytes).and_then(|()| output.flush()) {
+                    let _ = service.stop_with_timeouts(
+                        run,
+                        Duration::from_secs(1),
+                        Duration::from_secs(1),
+                    );
+                    return Err(format!("guest console output failed: {error}"));
+                }
+            }
+            Some(RuntimeEvent::Exited { exit_code, .. }) => {
+                return exit_code.ok_or_else(|| "QEMU terminated without an exit code".to_string())
+            }
+            Some(RuntimeEvent::Failed {
+                summary, detail, ..
+            }) => {
+                return Err(format!("{summary}\n{detail}"));
+            }
+            Some(RuntimeEvent::StateChanged { .. } | RuntimeEvent::GuestReady { .. }) | None => {}
+        }
+    }
+}
+
+fn spawn_console_input_reader() -> mpsc::Receiver<Result<Vec<u8>, String>> {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let stdin = std::io::stdin();
+        let mut input = stdin.lock();
+        loop {
+            let mut bytes = vec![0; 4096];
+            match input.read(&mut bytes) {
+                Ok(0) => break,
+                Ok(read) => {
+                    bytes.truncate(read);
+                    if sender.send(Ok(bytes)).is_err() {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    let _ = sender.send(Err(error.to_string()));
+                    break;
+                }
+            }
+        }
+    });
+    receiver
 }
 
 fn headless_service(trust_path: Option<PathBuf>) -> Result<AppService, String> {
@@ -318,7 +491,7 @@ fn print_usage() {
     eprintln!("  rootglass validate <path-to.glass>");
     eprintln!("  rootglass plan <path-to.glass>");
     eprintln!("  rootglass boot <path-to.glass>");
-    eprintln!("  rootglass run --headless <path-to.glass> [--trust <file>]");
+    eprintln!("  {HEADLESS_RUN_USAGE}");
     eprintln!("  rootglass sign <glass-directory> --key <secret-file> [--created-at <RFC3339>]");
     eprintln!("  rootglass package <glass-directory> <output.glass> --key <secret-file> [--created-at <RFC3339>]");
 }
@@ -351,6 +524,8 @@ mod tests {
                 "--headless".to_string(),
                 "--trust".to_string(),
                 "trust.json".to_string(),
+                "--shutdown-timeout".to_string(),
+                "17".to_string(),
                 "example.glass".to_string(),
             ],
             |_| panic!("the GUI should not launch for a headless run"),
@@ -367,6 +542,7 @@ mod tests {
             Some(HeadlessRunOptions {
                 glass_path: PathBuf::from("example.glass"),
                 trust_path: Some(PathBuf::from("trust.json")),
+                shutdown_timeout: Duration::from_secs(17),
             })
         );
         assert_eq!(exit_code, 3);
@@ -393,6 +569,46 @@ mod tests {
 
         assert!(error.contains("--trust requires a configuration file path"));
         assert!(!launched);
+    }
+
+    #[test]
+    fn headless_run_uses_sixty_second_shutdown_timeout_by_default() {
+        let options = parse_headless_run_args(&[
+            "run".to_string(),
+            "--headless".to_string(),
+            "example.glass".to_string(),
+        ])
+        .expect("headless arguments parse");
+        assert_eq!(options.shutdown_timeout, DEFAULT_HEADLESS_SHUTDOWN_TIMEOUT);
+    }
+
+    #[test]
+    fn headless_run_rejects_invalid_shutdown_timeout() {
+        for timeout in ["-1", "many", "18446744073709551615"] {
+            let error = parse_headless_run_args(&[
+                "run".to_string(),
+                "--headless".to_string(),
+                "example.glass".to_string(),
+                "--shutdown-timeout".to_string(),
+                timeout.to_string(),
+            ])
+            .expect_err("invalid shutdown timeout must be rejected");
+            assert!(error.contains("--shutdown-timeout"));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sigint_and_sigterm_are_registered_as_graceful_shutdown_requests() {
+        for signal in [consts::SIGINT, consts::SIGTERM] {
+            let signals = ShutdownSignals::install().expect("signal handlers install");
+            assert!(!signals.is_pending());
+            low_level::raise(signal).expect("test signal is raised");
+            assert!(
+                signals.is_pending(),
+                "signal {signal} must request shutdown"
+            );
+        }
     }
 
     #[test]

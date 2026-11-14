@@ -441,3 +441,6 @@
 {"version":1,"task_id":"4ONLKU","kind":"claim","at":"2026-11-14T22:35:34.000715847Z","agent":"codex@specialized-images"}
 {"version":1,"task_id":"4ONLKU","kind":"result","at":"2026-11-14T22:42:19.106246027Z","agent":"codex@specialized-images","text":"Checks: 12 CLI tests, including configured trust and malformed config; fmt and clippy passed."}
 {"version":1,"task_id":"4ONLKU","kind":"done","at":"2026-11-14T22:46:31.870943835Z","agent":"codex@specialized-images","text":"Merged PR #133 at e7c438e6; CI run 43649525250 passed all 7 jobs."}
+{"version":1,"task_id":"53K5RE","kind":"open","at":"2026-11-14T22:46:37.999530787Z","text":"Opening RG-21 after RG-20 headless run support merged."}
+{"version":1,"task_id":"53K5RE","kind":"claim","at":"2026-11-14T22:46:38.014336311Z","agent":"codex@specialized-images"}
+{"version":1,"task_id":"53K5RE","kind":"result","at":"2026-11-14T23:04:54.752732066Z","agent":"codex@specialized-images","text":"Checks: 67 app/CLI/QEMU tests passed; fmt and clippy --all-targets -D warnings passed."}
