@@ -1,3 +1,4 @@
+#[cfg(feature = "tui")]
 pub mod ui_model;
 
 #[cfg(feature = "desktop-ui")]
