@@ -428,3 +428,7 @@
 {"version":1,"task_id":"SME3JT","kind":"claim","at":"2026-11-14T21:46:08.270684657Z","agent":"codex@specialized-images"}
 {"version":1,"task_id":"SME3JT","kind":"result","at":"2026-11-14T21:50:44.054237244Z","agent":"codex@specialized-images","text":"Checks: core/qemu tests passed (29); fmt --check and clippy passed."}
 {"version":1,"task_id":"SME3JT","kind":"result","at":"2026-11-14T21:50:44.071524956Z","agent":"codex@specialized-images","text":"Local guest boot not run: qemu-system-aarch64 is unavailable; CI boot smoke remains required."}
+{"version":1,"task_id":"SME3JT","kind":"done","at":"2026-11-14T21:58:25.698936204Z","agent":"codex@specialized-images","text":"Merged PR #130 at fa8ebeef; CI run 43645122416 passed all 7 jobs."}
+{"version":1,"task_id":"CD32SU","kind":"open","at":"2026-11-14T21:58:25.747182807Z","text":"Opened RG-08 after confirming it is independent and ready."}
+{"version":1,"task_id":"CD32SU","kind":"claim","at":"2026-11-14T21:58:25.763898111Z","agent":"codex@specialized-images"}
+{"version":1,"task_id":"CD32SU","kind":"result","at":"2026-11-14T22:02:47.161727451Z","agent":"codex@specialized-images","text":"Checks: 19 signature tests; fmt, clippy, core+TUI check passed."}
