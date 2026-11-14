@@ -324,6 +324,8 @@ pub struct VerificationReport {
     pub publisher_identity: String,
     pub key_id: String,
     pub subject_count: usize,
+    /// Normalized member paths from the verified statement, in statement order.
+    pub signed_paths: Vec<String>,
 }
 
 pub fn verify_glass_dir(
@@ -634,13 +636,14 @@ fn verify_envelope_with_files(
         .map_err(|_| SignatureError::SignatureVerificationFailed)?;
 
     let statement: Statement = serde_json::from_slice(&payload)?;
-    verify_statement(file_set, &statement, trusted)?;
+    let signed_paths = verify_statement(file_set, &statement, trusted)?;
 
     Ok(VerificationReport {
         publisher_name: statement.predicate.publisher.name,
         publisher_identity: statement.predicate.publisher.identity,
         key_id: dsse_signature.keyid.clone(),
         subject_count: statement.subject.len(),
+        signed_paths,
     })
 }
 
@@ -648,7 +651,7 @@ fn verify_statement(
     file_set: &dyn FileSet,
     statement: &Statement,
     trusted: &TrustedPublisher,
-) -> Result<(), SignatureError> {
+) -> Result<Vec<String>, SignatureError> {
     if statement.statement_type != STATEMENT_TYPE {
         return Err(SignatureError::UnsupportedStatementType(
             statement.statement_type.clone(),
@@ -723,19 +726,19 @@ fn verify_statement(
         }
     }
 
-    for (subject, (normalized, expected)) in statement.subject.iter().zip(signed_subjects) {
-        let bytes = file_set.read(&normalized)?;
+    for (subject, (normalized, expected)) in statement.subject.iter().zip(&signed_subjects) {
+        let bytes = file_set.read(normalized)?;
         let actual = hex_sha256(&bytes);
-        if actual != expected {
+        if actual.as_str() != expected.as_str() {
             return Err(SignatureError::DigestMismatch {
                 path: subject.name.clone(),
-                expected,
+                expected: expected.clone(),
                 actual,
             });
         }
     }
 
-    Ok(())
+    Ok(signed_subjects.into_iter().map(|(path, _)| path).collect())
 }
 
 trait FileSet {
@@ -1305,6 +1308,10 @@ mod tests {
 
         assert_eq!(report.publisher_identity, "rootglass.dev/examples");
         assert_eq!(report.subject_count, 3);
+        assert_eq!(
+            report.signed_paths,
+            ["README.md", "metadata/README.md", "rootglass.toml"]
+        );
     }
 
     #[test]
@@ -1319,6 +1326,10 @@ mod tests {
 
         assert_eq!(report.publisher_identity, "rootglass.dev/examples");
         assert_eq!(report.subject_count, 3);
+        assert_eq!(
+            report.signed_paths,
+            ["README.md", "metadata/README.md", "rootglass.toml"]
+        );
     }
 
     #[test]
