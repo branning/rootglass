@@ -10,9 +10,18 @@ pub fn run_with_frontends(
     args: Vec<String>,
     launch_gui: impl FnOnce(Option<PathBuf>) -> Result<(), String>,
     launch_tui: impl FnOnce(Option<PathBuf>) -> Result<(), String>,
-) -> Result<(), String> {
+) -> Result<i32, String> {
+    run_with_frontends_and_headless(args, launch_gui, launch_tui, run_headless_glass)
+}
+
+fn run_with_frontends_and_headless(
+    args: Vec<String>,
+    launch_gui: impl FnOnce(Option<PathBuf>) -> Result<(), String>,
+    launch_tui: impl FnOnce(Option<PathBuf>) -> Result<(), String>,
+    run_headless: impl FnOnce(PathBuf) -> Result<i32, String>,
+) -> Result<i32, String> {
     let Some(command) = args.first().map(String::as_str) else {
-        return launch_gui(None);
+        return launch_gui(None).map(|()| 0);
     };
 
     match command {
@@ -20,39 +29,47 @@ pub fn run_with_frontends(
             if args.len() > 2 {
                 return Err("usage: rootglass gui [path-to.glass]".to_string());
             }
-            launch_gui(args.get(1).map(PathBuf::from))
+            launch_gui(args.get(1).map(PathBuf::from)).map(|()| 0)
         }
         "--rootglass-tui-session" => {
             if args.len() != 1 {
                 return Err("invalid internal Rootglass TUI session arguments".to_string());
             }
-            launch_tui(None)
+            launch_tui(None).map(|()| 0)
         }
         "validate" => {
             let glass_root = required_path_arg(&args, "validate")?;
-            validate_glass(glass_root)
+            validate_glass(glass_root).map(|()| 0)
         }
         "plan" => {
             let glass_root = required_path_arg(&args, "plan")?;
-            print_launch_plan(glass_root)
+            print_launch_plan(glass_root).map(|()| 0)
         }
         "boot" => {
             let glass_root = required_path_arg(&args, "boot")?;
-            boot_glass(glass_root)
+            boot_glass(glass_root).map(|()| 0)
+        }
+        "run" => {
+            if args.len() != 3 || args[1] != "--headless" {
+                return Err("usage: rootglass run --headless <path-to.glass>".to_string());
+            }
+            run_headless(PathBuf::from(&args[2]))
         }
         "tui" => {
             if args.len() > 2 {
                 return Err("usage: rootglass tui [path-to.glass]".to_string());
             }
-            launch_tui(args.get(1).map(PathBuf::from))
+            launch_tui(args.get(1).map(PathBuf::from)).map(|()| 0)
         }
-        "sign" => sign_command(&args),
-        "package" => package_command(&args),
+        "sign" => sign_command(&args).map(|()| 0),
+        "package" => package_command(&args).map(|()| 0),
         "help" | "--help" | "-h" => {
             print_usage();
-            Ok(())
+            Ok(0)
         }
-        other if args.len() == 1 && is_glass_path(other) => launch_gui(Some(PathBuf::from(other))),
+        other if args.len() == 1 && is_glass_path(other) => {
+            launch_gui(Some(PathBuf::from(other))).map(|()| 0)
+        }
         other => {
             print_usage();
             Err(format!("unknown command '{other}'"))
@@ -210,6 +227,17 @@ fn boot_glass(glass_path: PathBuf) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+fn run_headless_glass(glass_path: PathBuf) -> Result<i32, String> {
+    let mut service = AppService::new().with_packaged_runtime_assets();
+    let glass_root = resolve_glass_root(&service, glass_path)?;
+    let status = service
+        .run_headless(&glass_root)
+        .map_err(|error| error.to_string())?;
+    status
+        .code()
+        .ok_or_else(|| format!("QEMU terminated without an exit code: {status}"))
+}
+
 fn print_verification(summary: &GlassSummary) {
     println!(
         "verified publisher: {} ({})",
@@ -227,6 +255,7 @@ fn print_usage() {
     eprintln!("  rootglass validate <path-to.glass>");
     eprintln!("  rootglass plan <path-to.glass>");
     eprintln!("  rootglass boot <path-to.glass>");
+    eprintln!("  rootglass run --headless <path-to.glass>");
     eprintln!("  rootglass sign <glass-directory> --key <secret-file> [--created-at <RFC3339>]");
     eprintln!("  rootglass package <glass-directory> <output.glass> --key <secret-file> [--created-at <RFC3339>]");
 }
@@ -248,6 +277,46 @@ mod tests {
         )
         .expect("TUI command dispatch succeeds");
         assert_eq!(received, Some(PathBuf::from("example.glass")));
+    }
+
+    #[test]
+    fn headless_run_dispatch_returns_qemu_exit_code() {
+        let mut received = None;
+        let exit_code = run_with_frontends_and_headless(
+            vec![
+                "run".to_string(),
+                "--headless".to_string(),
+                "example.glass".to_string(),
+            ],
+            |_| panic!("the GUI should not launch for a headless run"),
+            |_| panic!("the TUI should not launch for a headless run"),
+            |path| {
+                received = Some(path);
+                Ok(3)
+            },
+        )
+        .expect("headless run returns the QEMU status");
+
+        assert_eq!(received, Some(PathBuf::from("example.glass")));
+        assert_eq!(exit_code, 3);
+    }
+
+    #[test]
+    fn headless_run_rejects_malformed_arguments_before_launch() {
+        let mut launched = false;
+        let error = run_with_frontends_and_headless(
+            vec!["run".to_string(), "example.glass".to_string()],
+            |_| panic!("the GUI should not launch for a headless run"),
+            |_| panic!("the TUI should not launch for a headless run"),
+            |_| {
+                launched = true;
+                Ok(0)
+            },
+        )
+        .expect_err("headless run must require --headless");
+
+        assert!(error.contains("usage: rootglass run --headless"));
+        assert!(!launched);
     }
 
     #[test]
@@ -315,7 +384,7 @@ mod tests {
         assert!(error.contains("missing kernel asset"));
     }
 
-    fn run_cli(args: Vec<String>) -> Result<(), String> {
+    fn run_cli(args: Vec<String>) -> Result<i32, String> {
         run_with_frontends(
             args,
             |_| Err("GUI dispatch is unavailable in a CLI unit test".to_string()),

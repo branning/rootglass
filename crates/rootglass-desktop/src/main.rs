@@ -1,17 +1,16 @@
-use std::process::ExitCode;
-
-fn main() -> ExitCode {
-    match rootglass_cli::run_with_frontends(
+fn main() {
+    let exit_code = match rootglass_cli::run_with_frontends(
         std::env::args().skip(1).collect(),
         launch_gui,
         rootglass_tui::run_terminal,
     ) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(exit_code) => exit_code,
         Err(error) => {
             eprintln!("error: {error}");
-            ExitCode::FAILURE
+            1
         }
-    }
+    };
+    std::process::exit(exit_code);
 }
 
 #[cfg(feature = "desktop-ui")]

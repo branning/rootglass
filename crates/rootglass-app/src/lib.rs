@@ -14,6 +14,7 @@ use rootglass_signature::{SignatureError, TrustStore};
 use std::collections::{BTreeSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::ExitStatus;
 use std::time::{Duration, Instant};
 
 /// Maximum time allowed for a guest to show its profile-specific ready prompt.
@@ -955,6 +956,30 @@ impl AppService {
                 summary: "QEMU exited unsuccessfully.".to_string(),
                 detail: format!("QEMU exited with status {status}"),
             })
+        }
+    }
+
+    /// Run a verified glass with no graphical display and return QEMU's process status.
+    pub fn run_headless(&mut self, source: &Path) -> Result<ExitStatus, AppError> {
+        let (launch, _state_lock) = self.prepare_for_run(source, RunOptions::default())?;
+        let mut child = QemuLaunchPlan::for_headless_launch_request(&launch)
+            .spawn_interactive()
+            .map_err(|error| AppError {
+                phase: LifecycleState::Starting,
+                summary: "QEMU could not be started.".to_string(),
+                detail: error.to_string(),
+            })?;
+        match child.wait() {
+            Ok(status) => Ok(status),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                Err(AppError {
+                    phase: LifecycleState::Stopping,
+                    summary: "QEMU status could not be read.".to_string(),
+                    detail: error.to_string(),
+                })
+            }
         }
     }
 
