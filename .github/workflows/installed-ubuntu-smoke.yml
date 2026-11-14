@@ -214,16 +214,16 @@ jobs:
             printf '%s\n' "$1" | tee -a "$EVIDENCE_DIR/progress.txt"
           }
           progress "installing Linux package with a 180-second limit"
-          if timeout --signal=TERM --kill-after=10s 180s \
-            sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y "$deb" \
-            > "$EVIDENCE_DIR/package-install.log" 2>&1; then
-            cat "$EVIDENCE_DIR/package-install.log"
+          if sudo -n env DEBIAN_FRONTEND=noninteractive \
+            timeout --signal=TERM --kill-after=10s 180s \
+            apt-get -o Dpkg::Use-Pty=0 install -y "$deb" \
+            2>&1 | tee "$EVIDENCE_DIR/package-install.log"; then
+            progress "Linux package installed"
           else
             install_status=$?
-            cat "$EVIDENCE_DIR/package-install.log"
+            progress "Linux package installation failed with status $install_status"
             exit "$install_status"
           fi
-          progress "Linux package installed"
           rootglass_binary="$(command -v rootglass)"
           [[ -x "$rootglass_binary" ]] || { echo "Installed rootglass binary is missing" >&2; exit 1; }
           echo "$rootglass_binary" > "$EVIDENCE_DIR/binary-path.txt"
