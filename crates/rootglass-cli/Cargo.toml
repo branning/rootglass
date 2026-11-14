@@ -5,13 +5,15 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = ["tui"]
+tui = ["dep:rootglass-tui"]
+
 [dependencies]
 rootglass-app.workspace = true
 rootglass-core.workspace = true
 rootglass-manifest.workspace = true
 rootglass-qemu.workspace = true
 rootglass-signature.workspace = true
-rootglass-tui.workspace = true
+rootglass-tui = { workspace = true, optional = true }
 signal-hook = "0.3"
-
-[dev-dependencies]

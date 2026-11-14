@@ -752,7 +752,7 @@ mod tests {
         run_with_frontends(
             args,
             |_| Err("GUI dispatch is unavailable in a CLI unit test".to_string()),
-            rootglass_tui::run_terminal,
+            |_| Err("TUI dispatch is unavailable in a CLI unit test".to_string()),
         )
     }
 

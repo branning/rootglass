@@ -125,14 +125,35 @@ jobs:
       - name: Cache Cargo registry and build outputs
         uses: Swatinem/rust-cache@v2
 
+      - name: Verify headless dependency graph
+        run: |
+          dependencies="$(cargo tree --locked --manifest-path crates/rootglass-desktop/Cargo.toml --no-default-features -e normal)"
+          if grep -Eq '(^|[[:space:]])(rootglass-tui|ratatui|crossterm) v' <<< "$dependencies"; then
+            echo "Headless binary unexpectedly includes the TUI dependency graph" >&2
+            grep -E '(rootglass-tui|ratatui|crossterm) v' <<< "$dependencies" >&2
+            exit 1
+          fi
+
+      - name: Build headless binary
+        run: cargo build --locked --manifest-path crates/rootglass-desktop/Cargo.toml --no-default-features --bin rootglass
+
       - name: Smoke test CLI validate
         run: cargo run --locked --manifest-path crates/rootglass-desktop/Cargo.toml --no-default-features -- validate examples/hello-world.glass
 
       - name: Smoke test CLI plan
         run: cargo run --locked --manifest-path crates/rootglass-desktop/Cargo.toml --no-default-features -- plan examples/hello-world.glass
 
+      - name: Check disabled TUI reports a useful error
+        run: |
+          set +e
+          output="$(cargo run --locked --manifest-path crates/rootglass-desktop/Cargo.toml --no-default-features -- tui 2>&1)"
+          status=$?
+          set -e
+          test "$status" -ne 0
+          grep -F "Rootglass was built without TUI support" <<< "$output"
+
       - name: Smoke test TUI terminal lifecycle
-        run: cargo test --locked --manifest-path crates/rootglass-desktop/Cargo.toml --no-default-features --test tui_terminal
+        run: cargo test --locked --manifest-path crates/rootglass-desktop/Cargo.toml --no-default-features --features tui --test tui_terminal
 
   boot-smoke:
     name: Boot smoke (${{ matrix.name }})

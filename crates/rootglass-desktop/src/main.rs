@@ -2,7 +2,7 @@ fn main() {
     let exit_code = match rootglass_cli::run_with_frontends(
         std::env::args().skip(1).collect(),
         launch_gui,
-        rootglass_tui::run_terminal,
+        launch_tui,
     ) {
         Ok(exit_code) => exit_code,
         Err(error) => {
@@ -11,6 +11,19 @@ fn main() {
         }
     };
     std::process::exit(exit_code);
+}
+
+#[cfg(feature = "tui")]
+fn launch_tui(initial_glass: Option<std::path::PathBuf>) -> Result<(), String> {
+    rootglass_tui::run_terminal(initial_glass)
+}
+
+#[cfg(not(feature = "tui"))]
+fn launch_tui(_initial_glass: Option<std::path::PathBuf>) -> Result<(), String> {
+    Err(
+        "Rootglass was built without TUI support; rebuild with `--features tui` to use `rootglass tui`."
+            .to_string(),
+    )
 }
 
 #[cfg(feature = "desktop-ui")]
