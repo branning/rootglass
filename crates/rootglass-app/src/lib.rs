@@ -164,6 +164,7 @@ struct ActiveRun {
     process: QemuProcess,
     state: LifecycleState,
     login_seen: bool,
+    require_login_prompt: bool,
     login_marker_tail: Vec<u8>,
     diagnostic_tail: Vec<u8>,
     ready_deadline: Instant,
@@ -639,6 +640,21 @@ impl AppService {
     }
 
     pub fn start(&mut self, source: &Path, options: RunOptions) -> Result<RunId, AppError> {
+        self.start_with_readiness(source, options, true)
+    }
+
+    /// Start a verified guest for a headless console without requiring the
+    /// profile-specific login prompt used by desktop readiness reporting.
+    pub fn start_headless(&mut self, source: &Path) -> Result<RunId, AppError> {
+        self.start_with_readiness(source, RunOptions::default(), false)
+    }
+
+    fn start_with_readiness(
+        &mut self,
+        source: &Path,
+        options: RunOptions,
+        require_login_prompt: bool,
+    ) -> Result<RunId, AppError> {
         if self.active.is_some() {
             return Err(AppError {
                 phase: LifecycleState::Starting,
@@ -664,6 +680,7 @@ impl AppService {
             process,
             state: LifecycleState::Booting,
             login_seen: false,
+            require_login_prompt,
             login_marker_tail: Vec::new(),
             diagnostic_tail: Vec::new(),
             ready_deadline: Instant::now() + GUEST_READY_TIMEOUT,
@@ -721,7 +738,7 @@ impl AppService {
         let Some(active) = self.active.as_mut() else {
             return Ok(None);
         };
-        let read_timeout = if active.login_seen {
+        let read_timeout = if active.login_seen || !active.require_login_prompt {
             timeout
         } else {
             timeout.min(
@@ -761,7 +778,10 @@ impl AppService {
                 return Ok(self.pending.pop_front());
             }
 
-            if !active.login_seen && Instant::now() >= active.ready_deadline {
+            if active.require_login_prompt
+                && !active.login_seen
+                && Instant::now() >= active.ready_deadline
+            {
                 let _ = active
                     .process
                     .stop(Duration::from_secs(1), Duration::from_secs(1));
@@ -783,7 +803,7 @@ impl AppService {
                 return Ok(self.pending.pop_front());
             }
 
-            if !active.login_seen && marker_found {
+            if active.require_login_prompt && !active.login_seen && marker_found {
                 active.login_seen = true;
                 active.login_marker_tail.clear();
                 active.state = LifecycleState::Running;
@@ -808,7 +828,10 @@ impl AppService {
                 truncated,
             }));
         }
-        if !active.login_seen && Instant::now() >= active.ready_deadline {
+        if active.require_login_prompt
+            && !active.login_seen
+            && Instant::now() >= active.ready_deadline
+        {
             let run = active.id.clone();
             let _ = active
                 .process
@@ -830,7 +853,7 @@ impl AppService {
             detail: error.to_string(),
         })? {
             let id = active.id.clone();
-            let ready = active.login_seen;
+            let ready = active.login_seen || !active.require_login_prompt;
             self.active = None;
             if !ready {
                 return Ok(Some(RuntimeEvent::Failed {
@@ -892,6 +915,21 @@ impl AppService {
         if self.active.is_none() && self.last_stopped.as_ref() == Some(run) {
             return Ok(());
         }
+        self.stop_with_timeouts(run, Duration::from_secs(5), Duration::from_secs(2))
+            .map(|_| ())
+    }
+
+    /// Stop a run with caller-selected guest and QMP shutdown timeouts.
+    ///
+    /// Desktop callers should use [`Self::stop`], which retains the existing
+    /// five-second guest shutdown timeout. Headless callers can allow more
+    /// time for the guest to flush its disks before QEMU is forced to exit.
+    pub fn stop_with_timeouts(
+        &mut self,
+        run: &RunId,
+        guest_shutdown_timeout: Duration,
+        qmp_quit_timeout: Duration,
+    ) -> Result<ExitStatus, AppError> {
         let Some(active_id) = self.active.as_ref().map(|active| active.id.clone()) else {
             return Err(AppError {
                 phase: LifecycleState::Stopped,
@@ -914,11 +952,12 @@ impl AppService {
             .as_mut()
             .expect("active run was validated")
             .state = LifecycleState::Stopping;
-        self.active
+        let status = self
+            .active
             .as_mut()
             .expect("active run was validated")
             .process
-            .stop(Duration::from_secs(5), Duration::from_secs(2))
+            .stop(guest_shutdown_timeout, qmp_quit_timeout)
             .map_err(|error| AppError {
                 phase: LifecycleState::Stopping,
                 summary: "QEMU could not be stopped cleanly.".to_string(),
@@ -930,7 +969,7 @@ impl AppService {
             run: run.clone(),
             state: LifecycleState::Stopped,
         });
-        Ok(())
+        Ok(status)
     }
 
     /// Preserve the existing CLI's terminal-based developer workflow.

@@ -5609,6 +5609,7 @@ dependencies = [
  "rootglass-qemu",
  "rootglass-signature",
  "rootglass-tui",
+ "signal-hook",
 ]
 
 [[package]]

@@ -605,13 +605,13 @@ dependencies = [
 name = "rootglass-cli"
 version = "0.1.0"
 dependencies = [
- "libc",
  "rootglass-app",
  "rootglass-core",
  "rootglass-manifest",
  "rootglass-qemu",
  "rootglass-signature",
  "rootglass-tui",
+ "signal-hook",
 ]
 
 [[package]]
