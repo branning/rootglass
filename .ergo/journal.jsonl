@@ -444,3 +444,4 @@
 {"version":1,"task_id":"53K5RE","kind":"open","at":"2026-11-14T22:46:37.999530787Z","text":"Opening RG-21 after RG-20 headless run support merged."}
 {"version":1,"task_id":"53K5RE","kind":"claim","at":"2026-11-14T22:46:38.014336311Z","agent":"codex@specialized-images"}
 {"version":1,"task_id":"53K5RE","kind":"result","at":"2026-11-14T23:04:54.752732066Z","agent":"codex@specialized-images","text":"Checks: 67 app/CLI/QEMU tests passed; fmt and clippy --all-targets -D warnings passed."}
+{"version":1,"task_id":"53K5RE","kind":"done","at":"2026-11-14T23:17:55.674085839Z","agent":"codex@specialized-images","text":"Merged PR #134 at 0567b4c; CI runs 43651465053 and 43651465012 passed."}
