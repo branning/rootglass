@@ -96,13 +96,37 @@ pub struct QemuLaunchPlan {
     pub args: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QemuOutputMode {
+    Interactive,
+    Headless,
+}
+
 impl QemuLaunchPlan {
     pub fn for_launch_request(request: &LaunchRequest) -> Self {
         let binary = request
             .qemu_binary
             .clone()
             .unwrap_or_else(|| QemuBinary::default().path);
-        Self::for_launch_request_with_binary(request, binary)
+        Self::for_launch_request_with_binary_and_output_mode(
+            request,
+            binary,
+            QemuOutputMode::Interactive,
+        )
+    }
+
+    /// Build a terminal-only plan that sends guest serial to stdio and disables
+    /// QEMU's monitor so it cannot consume the user's stdin.
+    pub fn for_headless_launch_request(request: &LaunchRequest) -> Self {
+        let binary = request
+            .qemu_binary
+            .clone()
+            .unwrap_or_else(|| QemuBinary::default().path);
+        Self::for_launch_request_with_binary_and_output_mode(
+            request,
+            binary,
+            QemuOutputMode::Headless,
+        )
     }
 
     /// Build a launch plan using a caller-resolved QEMU executable. The caller is
@@ -110,6 +134,30 @@ impl QemuLaunchPlan {
     pub fn for_launch_request_with_binary(
         request: &LaunchRequest,
         binary_path: impl Into<PathBuf>,
+    ) -> Self {
+        Self::for_launch_request_with_binary_and_output_mode(
+            request,
+            binary_path,
+            QemuOutputMode::Interactive,
+        )
+    }
+
+    /// Build a headless launch plan using a caller-resolved QEMU executable.
+    pub fn for_headless_launch_request_with_binary(
+        request: &LaunchRequest,
+        binary_path: impl Into<PathBuf>,
+    ) -> Self {
+        Self::for_launch_request_with_binary_and_output_mode(
+            request,
+            binary_path,
+            QemuOutputMode::Headless,
+        )
+    }
+
+    fn for_launch_request_with_binary_and_output_mode(
+        request: &LaunchRequest,
+        binary_path: impl Into<PathBuf>,
+        output_mode: QemuOutputMode,
     ) -> Self {
         let accelerator = Accelerator::from(request.accelerator);
         let binary = QemuBinary {
@@ -172,11 +220,21 @@ impl QemuLaunchPlan {
             args.extend(["-nic".to_string(), "none".to_string()]);
         }
 
-        args.extend([
-            "-nographic".to_string(),
-            "-serial".to_string(),
-            "mon:stdio".to_string(),
-        ]);
+        match output_mode {
+            QemuOutputMode::Interactive => args.extend([
+                "-nographic".to_string(),
+                "-serial".to_string(),
+                "mon:stdio".to_string(),
+            ]),
+            QemuOutputMode::Headless => args.extend([
+                "-display".to_string(),
+                "none".to_string(),
+                "-serial".to_string(),
+                "stdio".to_string(),
+                "-monitor".to_string(),
+                "none".to_string(),
+            ]),
+        }
 
         if let Some(accel) = accelerator.qemu_arg() {
             args.push("-accel".to_string());
@@ -922,6 +980,32 @@ mod tests {
     }
 
     #[test]
+    fn builds_headless_qemu_command_without_a_stdio_monitor() {
+        let mut runtime = RootglassRuntime::new();
+        let capabilities = HostCapabilities::without_acceleration(HostPlatform::Other);
+        let request = runtime
+            .prepare_launch_with_host("../../examples/hello-world.glass", &capabilities)
+            .expect("sample glass produces launch request");
+
+        let plan = QemuLaunchPlan::for_headless_launch_request(&request);
+
+        assert!(plan
+            .args
+            .windows(2)
+            .any(|args| args == ["-display", "none"]));
+        assert!(plan
+            .args
+            .windows(2)
+            .any(|args| args == ["-serial", "stdio"]));
+        assert!(plan
+            .args
+            .windows(2)
+            .any(|args| args == ["-monitor", "none"]));
+        assert!(!plan.args.iter().any(|arg| arg == "-nographic"));
+        assert!(!plan.args.iter().any(|arg| arg == "mon:stdio"));
+    }
+
+    #[test]
     fn disables_qemu_network_when_manifest_declares_none() {
         let mut runtime = RootglassRuntime::new();
         let capabilities = HostCapabilities::without_acceleration(HostPlatform::Other);
@@ -994,6 +1078,7 @@ mod tests {
 #[cfg(all(test, target_os = "linux"))]
 mod supervisor_tests {
     use super::*;
+    use rootglass_core::{HostCapabilities, HostPlatform, RootglassRuntime};
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
@@ -1071,6 +1156,29 @@ with client:
         FakeQemu { root, binary }
     }
 
+    fn fake_qemu_exit(code: i32) -> FakeQemu {
+        static NEXT_FAKE_QEMU_ID: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
+        let root = loop {
+            let id = NEXT_FAKE_QEMU_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let candidate = std::env::temp_dir().join(format!(
+                "rootglass-fake-qemu-exit-{}-{id}",
+                std::process::id()
+            ));
+            match fs::create_dir(&candidate) {
+                Ok(()) => break candidate,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("create fake QEMU fixture directory: {error}"),
+            }
+        };
+        let binary = root.join("fake-qemu.sh");
+        fs::write(&binary, format!("#!/bin/sh\nexit {code}\n")).unwrap();
+        let mut permissions = fs::metadata(&binary).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&binary, permissions).unwrap();
+        FakeQemu { root, binary }
+    }
+
     fn plan(binary: &Path) -> QemuLaunchPlan {
         QemuLaunchPlan {
             binary: QemuBinary {
@@ -1107,6 +1215,28 @@ with client:
             .err()
             .expect("missing QEMU binary must fail to spawn");
         assert!(matches!(error, QemuError::Spawn { .. }));
+    }
+
+    #[test]
+    fn headless_qemu_exit_status_is_preserved() {
+        let mut runtime = RootglassRuntime::new();
+        let capabilities = HostCapabilities::without_acceleration(HostPlatform::Other);
+        let request = runtime
+            .prepare_launch_with_host("../../examples/hello-world.glass", &capabilities)
+            .expect("sample glass produces launch request");
+
+        for expected in [0, 3] {
+            let fake = fake_qemu_exit(expected);
+            let plan =
+                QemuLaunchPlan::for_headless_launch_request_with_binary(&request, &fake.binary);
+            let status = plan
+                .spawn_interactive()
+                .expect("fake QEMU starts")
+                .wait()
+                .expect("QEMU status is available");
+
+            assert_eq!(status.code(), Some(expected));
+        }
     }
 
     #[test]

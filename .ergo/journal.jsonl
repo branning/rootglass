@@ -433,3 +433,6 @@
 {"version":1,"task_id":"CD32SU","kind":"claim","at":"2026-11-14T21:58:25.763898111Z","agent":"codex@specialized-images"}
 {"version":1,"task_id":"CD32SU","kind":"result","at":"2026-11-14T22:02:47.161727451Z","agent":"codex@specialized-images","text":"Checks: 19 signature tests; fmt, clippy, core+TUI check passed."}
 {"version":1,"task_id":"CD32SU","kind":"done","at":"2026-11-14T22:06:40.507266527Z","agent":"codex@specialized-images","text":"Merged PR #131 at bcff204a; CI run 43646038036 passed all 7 jobs."}
+{"version":1,"task_id":"IIYOU2","kind":"open","at":"2026-11-14T22:07:40.67207357Z","text":"Opening the next ungated RG-20 leaf in the approved headless foundation epic."}
+{"version":1,"task_id":"IIYOU2","kind":"claim","at":"2026-11-14T22:07:40.687021378Z","agent":"codex@specialized-images"}
+{"version":1,"task_id":"IIYOU2","kind":"result","at":"2026-11-14T22:18:54.077887189Z","agent":"codex@specialized-images","text":"Checks: app/CLI/QEMU tests 61 passed; fmt, clippy, headless desktop check passed."}
