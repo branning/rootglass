@@ -6,6 +6,12 @@ use rootglass_signature::{
 };
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HeadlessRunOptions {
+    glass_path: PathBuf,
+    trust_path: Option<PathBuf>,
+}
+
 pub fn run_with_frontends(
     args: Vec<String>,
     launch_gui: impl FnOnce(Option<PathBuf>) -> Result<(), String>,
@@ -18,7 +24,7 @@ fn run_with_frontends_and_headless(
     args: Vec<String>,
     launch_gui: impl FnOnce(Option<PathBuf>) -> Result<(), String>,
     launch_tui: impl FnOnce(Option<PathBuf>) -> Result<(), String>,
-    run_headless: impl FnOnce(PathBuf) -> Result<i32, String>,
+    run_headless: impl FnOnce(HeadlessRunOptions) -> Result<i32, String>,
 ) -> Result<i32, String> {
     let Some(command) = args.first().map(String::as_str) else {
         return launch_gui(None).map(|()| 0);
@@ -50,10 +56,8 @@ fn run_with_frontends_and_headless(
             boot_glass(glass_root).map(|()| 0)
         }
         "run" => {
-            if args.len() != 3 || args[1] != "--headless" {
-                return Err("usage: rootglass run --headless <path-to.glass>".to_string());
-            }
-            run_headless(PathBuf::from(&args[2]))
+            let options = parse_headless_run_args(&args)?;
+            run_headless(options)
         }
         "tui" => {
             if args.len() > 2 {
@@ -75,6 +79,56 @@ fn run_with_frontends_and_headless(
             Err(format!("unknown command '{other}'"))
         }
     }
+}
+
+fn parse_headless_run_args(args: &[String]) -> Result<HeadlessRunOptions, String> {
+    if args.first().map(String::as_str) != Some("run")
+        || args.get(1).map(String::as_str) != Some("--headless")
+    {
+        return Err("usage: rootglass run --headless <path-to.glass> [--trust <file>]".to_string());
+    }
+
+    let mut glass_path = None;
+    let mut trust_path = None;
+    let mut index = 2;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--trust" => {
+                if trust_path.is_some() {
+                    return Err("--trust may be specified only once".to_string());
+                }
+                let Some(path) = args.get(index + 1) else {
+                    return Err("--trust requires a configuration file path".to_string());
+                };
+                if path.is_empty() || path.starts_with('-') {
+                    return Err("--trust requires a configuration file path".to_string());
+                }
+                trust_path = Some(PathBuf::from(path));
+                index += 2;
+            }
+            option if option.starts_with('-') => {
+                return Err(format!("unexpected run option '{option}'"));
+            }
+            path => {
+                if glass_path.is_some() {
+                    return Err(
+                        "usage: rootglass run --headless <path-to.glass> [--trust <file>]"
+                            .to_string(),
+                    );
+                }
+                glass_path = Some(PathBuf::from(path));
+                index += 1;
+            }
+        }
+    }
+
+    let glass_path = glass_path.ok_or_else(|| {
+        "usage: rootglass run --headless <path-to.glass> [--trust <file>]".to_string()
+    })?;
+    Ok(HeadlessRunOptions {
+        glass_path,
+        trust_path,
+    })
 }
 
 fn is_glass_path(value: &str) -> bool {
@@ -227,15 +281,24 @@ fn boot_glass(glass_path: PathBuf) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-fn run_headless_glass(glass_path: PathBuf) -> Result<i32, String> {
-    let mut service = AppService::new().with_packaged_runtime_assets();
-    let glass_root = resolve_glass_root(&service, glass_path)?;
+fn run_headless_glass(options: HeadlessRunOptions) -> Result<i32, String> {
+    let mut service = headless_service(options.trust_path)?;
+    let glass_root = resolve_glass_root(&service, options.glass_path)?;
     let status = service
         .run_headless(&glass_root)
         .map_err(|error| error.to_string())?;
     status
         .code()
         .ok_or_else(|| format!("QEMU terminated without an exit code: {status}"))
+}
+
+fn headless_service(trust_path: Option<PathBuf>) -> Result<AppService, String> {
+    let service = match trust_path {
+        Some(path) => AppService::from_trust_config(&path)
+            .map_err(|error| format!("failed to load trust configuration: {error}"))?,
+        None => AppService::new(),
+    };
+    Ok(service.with_packaged_runtime_assets())
 }
 
 fn print_verification(summary: &GlassSummary) {
@@ -255,7 +318,7 @@ fn print_usage() {
     eprintln!("  rootglass validate <path-to.glass>");
     eprintln!("  rootglass plan <path-to.glass>");
     eprintln!("  rootglass boot <path-to.glass>");
-    eprintln!("  rootglass run --headless <path-to.glass>");
+    eprintln!("  rootglass run --headless <path-to.glass> [--trust <file>]");
     eprintln!("  rootglass sign <glass-directory> --key <secret-file> [--created-at <RFC3339>]");
     eprintln!("  rootglass package <glass-directory> <output.glass> --key <secret-file> [--created-at <RFC3339>]");
 }
@@ -286,18 +349,26 @@ mod tests {
             vec![
                 "run".to_string(),
                 "--headless".to_string(),
+                "--trust".to_string(),
+                "trust.json".to_string(),
                 "example.glass".to_string(),
             ],
             |_| panic!("the GUI should not launch for a headless run"),
             |_| panic!("the TUI should not launch for a headless run"),
-            |path| {
-                received = Some(path);
+            |options| {
+                received = Some(options);
                 Ok(3)
             },
         )
         .expect("headless run returns the QEMU status");
 
-        assert_eq!(received, Some(PathBuf::from("example.glass")));
+        assert_eq!(
+            received,
+            Some(HeadlessRunOptions {
+                glass_path: PathBuf::from("example.glass"),
+                trust_path: Some(PathBuf::from("trust.json")),
+            })
+        );
         assert_eq!(exit_code, 3);
     }
 
@@ -305,7 +376,12 @@ mod tests {
     fn headless_run_rejects_malformed_arguments_before_launch() {
         let mut launched = false;
         let error = run_with_frontends_and_headless(
-            vec!["run".to_string(), "example.glass".to_string()],
+            vec![
+                "run".to_string(),
+                "--headless".to_string(),
+                "example.glass".to_string(),
+                "--trust".to_string(),
+            ],
             |_| panic!("the GUI should not launch for a headless run"),
             |_| panic!("the TUI should not launch for a headless run"),
             |_| {
@@ -313,10 +389,82 @@ mod tests {
                 Ok(0)
             },
         )
-        .expect_err("headless run must require --headless");
+        .expect_err("headless run must require a trust configuration path");
 
-        assert!(error.contains("usage: rootglass run --headless"));
+        assert!(error.contains("--trust requires a configuration file path"));
         assert!(!launched);
+    }
+
+    #[test]
+    fn headless_run_uses_configured_publisher_trust() {
+        let root = temp_root();
+        let glass_path = root.join("configured-publisher.glass");
+        std::fs::create_dir(&glass_path).expect("bundle directory is created");
+        let manifest = include_str!("../../../examples/hello-world.glass/rootglass.toml")
+            .replace("Rootglass Examples", "CLI Test Publisher")
+            .replace("rootglass.dev/examples", "rootglass.test/cli");
+        std::fs::write(glass_path.join("rootglass.toml"), manifest)
+            .expect("test manifest is written");
+
+        let signing_key_path = root.join("test-signing-seed");
+        std::fs::write(&signing_key_path, [42_u8; 32]).expect("test seed is written");
+        let signing_key =
+            rootglass_signature::load_signing_key(&signing_key_path).expect("test seed loads");
+        let report = rootglass_signature::sign_glass_directory_at(
+            &glass_path,
+            &signing_key,
+            "2026-11-14T00:00:00Z",
+        )
+        .expect("test bundle is signed");
+        let public_key = base64url_no_pad(&signing_key.verifying_key().to_bytes());
+        let trust_path = root.join("trust.json");
+        let trust_config = format!(
+            r#"{{"schemaVersion":1,"trustedPublishers":[{{"name":"{}","identity":"{}","keyId":"{}","publicKeyBase64url":"{}"}}],"revokedKeyIds":[]}}"#,
+            report.publisher_name, report.publisher_identity, report.key_id, public_key
+        );
+        std::fs::write(&trust_path, trust_config).expect("trust configuration is written");
+
+        let error = run_with_frontends_and_headless(
+            vec![
+                "run".to_string(),
+                "--headless".to_string(),
+                glass_path.display().to_string(),
+                "--trust".to_string(),
+                trust_path.display().to_string(),
+            ],
+            |_| panic!("the GUI should not launch for a headless run"),
+            |_| panic!("the TUI should not launch for a headless run"),
+            run_headless_glass,
+        )
+        .expect_err("the trusted bundle should stop at the intentionally missing runtime asset");
+
+        assert!(error.contains("missing kernel asset") || error.contains("missing rootfs asset"));
+        assert!(!error.to_lowercase().contains("unknown signing key"));
+        std::fs::remove_dir_all(root).expect("temporary test files are removed");
+    }
+
+    #[test]
+    fn malformed_headless_trust_config_fails_before_opening_the_bundle() {
+        let root = temp_root();
+        let trust_path = root.join("malformed-trust.json");
+        std::fs::write(&trust_path, b"not json").expect("malformed trust config is written");
+
+        let error = run_with_frontends_and_headless(
+            vec![
+                "run".to_string(),
+                "--headless".to_string(),
+                root.join("missing.glass").display().to_string(),
+                "--trust".to_string(),
+                trust_path.display().to_string(),
+            ],
+            |_| panic!("the GUI should not launch for a headless run"),
+            |_| panic!("the TUI should not launch for a headless run"),
+            run_headless_glass,
+        )
+        .expect_err("malformed trust configuration must fail closed");
+
+        assert!(error.contains("invalid trust configuration JSON"));
+        std::fs::remove_dir_all(root).expect("temporary test files are removed");
     }
 
     #[test]
@@ -390,6 +538,37 @@ mod tests {
             |_| Err("GUI dispatch is unavailable in a CLI unit test".to_string()),
             rootglass_tui::run_terminal,
         )
+    }
+
+    fn temp_root() -> PathBuf {
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root =
+            std::env::temp_dir().join(format!("rootglass-cli-trust-{}-{id}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("temporary test directory is created");
+        root
+    }
+
+    fn base64url_no_pad(bytes: &[u8]) -> String {
+        const ALPHABET: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let mut encoded = String::new();
+        let mut index = 0;
+        while index < bytes.len() {
+            let first = bytes[index] as u32;
+            let second = bytes.get(index + 1).copied().unwrap_or(0) as u32;
+            let third = bytes.get(index + 2).copied().unwrap_or(0) as u32;
+            encoded.push(ALPHABET[(first >> 2) as usize] as char);
+            encoded.push(ALPHABET[(((first & 0x03) << 4) | (second >> 4)) as usize] as char);
+            if index + 1 < bytes.len() {
+                encoded.push(ALPHABET[(((second & 0x0f) << 2) | (third >> 6)) as usize] as char);
+            }
+            if index + 2 < bytes.len() {
+                encoded.push(ALPHABET[(third & 0x3f) as usize] as char);
+            }
+            index += 3;
+        }
+        encoded
     }
 
     #[test]
