@@ -390,5 +390,41 @@
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-12T05:08:48.4234927Z","agent":"codex@worker-1","text":"Windows smoke #43157043525 booted, but ESC[6n corrupted guest input; serial input gate needs installed retest."}
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-12T05:08:48.443438634Z","agent":"codex@worker-1","text":"Input gate fix: TUI 57/57 tests, Clippy and rustfmt pass; Windows package smoke pending."}
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-12T05:38:19.726574796Z","agent":"codex@worker-1","text":"Installed smoke #43161476158 booted, but the 200 ms gate expired before the DSR response; marker input was lost."}
-{"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-12T06:07:24Z","agent":"codex@worker-1","text":"Installed smoke #43164718587 booted, but the first console byte was consumed before its cursor-query response; changing the gate to hold the full submitted line."}
-{"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-12T06:07:55Z","agent":"codex@worker-1","text":"Changed the console input gate to hold and release whole submitted lines; rootglass-tui tests 58/58, Clippy and rustfmt pass; installed smoke pending."}
+{"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-12T06:07:24Z","agent":"codex@worker-1","text":"Windows smoke #43164718587 booted; cursor-query handling consumed the first console byte; gate fix remained in progress."}
+{"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-12T06:07:55Z","agent":"codex@worker-1","text":"Input gate holds full submitted lines; 58 TUI tests, Clippy and formatting passed; Windows installed smoke pending."}
+{"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-14T21:44:51.62383989Z","agent":"codex@worker-1","text":"Repaired two overlong result summaries; originals preserved in evidence.","file":{"path":"docs/evidence/ergo-journal-recovery-2026-11-14.md","sha256":"02de9d286d8a434e5a062f9d0d8aed29f0044e1bfdfc4602632cbfa143feae8c","mtime":"2026-11-14T21:44:15.03518097Z","git_commit":"fb9e6bfe944440db106d0f7f01761f6e94d8c05b"}}
+{"version":1,"task_id":"WFMLUB","kind":"created","at":"2026-11-14T21:44:51.639242105Z"}
+{"version":1,"task_id":"SME3JT","kind":"created","at":"2026-11-14T21:44:51.639317278Z"}
+{"version":1,"task_id":"CD32SU","kind":"created","at":"2026-11-14T21:44:51.639326292Z"}
+{"version":1,"task_id":"IIYOU2","kind":"created","at":"2026-11-14T21:44:51.639329557Z"}
+{"version":1,"task_id":"53K5RE","kind":"created","at":"2026-11-14T21:44:51.639333442Z"}
+{"version":1,"task_id":"4ONLKU","kind":"created","at":"2026-11-14T21:44:51.639364239Z"}
+{"version":1,"task_id":"46ESQA","kind":"created","at":"2026-11-14T21:44:51.639368004Z"}
+{"version":1,"task_id":"JDZ5WB","kind":"created","at":"2026-11-14T21:44:51.639370328Z"}
+{"version":1,"task_id":"REPXTN","kind":"created","at":"2026-11-14T21:44:54.258042827Z"}
+{"version":1,"task_id":"VXN3ML","kind":"created","at":"2026-11-14T21:44:54.258094004Z"}
+{"version":1,"task_id":"DJETIP","kind":"created","at":"2026-11-14T21:44:54.258126923Z"}
+{"version":1,"task_id":"UVFQA6","kind":"created","at":"2026-11-14T21:44:54.25813156Z"}
+{"version":1,"task_id":"JBHMZV","kind":"created","at":"2026-11-14T21:44:54.258135827Z"}
+{"version":1,"task_id":"3LVRU5","kind":"created","at":"2026-11-14T21:44:54.258141235Z"}
+{"version":1,"task_id":"FJ7RL5","kind":"created","at":"2026-11-14T21:44:54.258146673Z"}
+{"version":1,"task_id":"BTWUZV","kind":"created","at":"2026-11-14T21:44:54.25815137Z"}
+{"version":1,"task_id":"OHKSA6","kind":"created","at":"2026-11-14T21:44:54.258155116Z"}
+{"version":1,"task_id":"D2T7RY","kind":"created","at":"2026-11-14T21:44:54.258158681Z"}
+{"version":1,"task_id":"KR5Y6B","kind":"created","at":"2026-11-14T21:44:54.258162968Z"}
+{"version":1,"task_id":"CQZYUR","kind":"created","at":"2026-11-14T21:44:56.932874748Z"}
+{"version":1,"task_id":"UA3TN3","kind":"created","at":"2026-11-14T21:44:56.932918093Z"}
+{"version":1,"task_id":"PI6G7G","kind":"created","at":"2026-11-14T21:44:56.932927057Z"}
+{"version":1,"task_id":"2OUD3T","kind":"created","at":"2026-11-14T21:44:56.932933026Z"}
+{"version":1,"task_id":"7QNDPG","kind":"created","at":"2026-11-14T21:44:56.932936411Z"}
+{"version":1,"task_id":"UYBEVX","kind":"created","at":"2026-11-14T21:44:56.932939015Z"}
+{"version":1,"task_id":"NI7NH2","kind":"created","at":"2026-11-14T21:44:56.932941358Z"}
+{"version":1,"task_id":"SOZORL","kind":"created","at":"2026-11-14T21:44:56.932943782Z"}
+{"version":1,"task_id":"3MIWI7","kind":"created","at":"2026-11-14T21:44:56.932946125Z"}
+{"version":1,"task_id":"ZF2XY4","kind":"created","at":"2026-11-14T21:44:59.260631086Z"}
+{"version":1,"task_id":"EOARV2","kind":"created","at":"2026-11-14T21:44:59.260769414Z"}
+{"version":1,"task_id":"NEE2KO","kind":"created","at":"2026-11-14T21:44:59.26077337Z"}
+{"version":1,"task_id":"SME3JT","kind":"open","at":"2026-11-14T21:46:08.256353902Z","text":"Opened RG-01 after reviewing the signed-images launch spec and its dependencies."}
+{"version":1,"task_id":"SME3JT","kind":"claim","at":"2026-11-14T21:46:08.270684657Z","agent":"codex@specialized-images"}
+{"version":1,"task_id":"SME3JT","kind":"result","at":"2026-11-14T21:50:44.054237244Z","agent":"codex@specialized-images","text":"Checks: core/qemu tests passed (29); fmt --check and clippy passed."}
+{"version":1,"task_id":"SME3JT","kind":"result","at":"2026-11-14T21:50:44.071524956Z","agent":"codex@specialized-images","text":"Local guest boot not run: qemu-system-aarch64 is unavailable; CI boot smoke remains required."}

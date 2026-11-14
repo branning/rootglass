@@ -164,6 +164,15 @@ impl QemuLaunchPlan {
             ),
             "-device".to_string(),
             "virtio-blk-device,drive=rootfs".to_string(),
+        ]);
+
+        // Schema-1 bundles with `mode = "user"` rely on QEMU's existing user-network default.
+        // Preserve that behavior; schema-2 network settings are built in the user-network task.
+        if request.network_mode == "none" {
+            args.extend(["-nic".to_string(), "none".to_string()]);
+        }
+
+        args.extend([
             "-nographic".to_string(),
             "-serial".to_string(),
             "mon:stdio".to_string(),
@@ -905,6 +914,28 @@ mod tests {
         assert!(command_line.find("id=state").unwrap() < command_line.find("id=rootfs").unwrap());
         assert!(command_line.contains("console=ttyAMA0"));
         assert!(command_line.contains("rootglass.state=required"));
+        assert_eq!(request.network_mode, "user");
+        assert!(!plan
+            .args
+            .windows(2)
+            .any(|args| args[0] == "-nic" && args[1] == "none"));
+    }
+
+    #[test]
+    fn disables_qemu_network_when_manifest_declares_none() {
+        let mut runtime = RootglassRuntime::new();
+        let capabilities = HostCapabilities::without_acceleration(HostPlatform::Other);
+        let mut request = runtime
+            .prepare_launch_with_host("../../examples/hello-world.glass", &capabilities)
+            .expect("sample glass produces launch request");
+        request.network_mode = "none".to_string();
+
+        let plan = QemuLaunchPlan::for_launch_request(&request);
+
+        assert!(plan
+            .args
+            .windows(2)
+            .any(|args| args[0] == "-nic" && args[1] == "none"));
     }
 
     #[test]

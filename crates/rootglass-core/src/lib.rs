@@ -270,6 +270,7 @@ pub struct LaunchRequest {
     pub kernel_args: Vec<String>,
     pub memory_mb: u32,
     pub cpus: u32,
+    pub network_mode: String,
     pub requires_hardware_acceleration: bool,
     pub accelerator: Option<HostAccelerator>,
     /// Verified QEMU executable for packaged runtimes; `None` uses the developer PATH resolver.
@@ -549,6 +550,7 @@ impl LaunchRequest {
             kernel_args: manifest.boot.kernel_args.clone(),
             memory_mb: manifest.resources.memory_mb,
             cpus: manifest.resources.cpus,
+            network_mode: manifest.network.mode.clone(),
             requires_hardware_acceleration: manifest.runtime.requires_hardware_acceleration,
             accelerator,
             qemu_binary,
@@ -572,6 +574,7 @@ mod tests {
         assert_eq!(runtime.status().state, LifecycleState::Ready);
         assert_eq!(request.architecture, "aarch64");
         assert_eq!(request.runtime_profile, "virt-linux");
+        assert_eq!(request.network_mode, "user");
         assert_eq!(request.accelerator, None);
         assert_eq!(
             request.signature.publisher_identity,
