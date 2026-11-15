@@ -28,17 +28,17 @@ The CLI remains the reference workflow, and the GPUI Kit desktop shell now uses 
 - an interactive CLI boot command once local assets exist,
 - CI for formatting, clippy, tests, and CLI smoke checks.
 
-The native desktop shell uses [GPUI Kit](https://github.com/longbridge/gpui-kit) `=0.9.0`, a curated distribution of Zed's GPUI with components. The desktop shell and bundled runtime packaging are implemented; clean-host installer validation, release signing, and GUI acceptance coverage remain open. See [the delivery roadmap](docs/roadmap.md) and [desktop package status](docs/desktop-packages.md).
+The native desktop shell uses [GPUI Kit](https://github.com/longbridge/gpui-kit) `=0.9.0`, a curated distribution of Zed's GPUI with components. The release workflow includes signing, notarization, SBOM, and provenance steps; protected GitHub Environments and signing credentials must be configured before the first signed release. Existing previews remain unsigned. See [the delivery roadmap](docs/roadmap.md) and [desktop package status](docs/desktop-packages.md).
 
 ### macOS preview first-launch caveat
 
-The macOS preview DMGs, including v0.0.2 through v0.0.6, are unsigned and not notarized. After mounting the DMG, drag `Rootglass.app` to the Applications folder. If macOS reports that the app is damaged, recursively remove quarantine from the installed app bundle in Terminal:
+The macOS preview DMGs from v0.0.2 through v0.0.6 are unsigned and not notarized. After mounting one of these preview DMGs, drag `Rootglass.app` to the Applications folder. If macOS reports that the app is damaged, recursively remove quarantine from the installed app bundle in Terminal:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/Rootglass.app
 ```
 
-The recursive form is needed because downloaded app bundles can retain quarantine on nested files even after the app's top-level attribute is removed. It clears quarantine attributes from this app bundle; it does not sign or notarize the app. Only use it for a Rootglass app downloaded from the official release. The v0.0.2 macOS runtime has a separate invalid QEMU signature that causes macOS to kill QEMU at startup; clearing quarantine does not fix that release. The fix is in the v0.0.3 preview and passed an installed-app boot smoke on a macOS CI runner. See the [preview release notes](CHANGELOG.md) and [desktop package limits](docs/desktop-packages.md).
+The recursive form is needed because downloaded app bundles can retain quarantine on nested files even after the app's top-level attribute is removed. It clears quarantine attributes from this app bundle; it does not sign or notarize the app. Only use it for a Rootglass app downloaded from the official release. The v0.0.2 macOS runtime has a separate invalid QEMU signature that causes macOS to kill QEMU at startup; clearing quarantine does not fix that release. The fix is in the v0.0.3 preview and passed an installed-app boot smoke on a macOS CI runner. Releases built after signing credentials are configured use Developer ID signing and notarization instead of this preview workaround. See the [preview release notes](CHANGELOG.md) and [desktop package limits](docs/desktop-packages.md).
 
 ## Quickstart
 
@@ -153,7 +153,7 @@ error: missing kernel asset: runtime-assets/alpine-aarch64/vmlinuz-virt
 
 ### Try the release example bundle
 
-Upcoming desktop releases include a materialized, signed Hello World `.glass`
+Desktop release assets include a materialized, signed Hello World `.glass`
 and a SHA-256 checksum. After installing Rootglass and downloading both assets:
 
 ```sh
@@ -174,7 +174,7 @@ local trust file before opening the sample in the GUI. See [the trust setup and
 release asset details](docs/example-assets.md#trusting-the-release-example-in-the-desktop-app)
 and [desktop package notes](docs/desktop-packages.md). The published `v0.0.1`
 release remains immutable and unchanged. The materialized example is included
-with the `v0.0.2` preview release.
+with the `v0.0.2` preview release and later package builds.
 
 ## What is a `.glass`?
 

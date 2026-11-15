@@ -47,6 +47,7 @@ resources = [
   "../../LICENSE",
   "../../NOTICE.md",
   { src = "runtime-assets", target = "rootglass/runtime-assets" },
+  { src = "target/release/THIRD-PARTY-CARGO-LICENSES.html", target = "rootglass/THIRD-PARTY-CARGO-LICENSES.html" },
 ]
 file-associations = [
   { extensions = ["glass"], mime-type = "application/vnd.rootglass.glass", description = "Rootglass guest package", name = "Rootglass Glass", role = "editor" }
