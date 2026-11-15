@@ -10,10 +10,12 @@ the ADR is authoritative during review.
 
 Add encrypted `.glass` distributions with recipient-specific key wrapping and
 isolated concurrent guest runs while preserving existing unencrypted bundles,
-offline verification, publisher trust, and immutable root filesystems. The
-portable software provider must work independently of desktop application
-distribution signing. Secure Enclave and TPM providers have their own hardware
-and platform qualification gates.
+offline verification, publisher trust, and immutable root filesystems.
+Development can proceed with providers available to current local builds while
+code-signing credentials are being arranged. That does not decide how the
+released app will be signed or which entitlements it will use. Secure Enclave
+and TPM providers remain in scope and require hardware and platform
+qualification.
 
 ## Proposed bundle and trust model
 
@@ -83,20 +85,24 @@ credential store: the macOS file-based login Keychain, Windows Credential
 Manager, or Linux Secret Service. It exposes only public identities and
 fingerprints. It does not qualify as hardware-backed.
 
-### macOS keychain and application signing
+### macOS keychain development path and signing qualification
 
-The portable provider uses the classic file-based login Keychain through the
-Rust `keyring` crate's macOS `keychain` backend. This does not require a
-Developer ID distribution certificate. Keychain ACLs can still prompt or deny
-access; unsigned builds lack a stable code-signing designated requirement, so
-rebuilt binaries may need authorization again. Rootglass surfaces those errors
-and never silently replaces a stored identity.
+For the current portable-provider development slice, use the classic
+file-based login Keychain through the Rust `keyring` crate's macOS `keychain`
+backend. This local development path does not require a Developer ID
+distribution certificate. Keychain ACLs can still prompt or deny access;
+unsigned builds lack a stable code-signing designated requirement, so rebuilt
+binaries may need authorization again. Rootglass surfaces those errors and
+never silently replaces a stored identity. Recheck access prompts and ACL
+stability with the signed distribution app after certificate setup.
 
-The Protected/Data Protection Keychain and keychain access groups are not used
-for this portable provider. Secure Enclave keys are a separate hardware
-provider, and its access requirements and entitlements must be qualified
-independently. Waiting for application distribution certificates does not
-block the ordinary login-Keychain-backed software provider.
+This current development path does not rule out the Protected/Data Protection
+Keychain, keychain access groups, signing entitlements, or a different
+production provider backend. Secure Enclave remains an in-scope hardware
+provider; implement and test it where current development signing permits. If
+an entitlement or certificate is required but not yet available, keep that
+qualification pending until setup rather than removing the provider or making
+a permanent product decision.
 
 ## Proposed instances, overlays, and QEMU secrets
 

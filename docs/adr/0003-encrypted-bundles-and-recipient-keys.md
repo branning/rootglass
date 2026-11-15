@@ -24,9 +24,14 @@ explicitly.
 The encryption proposal also needs to distinguish three separate signing
 questions: `.glass` publisher signatures, code signing for desktop
 distribution, and stable app identity or entitlements used by some macOS
-keychain features. Desktop distribution signing remains deferred while the
-Apple and Microsoft distribution certificates are unavailable. That delay
-does not block the portable software key provider proposed here.
+keychain features. Desktop distribution signing is deferred while certificate
+setup is pending. This is a schedule and credential constraint, not a decision
+to ship unsigned, forgo signing entitlements, or remove Secure Enclave support.
+Development can proceed with providers available to current local builds;
+signing-dependent production behavior remains open for qualification.
+The final distribution-signing and macOS entitlement/keychain architecture are
+not decided by this ADR. Secure Enclave remains a target provider, not an
+optional path to remove because certificate setup is pending.
 
 ## Proposed decisions
 
@@ -120,29 +125,34 @@ but may not weaken it. Missing devices, unsupported algorithms, unavailable
 key stores, key denial, and hardware-policy mismatch fail closed with actionable
 errors.
 
-#### macOS login Keychain and deferred distribution signing
+#### macOS keychain development path and signing qualification
 
-The portable Age identity is stored as a generic password/secret in the
-current user's **file-based login Keychain**. Use the macOS `keychain` backend
-of the Rust `keyring` crate; do not use its Protected/Data Protection store,
-keychain access groups, or app-group sharing for this provider.
+For the current portable-provider development slice, store the Age identity as
+a generic password/secret in the current user's **file-based login Keychain**.
+The Rust `keyring` crate's macOS `keychain` backend allows this local work to
+proceed without waiting for a Developer ID certificate. This is a development
+path, not a decision that the eventual signed app must avoid entitlements,
+keychain access groups, the Protected/Data Protection store, or a different
+provider backend.
 
 Ordinary login-Keychain use does not require a Developer ID distribution
 certificate. The file-based Keychain uses per-item access control lists. An
 unsigned build has no stable designated code requirement, so macOS may ask the
 user to authorize access, and rebuilt executables may prompt again or fail an
 ACL created for a different identity. Rootglass must surface cancellation or
-denial, preserve the key, and never silently replace it. Test the exact
-`keyring` version and unsigned Rootglass bundle on macOS before claiming
-prompt-free behavior. CI tests use a mock provider rather than an interactive
-login Keychain.
+denial, preserve the key, and never silently replace it. Test the selected
+`keyring` version with unsigned local builds now, then qualify ACL stability
+and prompts again with the signed distribution app after certificate setup.
+CI tests use a mock provider rather than an interactive login Keychain.
 
-Secure Enclave is a distinct hardware provider, not a prerequisite for the
-portable Keychain-backed Age provider. Its P-256 key-agreement API, persistent
-key access, and any required code-signing entitlements/provisioning must be
-qualified independently on supported Macs. A missing entitlement or
-unsupported Secure Enclave fails that provider closed; it does not block the
-software provider or require Developer ID signing for it.
+Secure Enclave remains an in-scope hardware provider and is not replaced by the
+portable Age provider. Its P-256 key-agreement API, persistent key access, and
+any required code-signing entitlements/provisioning must be qualified on
+supported Macs. Continue implementation and local experiments where current
+development signing permits them. If a required entitlement or certificate is
+not yet available, keep that qualification pending and resume it after setup;
+do not remove the provider or make permanent product claims from the current
+unsigned build.
 
 On Windows the portable identity uses the current user's Windows Credential
 Manager. On Linux it uses the session's Secret Service. Neither provider is
@@ -276,8 +286,10 @@ environment variables.
   authorization, and the QEMU byte-range/LUKS path without weakening v1.
 - QEMU package versions, LUKS profile, QMP object setup, and byte-range/LUKS
   composition require targeted host evidence before release qualification.
-- The portable software provider can proceed without application distribution
-  certificates. Secure Enclave and TPM support remain provider-specific gates.
+- Development of the portable software provider can proceed while application
+  signing credentials are being arranged. The final signing/entitlement model
+  remains open; Secure Enclave and TPM support remain in scope and require
+  provider-specific qualification.
 
 ## Maintainer review checklist
 
@@ -289,8 +301,9 @@ implementation tasks are opened:
 3. Delegated Ed25519 authority and one separately signed mutable recipient
    envelope.
 4. age v1 / HPKE P-256 / RSA-OAEP-SHA256 wrapping-suite set.
-5. macOS file-based login Keychain for portable software identities, separate
-   from Secure Enclave and app distribution signing.
+5. Use the file-based login Keychain for current portable-provider development;
+   leave the final distribution-signing, entitlement, and Keychain backend
+   decisions open for signed-app qualification. Keep Secure Enclave in scope.
 6. STORED, no-data-descriptor ZIP rootfs and the archive-backed byte-range QEMU
    path, with current size limits retained until separately qualified.
 7. Ephemeral-only state and default-one/max-five instance policy.

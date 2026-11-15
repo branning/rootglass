@@ -506,7 +506,7 @@ Use the defaults below for remaining implementation unless an ADR changes them.
 | Platform support | Advertise only OS + CPU combinations verified by installer and guest tests | S11/S12 |
 | Data deletion | Uninstall policy distinguishes immutable packages from user state; destructive delete confirms | S05/S06 |
 | Release signing | Separate Rootglass app/installer signing and .glass publisher signing | S11 |
-| Encrypted bundles | Proposal only; schema-1 behavior remains authoritative until maintainer approval of [ADR-0003](adr/0003-encrypted-bundles-and-recipient-keys.md) | E00; encryption work is independent of deferred desktop distribution certificates |
+| Encrypted bundles | Proposal only; schema-1 behavior remains authoritative until maintainer approval of [ADR-0003](adr/0003-encrypted-bundles-and-recipient-keys.md). Current unsigned-provider development does not decide the release signing or entitlement architecture; Secure Enclave remains in scope. | E00; signing setup is a temporary delivery constraint, not a decision to ship unsigned |
 
 ## 14. Source of truth and issue map
 
