@@ -12,6 +12,10 @@ launch_log="$work_dir/xdg-open.log"
 app_pid=""
 xdg_pid=""
 
+log() {
+  printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"
+}
+
 cleanup() {
   if [[ -n "$app_pid" ]] && kill -0 "$app_pid" 2>/dev/null; then
     kill "$app_pid" 2>/dev/null || true
@@ -70,6 +74,7 @@ export ROOTGLASS_DESKTOP_SMOKE=1
 export ROOTGLASS_DESKTOP_SMOKE_EVENT_LOG="$event_log"
 
 mime_type="application/vnd.rootglass.glass"
+log "looking for installed .glass desktop handler"
 mapfile -t matching_desktop_files < <(find /usr/share/applications /usr/local/share/applications \
   -type f -name '*.desktop' -exec grep -Fl "$mime_type" {} + 2>/dev/null | sort)
 [[ "${#matching_desktop_files[@]}" -eq 1 ]] || {
@@ -91,6 +96,7 @@ xdg-mime default "$desktop_id" "$mime_type"
 printf 'Registered .glass handler: %s (%s)\n' "$desktop_id" "$desktop_file"
 
 cd "$work_dir"
+log "launching .glass through xdg-open"
 setsid xdg-open "$glass_file" >"$launch_log" 2>&1 &
 xdg_pid=$!
 
@@ -112,8 +118,10 @@ find_associated_app() {
 wait_for_marker() {
   local marker="$1"
   local timeout_seconds="${2:-60}"
+  log "waiting for $marker"
   for _ in $(seq 1 "$((timeout_seconds * 10))"); do
     if [[ -f "$event_log" ]] && grep -Fq "$marker" "$event_log"; then
+      log "observed $marker"
       return 0
     fi
     app_pid="$(find_associated_app || true)"
