@@ -179,6 +179,8 @@ public static class RootglassSmokeWindow {
     private static extern bool BringWindowToTop(IntPtr window);
     [DllImport("user32.dll")]
     private static extern IntPtr SetFocus(IntPtr window);
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool PostMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
     [DllImport("kernel32.dll")]
@@ -251,7 +253,10 @@ public static class RootglassSmokeWindow {
         if (window == IntPtr.Zero || !GetClientRect(window, out client)) {
             throw new InvalidOperationException("Could not read the Rootglass client area for the Import Glass fallback.");
         }
-        POINT point = new POINT(client.Right - 88, 82);
+        // The empty-library header sits in the upper-middle of the content pane.
+        // Scale its vertical position with the maximized client area instead of
+        // assuming the old toolbar layout at the top of the window.
+        POINT point = new POINT(client.Right - 65, client.Bottom * 355 / 1000);
         if (!ClientToScreen(window, ref point)) {
             throw new InvalidOperationException("Could not map the Import Glass button location to screen coordinates.");
         }
@@ -368,6 +373,18 @@ public static class RootglassSmokeWindow {
             return $false
         }
         Write-ProgressLine "Windows runner surfaced a Microsoft account prompt; dismissing without signing in"
+        $closePosted = [RootglassSmokeWindow]::PostMessage(
+            $WindowHandle,
+            [uint32]0x0010,
+            [IntPtr]::Zero,
+            [IntPtr]::Zero
+        )
+        Write-ProgressLine "posted WM_CLOSE to the foreground Microsoft account prompt: $closePosted"
+        Start-Sleep -Milliseconds 500
+        if ([RootglassSmokeWindow]::GetForegroundWindow() -ne $WindowHandle) {
+            Write-ProgressLine "dismissed the ambient Microsoft account prompt with WM_CLOSE"
+            return $true
+        }
         [System.Windows.Forms.SendKeys]::SendWait("{ESC}")
         Start-Sleep -Milliseconds 500
         if ([RootglassSmokeWindow]::GetForegroundWindow() -eq $WindowHandle) {
