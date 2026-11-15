@@ -819,10 +819,36 @@ public static class RootglassSmokeWindow {
     $env:ROOTGLASS_QEMU_PATH = $qemuExe
     $tuiOutput = Join-Path $EvidenceDirectory "tui"
     $python = (Get-Command python -ErrorAction Stop).Source
-    & $python -B $TuiSmokeScript $RootglassExe $glass[0].FullName $tuiOutput *> (Join-Path $EvidenceDirectory "tui-smoke-output.txt")
-    if ($LASTEXITCODE -ne 0) {
-        Get-Content -LiteralPath (Join-Path $EvidenceDirectory "tui-smoke-output.txt")
-        throw "Installed TUI smoke exited with $LASTEXITCODE"
+    $tuiOutputLog = Join-Path $EvidenceDirectory "tui-smoke-output.txt"
+    $tuiErrorLog = Join-Path $EvidenceDirectory "tui-smoke-error.txt"
+    $processMonitor = Join-Path $EvidenceDirectory "qemu-process-monitor.txt"
+    $pythonArguments = @("-B", $TuiSmokeScript, $RootglassExe, $glass[0].FullName, $tuiOutput)
+    $argumentLine = ($pythonArguments | ForEach-Object { '"{0}"' -f $_.Replace('"', '\"') }) -join " "
+    $repositoryRoot = Split-Path -Parent $PSScriptRoot
+    $tuiProcess = Start-Process -FilePath $python -ArgumentList $argumentLine `
+        -WorkingDirectory $repositoryRoot -PassThru -NoNewWindow `
+        -RedirectStandardOutput $tuiOutputLog -RedirectStandardError $tuiErrorLog
+    "timestamp pid cpu_seconds working_set_bytes thread_count tcp_listeners" |
+        Set-Content -LiteralPath $processMonitor -Encoding utf8
+    while (-not $tuiProcess.HasExited) {
+        foreach ($qemu in @(Get-RootglassQemuProcesses $qemuExe)) {
+            $process = Get-Process -Id $qemu.ProcessId -ErrorAction SilentlyContinue
+            $listeners = @(Get-NetTCPConnection -OwningProcess $qemu.ProcessId -State Listen -ErrorAction SilentlyContinue |
+                ForEach-Object { "$($_.LocalAddress):$($_.LocalPort)" })
+            $cpu = if ($process) { $process.CPU } else { "unknown" }
+            $workingSet = if ($process) { $process.WorkingSet64 } else { "unknown" }
+            $threads = if ($process) { $process.Threads.Count } else { "unknown" }
+            $listenerText = if ($listeners.Count -gt 0) { $listeners -join ";" } else { "none" }
+            "$(Get-Date -Format o) $($qemu.ProcessId) $cpu $workingSet $threads $listenerText" |
+                Add-Content -LiteralPath $processMonitor -Encoding utf8
+        }
+        Start-Sleep -Seconds 1
+        $tuiProcess.Refresh()
+    }
+    $tuiProcess.WaitForExit()
+    if ($tuiProcess.ExitCode -ne 0) {
+        Get-Content -LiteralPath $tuiOutputLog, $tuiErrorLog -ErrorAction SilentlyContinue
+        throw "Installed TUI smoke exited with $($tuiProcess.ExitCode)"
     }
     if (@(Get-RootglassQemuProcesses $qemuExe).Count -ne 0) {
         throw "A bundled QEMU process remained after the installed TUI exited."
