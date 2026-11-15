@@ -110,7 +110,7 @@ jobs:
           sudo apt-get install -y \
             dbus-x11 desktop-file-utils e2fsprogs imagemagick iproute2 \
             libxcb1 libxkbcommon0 libxkbcommon-x11-0 \
-            python3 python3-xlib x11-utils xauth xdg-desktop-portal \
+            mesa-utils python3 python3-xlib x11-utils xauth xdg-desktop-portal \
             xdg-desktop-portal-gtk xdg-utils xdotool xvfb
 
       - name: Verify artifact checksums and package metadata
@@ -335,7 +335,9 @@ jobs:
             done
             if [[ -n "\${DISPLAY:-}" ]]; then
               /usr/bin/xdpyinfo -display "\$DISPLAY" | sed -n '1,32p'
+              glxinfo -B
             fi
+            ldd "$rootglass_binary"
           } > "$EVIDENCE_DIR/desktop-launch-environment.txt" 2>&1
           exec "$rootglass_binary" "\$@"
           EOF
