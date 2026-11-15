@@ -465,3 +465,4 @@
 {"version":1,"task_id":"IEELHO","kind":"result","at":"2026-11-15T04:03:35.078600646Z","agent":"codex@specialized-images","text":"ARM64 smoke 43674044104 passed; maintainer approved release matrix support."}
 {"version":1,"task_id":"IEELHO","kind":"result","at":"2026-11-15T04:03:35.095885053Z","agent":"codex@specialized-images","text":"PR #138 merged as be84db4; QEMU 8.2.2 TCG used; KVM unavailable."}
 {"version":1,"task_id":"IEELHO","kind":"result","at":"2026-11-15T04:08:54.001373846Z","agent":"codex@specialized-images","text":"Release matrix and 18-asset assembly validation pass on branch."}
+{"version":1,"task_id":"IEELHO","kind":"done","at":"2026-11-15T04:12:56.780122811Z","agent":"codex@specialized-images","text":"Merged PR #139 at fabd0ed; standard CI 43675516042 passed.\n\nUbuntu x86_64 install 43671998003 and ARM64 install 43674044104 passed; support approved."}
