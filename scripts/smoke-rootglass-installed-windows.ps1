@@ -363,26 +363,26 @@ public static class RootglassSmokeWindow {
             throw "Windows first-run privacy page remained after three attempts: $($remainingPage.Summary)"
         }
     }
-    function Dismiss-AmbientMicrosoftAccountDialog([IntPtr]$WindowHandle) {
+    function Dismiss-AmbientWindowsShellPrompt([IntPtr]$WindowHandle) {
         if ($WindowHandle -eq [IntPtr]::Zero) { return $false }
         $description = [RootglassSmokeWindow]::DescribeWindow($WindowHandle)
-        if ($description -notmatch "title='Microsoft account' class='Windows.UI.Core.CoreWindow'") {
+        if ($description -notmatch "title='(?:Microsoft account|Search)' class='Windows.UI.Core.CoreWindow'") {
             return $false
         }
         if ([RootglassSmokeWindow]::GetForegroundWindow() -ne $WindowHandle) {
             return $false
         }
-        Write-ProgressLine "Windows runner surfaced a Microsoft account prompt; dismissing without signing in"
+        Write-ProgressLine "Windows runner surfaced an ambient account/search prompt; dismissing without credentials"
         $closePosted = [RootglassSmokeWindow]::PostMessage(
             $WindowHandle,
             [uint32]0x0010,
             [IntPtr]::Zero,
             [IntPtr]::Zero
         )
-        Write-ProgressLine "posted WM_CLOSE to the foreground Microsoft account prompt: $closePosted"
+        Write-ProgressLine "posted WM_CLOSE to the foreground Windows shell prompt: $closePosted"
         Start-Sleep -Milliseconds 500
         if ([RootglassSmokeWindow]::GetForegroundWindow() -ne $WindowHandle) {
-            Write-ProgressLine "dismissed the ambient Microsoft account prompt with WM_CLOSE"
+            Write-ProgressLine "dismissed the ambient Windows shell prompt with WM_CLOSE"
             return $true
         }
         [System.Windows.Forms.SendKeys]::SendWait("{ESC}")
@@ -392,9 +392,9 @@ public static class RootglassSmokeWindow {
             Start-Sleep -Milliseconds 500
         }
         if ([RootglassSmokeWindow]::GetForegroundWindow() -eq $WindowHandle) {
-            throw "Could not dismiss the ambient Microsoft account prompt without signing in: $description"
+            throw "Could not dismiss the ambient Windows shell prompt without credentials: $description"
         }
-        Write-ProgressLine "dismissed the ambient Microsoft account prompt without entering credentials"
+        Write-ProgressLine "dismissed the ambient Windows shell prompt without entering credentials"
         return $true
     }
     Write-ProgressLine "opening the example through the GPUI file picker"
@@ -409,14 +409,14 @@ public static class RootglassSmokeWindow {
     if ($RootglassProcess.MainWindowHandle -eq [IntPtr]::Zero) {
         throw "Installed Rootglass did not expose a foreground window for the picker smoke."
     }
-    $foregroundSet = [RootglassSmokeWindow]::ActivateWindow($RootglassProcess.MainWindowHandle)
-    Start-Sleep -Milliseconds 500
-    $foregroundWindow = [RootglassSmokeWindow]::GetForegroundWindow()
-    if ($foregroundWindow -ne $RootglassProcess.MainWindowHandle -and
-        (Dismiss-AmbientMicrosoftAccountDialog $foregroundWindow)) {
+    $foregroundWindow = [IntPtr]::Zero
+    $foregroundSet = $false
+    for ($focusAttempt = 0; $focusAttempt -lt 3; $focusAttempt++) {
         $foregroundSet = [RootglassSmokeWindow]::ActivateWindow($RootglassProcess.MainWindowHandle)
         Start-Sleep -Milliseconds 500
         $foregroundWindow = [RootglassSmokeWindow]::GetForegroundWindow()
+        if ($foregroundWindow -eq $RootglassProcess.MainWindowHandle) { break }
+        if (-not (Dismiss-AmbientWindowsShellPrompt $foregroundWindow)) { break }
     }
     Write-ProgressLine "foreground request=$foregroundSet target=$($RootglassProcess.MainWindowHandle) active=$foregroundWindow"
     try {

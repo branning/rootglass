@@ -471,3 +471,4 @@
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T04:27:34.079427349Z","agent":"codex@specialized-images","text":"Windows smoke now dismisses the runner account prompt; package and hosted rerun pending."}
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T05:03:14.391567841Z","agent":"codex@specialized-images","text":"Run 43678699964: package passed; both cells exposed stale picker coordinates or an undismissed account prompt."}
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T05:03:49.007518036Z","agent":"codex@specialized-images","text":"Run 43678699964: x64 screenshot exposed stale picker coordinates; ARM could not close its foreground account prompt."}
+{"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T05:14:53.596594204Z","agent":"codex@specialized-images","text":"Run 43679455040: Server 2025 passed; ARM exposed a foreground Search panel after closing the account prompt."}
