@@ -530,3 +530,4 @@
 {"type":"transaction","version":1,"events":[{"type":"state","ts":"2026-11-15T22:41:08.640154047Z","data":{"id":"5FFC3O","state":"done","ts":"2026-11-15T22:41:08.640154047Z"}}]}
 {"type":"transaction","version":1,"events":[{"type":"state","ts":"2026-11-15T22:41:08.661718532Z","data":{"id":"GBDJUA","state":"todo","ts":"2026-11-15T22:41:08.661718532Z"}}]}
 {"type":"transaction","version":1,"events":[{"type":"claim","ts":"2026-11-15T22:41:08.682425921Z","data":{"id":"GBDJUA","agent_id":"codex@worker-1","ts":"2026-11-15T22:41:08.682425921Z"}},{"type":"state","ts":"2026-11-15T22:41:08.682425921Z","data":{"id":"GBDJUA","state":"doing","ts":"2026-11-15T22:41:08.682425921Z"}}]}
+{"type":"transaction","version":1,"events":[{"type":"unclaim","ts":"2026-11-15T23:14:19.614189563Z","data":{"id":"GBDJUA","ts":"2026-11-15T23:14:19.614189563Z"}},{"type":"state","ts":"2026-11-15T23:14:19.614189563Z","data":{"id":"GBDJUA","state":"done","ts":"2026-11-15T23:14:19.614189563Z"}}]}
