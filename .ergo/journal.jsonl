@@ -473,3 +473,4 @@
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T05:03:49.007518036Z","agent":"codex@specialized-images","text":"Run 43678699964: x64 screenshot exposed stale picker coordinates; ARM could not close its foreground account prompt."}
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T05:14:53.596594204Z","agent":"codex@specialized-images","text":"Run 43679455040: Server 2025 passed; ARM exposed a foreground Search panel after closing the account prompt."}
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T05:25:09.283432872Z","agent":"codex@specialized-images","text":"Run 43680265191: account/search prompts dismissed; screenshot showed ARM smoke targeted the console window."}
+{"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T05:55:00.562974248Z","agent":"codex@specialized-images","text":"Added native Windows ARM64 package/runtime and smoke matrix; hosted build and guest boot evidence pending."}

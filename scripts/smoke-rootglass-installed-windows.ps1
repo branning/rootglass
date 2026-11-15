@@ -2,6 +2,8 @@ param(
     [Parameter(Mandatory = $true)][string]$PackageDirectory,
     [Parameter(Mandatory = $true)][string]$ExampleDirectory,
     [Parameter(Mandatory = $true)][string]$EvidenceDirectory,
+    [Parameter(Mandatory = $true)][string]$ChecksumName,
+    [Parameter(Mandatory = $true)][ValidateSet("windows-x86_64", "windows-aarch64")][string]$ExpectedRuntimePlatform,
     [Parameter(Mandatory = $true)][string]$TuiSmokeScript
 )
 
@@ -41,6 +43,24 @@ function Verify-Checksums([string]$Root, [string]$ChecksumName) {
     }
 }
 
+function Get-PeMachine([string]$Path) {
+    $stream = [IO.File]::OpenRead($Path)
+    $reader = $null
+    try {
+        $reader = [IO.BinaryReader]::new($stream)
+        if ($reader.ReadUInt16() -ne 0x5A4D) { throw "Not a Windows PE executable: $Path" }
+        $stream.Position = 0x3C
+        $peOffset = $reader.ReadInt32()
+        if ($peOffset -lt 0 -or $peOffset + 6 -gt $stream.Length) { throw "Invalid PE header: $Path" }
+        $stream.Position = $peOffset
+        if ($reader.ReadUInt32() -ne 0x00004550) { throw "Invalid PE signature: $Path" }
+        return $reader.ReadUInt16()
+    }
+    finally {
+        if ($reader) { $reader.Dispose() } else { $stream.Dispose() }
+    }
+}
+
 function Get-RootglassQemuProcesses([string]$QemuPath) {
     $env:ROOTGLASS_QEMU_PATH = $QemuPath
     $processes = @(Get-CimInstance Win32_Process -Filter "Name='qemu-system-aarch64.exe'" |
@@ -53,7 +73,7 @@ try {
     $progress = Join-Path $EvidenceDirectory "progress.txt"
     "Windows installed package smoke" | Set-Content -LiteralPath $progress -Encoding utf8
     Write-ProgressLine "verifying package and signed example checksums"
-    Verify-Checksums $PackageDirectory "SHA256SUMS-windows.txt"
+    Verify-Checksums $PackageDirectory $ChecksumName
     Verify-Checksums $ExampleDirectory "SHA256SUMS-example.txt"
 
     $installer = @(Get-ChildItem -LiteralPath $PackageDirectory -Filter "*-setup.exe" -File -Recurse)
@@ -99,12 +119,23 @@ try {
     $versionRoot = $runtimeManifests[0].DirectoryName
     $manifest = Get-Content -LiteralPath $runtimeManifests[0].FullName -Raw | ConvertFrom-Json
     $runtimeInfo = Get-Content -LiteralPath (Join-Path $versionRoot "runtime-info.json") -Raw | ConvertFrom-Json
-    if ($runtimeInfo.target_platform -ne "windows-x86_64") {
-        throw "Expected windows-x86_64 runtime, found $($runtimeInfo.target_platform)"
+    if ($runtimeInfo.target_platform -ne $ExpectedRuntimePlatform) {
+        throw "Expected $ExpectedRuntimePlatform runtime, found $($runtimeInfo.target_platform)"
+    }
+    $expectedMachine = if ($ExpectedRuntimePlatform -eq "windows-aarch64") { 0xAA64 } else { 0x8664 }
+    $rootglassMachine = Get-PeMachine $RootglassExe
+    $qemuExe = Join-Path $versionRoot "bin\qemu-system-aarch64.exe"
+    $qemuMachine = Get-PeMachine $qemuExe
+    if ($rootglassMachine -ne $expectedMachine) {
+        throw ("Expected Rootglass PE machine 0x{0:X4}, found 0x{1:X4}" -f $expectedMachine, $rootglassMachine)
+    }
+    if ($qemuMachine -ne $expectedMachine) {
+        throw ("Expected QEMU PE machine 0x{0:X4}, found 0x{1:X4}" -f $expectedMachine, $qemuMachine)
     }
     $inventory = @(
         "runtime version: $($manifest.runtime_version)",
         "target platform: $($runtimeInfo.target_platform)",
+        ("PE machine: 0x{0:X4}" -f $qemuMachine),
         "QEMU: $($runtimeInfo.qemu_version)"
     )
     foreach ($asset in $manifest.assets) {
@@ -119,7 +150,6 @@ try {
         $inventory += "$($asset.kind) $($asset.path) $actual"
     }
     $inventory | Set-Content -LiteralPath (Join-Path $EvidenceDirectory "runtime-inventory.txt") -Encoding utf8
-    $qemuExe = Join-Path $versionRoot "bin\qemu-system-aarch64.exe"
     $qemuVersion = (& $qemuExe --version | Select-Object -First 1)
     if ($LASTEXITCODE -ne 0) { throw "Bundled QEMU could not report its version" }
     Write-ProgressLine "bundled runtime inventory and QEMU executable verified"
@@ -755,6 +785,8 @@ public static class RootglassSmokeWindow {
         "Association command: $openCommand",
         "Installer: $($installer[0].Name)",
         "Installer SHA-256: $installerHash",
+        ("Rootglass PE machine: 0x{0:X4}" -f $rootglassMachine),
+        ("QEMU PE machine: 0x{0:X4}" -f $qemuMachine),
         "Example: $($glass[0].Name)",
         "Example SHA-256: $glassHash",
         "QEMU: $qemuVersion"
