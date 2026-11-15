@@ -89,16 +89,19 @@ def main() -> int:
         "qemu_version": qemu_version,
         "qemu_source": {
             "linux-x86_64": "Ubuntu 24.04 qemu-system-arm package",
+            "linux-aarch64": "Ubuntu 24.04 qemu-system-arm package",
             "macos-arm64": "Homebrew qemu formula",
             "windows-x86_64": "Chocolatey QEMU package",
         }[target_platform],
         "qemu_source_url": {
             "linux-x86_64": "https://packages.ubuntu.com/noble/qemu-system-arm",
+            "linux-aarch64": "https://packages.ubuntu.com/noble/qemu-system-arm",
             "macos-arm64": "https://formulae.brew.sh/formula/qemu",
             "windows-x86_64": "https://community.chocolatey.org/packages/qemu",
         }[target_platform],
         "qemu_source_code_url": {
             "linux-x86_64": "https://launchpad.net/ubuntu/+source/qemu",
+            "linux-aarch64": "https://launchpad.net/ubuntu/+source/qemu",
             "macos-arm64": "https://github.com/Homebrew/homebrew-core/blob/HEAD/Formula/q/qemu.rb",
             "windows-x86_64": "https://download.qemu.org/",
         }[target_platform],

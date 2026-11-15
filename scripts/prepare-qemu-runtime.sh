@@ -11,7 +11,7 @@ lib_dir="${runtime_root}/lib"
 share_dir="${runtime_root}/share/qemu"
 
 case "${platform}" in
-  linux-x86_64|macos-arm64) ;;
+  linux-x86_64|linux-aarch64|macos-arm64) ;;
   *) echo "unsupported host platform: ${platform}" >&2; exit 2 ;;
 esac
 
@@ -39,7 +39,7 @@ distributed under their respective upstream licenses. Source and release files:
 https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/aarch64/netboot-3.23.8/
 NOTICE
 
-if [[ "${platform}" == linux-x86_64 ]]; then
+if [[ "${platform}" == linux-* ]]; then
   if [[ ! -d /usr/share/qemu ]]; then
     echo "the QEMU share directory is missing at /usr/share/qemu" >&2
     exit 1
