@@ -93,6 +93,12 @@ if ($TargetPlatform -eq "windows-aarch64") {
     $env:PATH = "$($qemuRoot)\bin;$Msys2Root\usr\bin;$env:PATH"
     $pendingRuntimeBinaries = [System.Collections.Generic.Queue[string]]::new()
     $pendingRuntimeBinaries.Enqueue($qemuExe.FullName)
+    if ($sourceModules -and (Test-Path -LiteralPath $sourceModules -PathType Container)) {
+        # QEMU loads these DLLs at runtime, so their imports are not reachable
+        # from the main executable's PE import table alone.
+        Get-ChildItem -LiteralPath $sourceModules -Filter "*.dll" -File -Recurse |
+            ForEach-Object { $pendingRuntimeBinaries.Enqueue($_.FullName) }
+    }
     $visitedRuntimeBinaries = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     $copiedDlls = @{}
     while ($pendingRuntimeBinaries.Count -gt 0) {
@@ -127,9 +133,15 @@ if ($TargetPlatform -eq "windows-aarch64") {
                 $dependency = Get-Item -LiteralPath $resolvedPath
             }
             else {
-                $candidate = Join-Path $qemuExe.Directory.FullName $moduleName
-                if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-                    $dependency = Get-Item -LiteralPath $candidate
+                $candidatePaths = @(
+                    (Join-Path (Split-Path -Parent $currentBinaryPath) $moduleName),
+                    (Join-Path $qemuExe.Directory.FullName $moduleName)
+                )
+                foreach ($candidate in $candidatePaths) {
+                    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                        $dependency = Get-Item -LiteralPath $candidate
+                        break
+                    }
                 }
             }
             if (-not $dependency) {

@@ -493,3 +493,4 @@
 {"version":1,"task_id":"YFYS3W","kind":"open","at":"2026-11-15T11:46:47.938953164Z","text":"User directed continued Windows ARM64 support; investigate a self-contained QEMU launch path"}
 {"version":1,"task_id":"YFYS3W","kind":"claim","at":"2026-11-15T11:46:47.954278617Z","agent":"codex@worker-1"}
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T11:54:20.368003998Z","agent":"codex@worker-1","text":"Added isolated Windows system-PATH QEMU probes; one ARM64 smoke dispatch pending"}
+{"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T12:11:40.216427397Z","agent":"codex@worker-1","text":"Run #43711198056: clean PATH still hangs; ARM64 runtime scan now includes QEMU plugin DLL imports"}
