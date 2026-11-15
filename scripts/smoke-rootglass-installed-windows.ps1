@@ -270,7 +270,7 @@ exit $LASTEXITCODE
                 $stdoutReader = $process.StandardOutput.ReadToEndAsync()
                 $stderrReader = $process.StandardError.ReadToEndAsync()
             }
-            if ($probeName -eq "machine-none") {
+            if ($probeName -eq "machine-none" -or $probeName -like "machine-virt-*") {
                 Start-Sleep -Milliseconds 1000
                 $moduleSnapshot = Join-Path $probeRoot "machine-none.modules.txt"
                 try {
