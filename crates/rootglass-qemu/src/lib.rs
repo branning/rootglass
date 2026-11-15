@@ -11,6 +11,13 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 
 pub const DEFAULT_QEMU_SYSTEM_AARCH64: &str = "qemu-system-aarch64";
+const QMP_STARTUP_TIMEOUT: Duration = if cfg!(all(target_os = "windows", target_arch = "aarch64")) {
+    // The native Windows ARM64 QEMU bundle loads many MSYS2 DLLs before it
+    // opens QMP; allow that cold startup to finish before reporting failure.
+    Duration::from_secs(60)
+} else {
+    Duration::from_secs(5)
+};
 
 #[derive(Debug, Error)]
 pub enum QemuError {
@@ -665,7 +672,7 @@ impl QemuProcess {
             return Err(error);
         }
 
-        let qmp = match QmpClient::connect(port, Duration::from_secs(5)) {
+        let qmp = match QmpClient::connect(port, QMP_STARTUP_TIMEOUT) {
             Ok(qmp) => qmp,
             Err(error) => {
                 let process_state = match child.try_wait() {
