@@ -325,9 +325,9 @@ jobs:
           progress "running .glass association check in an isolated network namespace"
           if timeout --verbose --signal=TERM --kill-after=15s 300s \
             scripts/run-offline-network-namespace.sh \
-              dbus-run-session -- xvfb-run --auto-servernum \
+              xvfb-run --auto-servernum \
               --server-args='-screen 0 1920x1200x24' \
-              env PATH="$shim_path" HOME="$TEST_HOME" \
+              dbus-run-session -- env PATH="$shim_path" HOME="$TEST_HOME" \
               bash scripts/smoke-rootglass-installed-linux-association.sh \
                 "$rootglass_binary" "$glass" "$EVIDENCE_DIR/association" \
             2>&1 | tee "$association_log"; then
@@ -354,9 +354,9 @@ jobs:
           progress "running installed GPUI workflow in an isolated network namespace"
           if timeout --signal=TERM --kill-after=15s 600s \
             scripts/run-offline-network-namespace.sh \
-              dbus-run-session -- xvfb-run --auto-servernum \
+              xvfb-run --auto-servernum \
               --server-args='-screen 0 1920x1200x24' \
-              env PATH="$shim_path" \
+              dbus-run-session -- env PATH="$shim_path" \
               bash scripts/smoke-rootglass-desktop-xvfb.sh \
                 "$rootglass_binary" "$EVIDENCE_DIR/gui-workflow" \
             2>&1 | tee "$gui_log"; then
