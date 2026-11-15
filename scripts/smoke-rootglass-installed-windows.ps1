@@ -103,6 +103,8 @@ exit $LASTEXITCODE
             "machine-none-msys2-env",
             "machine-virt-bundle-path-msys2-env",
             "serial-stdio-bundle-path-msys2-env",
+            "machine-virt-mingw-path-msys2-env",
+            "machine-virt-usr-path-msys2-env",
             "machine-virt-msys2-env",
             "serial-stdio-msys2-env"
         )
@@ -167,6 +169,10 @@ exit $LASTEXITCODE
                 $startInfo.Environment["HOME"] = $msysHome
                 if ($probeName -like "*-bundle-path-msys2-env") {
                     $startInfo.Environment["PATH"] = "$(Split-Path -Parent $QemuPath);$env:PATH"
+                } elseif ($probeName -like "*-mingw-path-msys2-env") {
+                    $startInfo.Environment["PATH"] = "$(Split-Path -Parent $QemuPath);$(Join-Path $Msys2Root 'clangarm64\bin');$env:PATH"
+                } elseif ($probeName -like "*-usr-path-msys2-env") {
+                    $startInfo.Environment["PATH"] = "$(Split-Path -Parent $QemuPath);$(Join-Path $Msys2Root 'usr\bin');$env:PATH"
                 } else {
                     $startInfo.Environment["PATH"] = "$(Split-Path -Parent $QemuPath);$(Join-Path $Msys2Root 'clangarm64\bin');$(Join-Path $Msys2Root 'usr\bin');$env:PATH"
                 }

@@ -498,3 +498,4 @@
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T13:05:59.065284577Z","agent":"codex@worker-1","text":"Run #43716091206: plugin DLL bundle still lacks QMP; QEMU stays idle with an empty log."}
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T13:18:24.580345218Z","agent":"codex@worker-1","text":"Run #43717247487: Windows ARM64 QEMU version and machine-none QMP probes pass with MSYS2 login environment"}
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T13:46:13.226933322Z","agent":"codex@worker-1","text":"Run #43719436026: ARM64 install, association, and import passed; TUI guest launch still timed out before QMP"}
+{"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T13:55:40.761150336Z","agent":"codex@worker-1","text":"Run #43720734728: ARM64 virt+serial QMP passes with MSYS2 PATH but hangs with bundled-only PATH"}
