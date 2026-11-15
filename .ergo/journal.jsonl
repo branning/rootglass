@@ -557,3 +557,5 @@
 {"version":1,"task_id":"4YZPJ6","kind":"claim","at":"2026-11-15T23:15:51.076313345Z","agent":"codex@worker-1"}
 {"version":1,"task_id":"4YZPJ6","kind":"result","at":"2026-11-15T23:31:05.168084478Z","agent":"codex@worker-1","text":"Checks: manifest 15 tests, signature 21 tests, schema-1 CLI plan smoke passed."}
 {"version":1,"task_id":"4YZPJ6","kind":"result","at":"2026-11-15T23:31:05.34708803Z","agent":"codex@worker-1","text":"Checks: manifest clippy, fmt --check, and git diff --check passed."}
+{"version":1,"task_id":"4YZPJ6","kind":"result","at":"2026-11-15T23:34:01.617955583Z","agent":"codex@worker-1","text":"CI: PR #148 exposed stale desktop Cargo.lock in locked headless and plan commands; refreshed dependency edges."}
+{"version":1,"task_id":"4YZPJ6","kind":"result","at":"2026-11-15T23:34:01.779020359Z","agent":"codex@worker-1","text":"Fix: the desktop --locked headless dependency check passes; CI reruns after the lockfile update."}
