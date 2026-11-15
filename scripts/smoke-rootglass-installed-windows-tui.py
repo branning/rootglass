@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise an installed Windows x64 package through its Ratatui TUI."""
+"""Exercise an installed Windows package through its Ratatui TUI."""
 
 from __future__ import annotations
 

@@ -11,6 +11,13 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 
 pub const DEFAULT_QEMU_SYSTEM_AARCH64: &str = "qemu-system-aarch64";
+const QMP_STARTUP_TIMEOUT: Duration = if cfg!(all(target_os = "windows", target_arch = "aarch64")) {
+    // The native Windows ARM64 QEMU bundle loads many MSYS2 DLLs before it
+    // opens QMP; allow that cold startup to finish before reporting failure.
+    Duration::from_secs(60)
+} else {
+    Duration::from_secs(5)
+};
 
 #[derive(Debug, Error)]
 pub enum QemuError {
@@ -262,15 +269,17 @@ impl QemuLaunchPlan {
     }
 
     pub fn command_line(&self) -> String {
-        let mut parts = vec![shell_quote(&self.binary.path.display().to_string())];
+        let executable = qemu_executable_path(&self.binary.path);
+        let mut parts = vec![shell_quote(&executable.display().to_string())];
         parts.extend(self.args.iter().map(|arg| shell_quote(arg)));
         parts.join(" ")
     }
 
     pub fn command(&self) -> Command {
-        let mut command = Command::new(&self.binary.path);
+        let binary = qemu_executable_path(&self.binary.path);
+        let mut command = Command::new(&binary);
         command.args(&self.args);
-        configure_bundled_runtime(&mut command, &self.binary.path);
+        configure_bundled_runtime(&mut command, &binary);
         command.stdin(Stdio::null());
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());
@@ -278,9 +287,10 @@ impl QemuLaunchPlan {
     }
 
     pub fn interactive_command(&self) -> Command {
-        let mut command = Command::new(&self.binary.path);
+        let binary = qemu_executable_path(&self.binary.path);
+        let mut command = Command::new(&binary);
         command.args(&self.args);
-        configure_bundled_runtime(&mut command, &self.binary.path);
+        configure_bundled_runtime(&mut command, &binary);
         command.stdin(Stdio::inherit());
         command.stdout(Stdio::inherit());
         command.stderr(Stdio::inherit());
@@ -326,6 +336,13 @@ fn qemu_path_argument(path: &Path) -> String {
     } else {
         path.into_owned()
     }
+}
+
+fn qemu_executable_path(path: &Path) -> PathBuf {
+    // QEMU's Windows runtime does not consistently handle the extended-length
+    // `\\?\` prefix in its own executable path. Use the same ordinary path
+    // form for process creation that we already use for QEMU arguments.
+    PathBuf::from(qemu_path_argument(path))
 }
 
 /// Maximum in-memory serial scrollback retained by a supervised run.
@@ -596,9 +613,10 @@ impl QemuProcess {
         drop(listener);
 
         let command_line = plan.command_line();
-        let mut command = Command::new(&plan.binary.path);
+        let binary = qemu_executable_path(&plan.binary.path);
+        let mut command = Command::new(&binary);
         command.args(supervised_args(&plan.args, port));
-        configure_bundled_runtime(&mut command, &plan.binary.path);
+        configure_bundled_runtime(&mut command, &binary);
         command.stdin(Stdio::piped());
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());
@@ -665,7 +683,7 @@ impl QemuProcess {
             return Err(error);
         }
 
-        let qmp = match QmpClient::connect(port, Duration::from_secs(5)) {
+        let qmp = match QmpClient::connect(port, QMP_STARTUP_TIMEOUT) {
             Ok(qmp) => qmp,
             Err(error) => {
                 let process_state = match child.try_wait() {
@@ -926,6 +944,38 @@ fn configure_bundled_runtime(command: &mut Command, binary: &Path) {
     #[cfg(target_os = "windows")]
     if let Some(binary_dir) = binary.parent() {
         prepend_command_path(command, "PATH", binary_dir);
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+    configure_windows_arm64_msys2_environment(command);
+}
+
+#[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+fn configure_windows_arm64_msys2_environment(command: &mut Command) {
+    // QEMU from the MSYS2 CLANGARM64 runtime hangs before QMP startup unless
+    // its child environment matches the one established by the MSYS2 login shell.
+    command
+        .env("MSYSTEM", "CLANGARM64")
+        .env("MINGW_PREFIX", "/clangarm64")
+        .env("MSYSTEM_PREFIX", "/clangarm64")
+        .env("MINGW_CHOST", "aarch64-w64-mingw32")
+        .env("MSYSTEM_CARCH", "aarch64")
+        .env("MSYSTEM_CHOST", "aarch64-w64-mingw32")
+        .env("MSYS2_PATH_TYPE", "inherit")
+        .env_remove("CHERE_INVOKING");
+
+    let username = std::env::var("USERNAME")
+        .ok()
+        .filter(|username| !username.is_empty())
+        .or_else(|| {
+            std::env::var_os("USERPROFILE").and_then(|profile| {
+                Path::new(&profile)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+        });
+    if let Some(username) = username {
+        command.env("HOME", format!("/home/{username}"));
     }
 }
 

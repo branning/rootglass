@@ -33,6 +33,7 @@ expected_dirs=(
   rootglass-deb-Linux-ARM64
   rootglass-dmg-macOS-ARM64
   rootglass-nsis-Windows-X64
+  rootglass-nsis-Windows-ARM64
   rootglass-example-glass
 )
 mapfile -t found_dirs < <(find "$artifact_root" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
@@ -44,12 +45,13 @@ fi
 
 mkdir -p "$ready_root"
 declare -a assets=()
-for platform in linux linux-arm64 macos windows; do
+for platform in linux linux-arm64 macos windows windows-arm64; do
   case "$platform" in
     linux) artifact_dir="$artifact_root/rootglass-deb-Linux-X64"; package_glob='*.deb'; runtime_glob='*.tar.gz' ;;
     linux-arm64) artifact_dir="$artifact_root/rootglass-deb-Linux-ARM64"; package_glob='*.deb'; runtime_glob='*.tar.gz' ;;
     macos) artifact_dir="$artifact_root/rootglass-dmg-macOS-ARM64"; package_glob='*.dmg'; runtime_glob='*.tar.gz' ;;
     windows) artifact_dir="$artifact_root/rootglass-nsis-Windows-X64"; package_glob='*-setup.exe'; runtime_glob='*.zip' ;;
+    windows-arm64) artifact_dir="$artifact_root/rootglass-nsis-Windows-ARM64"; package_glob='*-setup.exe'; runtime_glob='*.zip' ;;
   esac
   mapfile -t packages < <(find "$artifact_dir" -type f -name "$package_glob" -print)
   mapfile -t runtimes < <(find "$artifact_dir" -type f -name "$runtime_glob" -print)
@@ -90,8 +92,8 @@ cp "${example_glass[0]}" "${example_checksums[0]}" "$ready_root/example/"
 )
 assets+=("$ready_root/example/$(basename "${example_glass[0]}")" "$ready_root/example/SHA256SUMS-example.txt")
 
-if [[ "${#assets[@]}" -ne 18 ]]; then
-  printf 'Expected 18 release assets, found %s\n' "${#assets[@]}" >&2
+if [[ "${#assets[@]}" -ne 22 ]]; then
+  printf 'Expected 22 release assets, found %s\n' "${#assets[@]}" >&2
   printf '%s\n' "${assets[@]}" >&2
   exit 1
 fi

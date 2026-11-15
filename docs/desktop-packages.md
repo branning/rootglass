@@ -1,13 +1,16 @@
 # Desktop package builds
 
-The package workflow builds Linux x86_64, Linux aarch64, macOS arm64, and
-Windows x64 on hosted runners. Linux ARM64 passed the Ubuntu 24.04.5 installed
-smoke. It is included in `platform=all` and will be attached to new releases
-built after this change; existing published releases remain unchanged. Manual
-builds upload review artifacts to Actions for 14 days. To create a release,
+The package workflow builds Linux x86_64, Linux aarch64, macOS arm64, Windows
+x64, and Windows ARM64 on hosted runners. Linux ARM64 passed the Ubuntu 24.04.5
+installed smoke. The Windows ARM64 package now has a native ARM64 build/runtime
+cell. Its Windows 11 ARM64 clean-install smoke passed; the recorded result is
+below. Both ARM64 packages are included in `platform=all` and will be attached to
+new releases built after this change; existing published releases remain
+unchanged. Manual builds upload review artifacts to Actions for 14 days. To
+create a release,
 build from a new draft prerelease's tag with `platform=all` and `release_tag`
 set to that same tag; the workflow materializes and verifies the example
-`.glass`, builds all four installers and matching QEMU runtimes, then attaches
+`.glass`, builds all five installers and matching QEMU runtimes, then attaches
 the full asset set while the release is still mutable. Publish the draft only
 after the attachment job succeeds. Pull requests and pushes do not run package
 builds.
@@ -22,7 +25,13 @@ qualification remains incomplete.
 
 Each installer declares the `.glass` association and includes the repository license, notices, and a versioned offline runtime. Runtime manifests contain SHA-256 hashes for the QEMU executable, its bundled shared libraries and data files, and the Alpine kernel and initramfs. The app verifies those files before launching a guest and resolves them independently of the current working directory. Standalone runtime archives are also attached so reviewers can inspect the exact per-platform inventory.
 
-The Linux runtime uses Ubuntu 24.04's `qemu-system-arm` package, macOS uses the Homebrew `qemu` formula, and Windows uses the Chocolatey QEMU package. The exact QEMU version, distribution source, and executable hash are recorded in each platform's `runtime-info.json`. Alpine Linux 3.23.8 aarch64 netboot assets are shared across targets. Runtime copyright files, QEMU's GPL-2.0 license text, and the Alpine source notice ship in the runtime bundle.
+The Linux runtime uses Ubuntu 24.04's `qemu-system-arm` package, macOS uses
+the Homebrew `qemu` formula, Windows x64 uses the Chocolatey QEMU package, and
+Windows ARM64 uses native QEMU from MSYS2's CLANGARM64 repository. The exact
+QEMU version, distribution source, and executable hash are recorded in each
+platform's `runtime-info.json`. Alpine Linux 3.23.8 aarch64 netboot assets are
+shared across targets. Runtime copyright files, QEMU's GPL-2.0 license text,
+and the Alpine source notice ship in the runtime bundle.
 
 The [ADR-0002 runtime decision](adr/0002-versioned-desktop-qemu-runtime.md)
 records the exact QEMU executable versions and hashes, shared Alpine asset
@@ -43,9 +52,10 @@ available on every host.
 ## Manual package builds
 
 In Actions, select **Desktop packages → Run workflow**, choose a branch or tag,
-and select `all` (the default), `linux` (x64), `linux-arm64`, `macos`, or
-`windows`. `all` builds every release target; a single-platform selection
-starts only that platform's package job and cannot attach a release.
+and select `all` (the default), `linux` (x64), `linux-arm64`, `macos`,
+`windows` (x64), or `windows-arm64`. `all` builds every release target; a
+single-platform selection starts only that platform's package job and cannot
+attach a release.
 
 For example, build only the Windows app from `main` with GitHub CLI:
 
@@ -65,15 +75,15 @@ gh workflow run desktop-packages.yml --repo branning/rootglass --ref "$release_t
 ```
 
 The job checks that the target is still a mutable prerelease draft, verifies
-the runtime and example checksums, and attaches 18 assets: an installer,
-manifest, QEMU runtime archive, and runtime checksum for each of four targets,
+the runtime and example checksums, and attaches 22 assets: an installer,
+manifest, QEMU runtime archive, and runtime checksum for each of five targets,
 plus `rootglass-hello-world-0.1.0.glass` and `SHA256SUMS-example.txt`. On
 Windows it selects the NSIS `*-setup.exe` installer and omits the unpackaged
 desktop executable. Publish the release after the job completes.
 
 To reuse a completed all-platform run from the same tag, set both
 `artifact_run_id` and `release_tag`. The workflow checks that the run's source
-commit matches the release tag and that all four source jobs succeeded before
+commit matches the release tag and that all five package jobs succeeded before
 attaching the assets.
 
 The materialized example is signed with the public development fixture key and
@@ -269,44 +279,73 @@ native interaction on a user's desktop.
 ## Manual installed Windows package smoke
 
 The **Installed Windows clean-install smoke** workflow is manual because it
-installs the unsigned Windows x64 review package and boots a guest. First run
-**Desktop packages** with `platform=windows` on the product commit, then dispatch
-the install smoke on that commit with the successful package run ID. The
-`host=all` default uses the Windows Server 2025 x64 runner and the Windows 11
-ARM64 runner; either cell can be selected separately to reduce runner minutes.
+installs an unsigned Windows review package and boots a guest. Build the x64
+package with `platform=windows` and the ARM64 package with `platform=windows-arm64`.
+To run both host cells, build with `platform=all`, then dispatch the install
+smoke with that package run ID. Either host can be selected separately to
+reduce runner minutes; pair `platform=windows` with `host=windows-x64`, or
+`platform=windows-arm64` with `host=windows-arm64`.
 
-Both cells install the Windows x64 NSIS package, verify its checksum and
-runtime inventory, check the `.glass` file association, import the signed
-example, and run the installed Ratatui workflow through a Windows pseudoterminal
-with outbound Internet traffic blocked for Rootglass and QEMU. The guest boots,
-accepts serial login, runs `uname -a`, restarts, runs `id`, and stops. The
-workflow verifies that QEMU exits, uninstalls the app, and confirms trust
-configuration, imported library data, and guest state remain. A TUI screenshot,
-serial logs, runtime inventory, association events, and uninstall record are
-retained for 14 days. The Windows Server 2025 x64 result is recorded in [run
+The Windows Server 2025 x64 cell installs the x64 NSIS package. The Windows 11
+ARM64 cell installs the native ARM64 package and uses native ARM64 QEMU from
+MSYS2. Both verify the package checksum and runtime inventory, check that the
+application and QEMU PE headers match the selected architecture, check the `.glass`
+file association, import the signed example, and run the installed Ratatui
+workflow through a Windows pseudoterminal with outbound Internet traffic
+blocked for Rootglass and QEMU. The guest boots, accepts serial login, runs
+`uname -a`, restarts, runs `id`, and stops. The workflow verifies that QEMU
+exits, uninstalls the app, and confirms trust configuration, imported library
+data, and guest state remain. A TUI screenshot, serial logs, runtime inventory,
+association events, and uninstall record are retained for 14 days. The Windows
+Server 2025 x64 result is recorded in [run
 43203983228](https://github.com/branning/rootglass/actions/runs/43203983228).
+
+### Recorded Windows 11 ARM64 installed result
+
+The native ARM64 package and offline installed smoke passed on 2026-11-15.
+Package build [run 43723384799](https://github.com/branning/rootglass/actions/runs/43723384799)
+produced the installer and runtime used by installed smoke
+[run 43724549765](https://github.com/branning/rootglass/actions/runs/43724549765).
+The clean hosted image was Microsoft Windows 11 Enterprise 10.0.26200, build
+26200, on the `windows-11-vs2026-arm64` image (`20261112.217.1`), with an ARM64
+runner. The installed Rootglass app and QEMU PE headers were both `0xAA64`; the
+runtime was version 0.0.6 with QEMU 11.1.3. The launch plan truthfully selected
+TCG software emulation.
+
+The installer SHA-256 is
+`770e8cb93c4542c4c4f765d43ffbb6352cf0832fe7a8f934b8e669a8f688d175`; the
+runtime archive SHA-256 is
+`8499d3d222a6354b0b656516736c0a652034124c54d7f7315a60550e9d3c88e8`; and the
+signed `rootglass-hello-world-0.1.0.glass` SHA-256 is
+`c9b90909242eb198a2d729b5c70a9f5f347c51c1b85c634cb8fc7c1c180bd339`.
+The smoke verified runtime asset hashes and the `.glass` signature, imported
+the example through both the GPUI picker and Windows file association, then
+blocked Internet egress for Rootglass and QEMU. The TUI booted the Alpine
+aarch64 guest, accepted serial login and `uname -a`, restarted and accepted
+`id`, stopped without an orphan QEMU process, and uninstalled while preserving
+trust, imported package, registry, and guest state. The run artifact retains
+the TUI screenshot, runtime inventory, serial logs, process monitoring, and
+uninstall evidence for 14 days.
 
 The installed smoke uses short guest commands; it does not qualify arbitrary
 long pasted console lines.
 
-The hosted x64 cell is Windows Server 2025, not Windows 11. The ARM64 cell is
-Windows 11 ARM64 running the x64 app and QEMU under Windows emulation; it does
-not qualify a native ARM64 package. Windows 11 x64 clean-install evidence still
-requires a configured Windows 11 x64 runner or a clean maintainer host. Do not
-claim full Windows support from these hosted cells alone; the platform decision
-remains subject to maintainer approval.
+The hosted x64 cell is Windows Server 2025, not Windows 11. The ARM64 cell
+qualifies the native ARM64 package on Windows 11 ARM64. Windows 11 x64
+clean-install evidence still requires a configured Windows 11 x64 runner or a
+clean maintainer host. Do not claim complete Windows qualification from these
+hosted cells alone; the support decision remains subject to maintainer approval.
 
-The current bundled Chocolatey QEMU package does not provide the `whpx`
-accelerator. Rootglass therefore selects TCG on Windows and discloses software
-emulation in the launch plan. Do not enable WHPX selection until the packaged
-QEMU runtime is verified to support it. A guest that requires WHPX fails
-preflight before QEMU starts.
+Rootglass currently selects TCG on Windows and discloses software emulation in
+the launch plan. Do not enable WHPX selection until each packaged QEMU runtime
+is verified to support it. A guest that requires WHPX fails preflight before
+QEMU starts.
 
 ## Remaining release limits
 
 - App and installer signing, macOS notarization, and release provenance are not configured. No signing credentials are stored in the repository.
 - The published `v0.0.1` release is immutable and has no package or example assets; it cannot be updated in place.
-- CI builds packages but does not install them on a clean OS image or verify the `.glass` association through the OS shell. Manual package builds provide review artifacts but do not count as clean-host qualification.
+- The standard package jobs only build artifacts; the separate installed smoke workflows install the exact package on clean hosted OS images and verify the `.glass` association. Qualification is limited to the hosts and artifact digests recorded above.
 - Linux packaging emits a Debian package. macOS emits a DMG. Windows emits an NSIS installer.
 
 Treat A-09 and A-10 as incomplete until clean-install, file-open, runtime inventory, and signing checks are recorded for each shipping platform. Runtime archives and manifests make the bundle inspectable; they do not substitute for those host checks.

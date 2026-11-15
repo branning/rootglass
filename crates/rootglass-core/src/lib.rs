@@ -166,10 +166,9 @@ impl HostCapabilities {
         Self {
             platform,
             hvf_available: platform == HostPlatform::MacOs && detect_hvf_available(),
-            // The Windows QEMU package currently bundled with Rootglass does
-            // not include WHPX, so platform identity alone is not enough to
-            // select that accelerator. Use TCG until the shipped QEMU runtime
-            // can be probed for WHPX support.
+            // Rootglass does not yet probe each bundled Windows QEMU runtime
+            // for WHPX support. Keep acceleration disabled until the shipped
+            // runtime variants are verified and capability detection exists.
             whpx_available: false,
             kvm_available: platform == HostPlatform::Linux
                 && cfg!(target_arch = "aarch64")
