@@ -485,3 +485,4 @@
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T09:19:28.911411004Z","agent":"codex@specialized-images","text":"Smoke #43697710086: idle QEMU used 0.06s CPU with no listener; instrument modules and thread wait states."}
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T09:28:58.735716333Z","agent":"codex@specialized-images","text":"Smoke #43698704983 stopped before TUI: WSL shell stole picker foreground; dismiss that ambient window and retry."}
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T09:53:34.983131298Z","agent":"codex@specialized-images","text":"Probe #43700861490: serial=null and stdio both idle 15s without QMP; serial transport is not the cause."}
+{"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T10:01:17.319067224Z","agent":"codex@specialized-images","text":"Probe #43701429085: installed ARM64 QEMU --version and QMP hung with pipes, inherited streams, and machine=none."}

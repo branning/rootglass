@@ -145,6 +145,13 @@ jobs:
           run-id: ${{ inputs.package_run_id }}
           github-token: ${{ github.token }}
 
+      - name: Recreate MSYS2 CLANGARM64 environment for QEMU probe
+        if: inputs.qemu_probe_only && matrix.id == 'windows-arm64'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: false
+
       - name: Set up Python
         if: inputs.qemu_probe_only != true
         uses: actions/setup-python@v6
