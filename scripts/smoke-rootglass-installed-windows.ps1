@@ -86,7 +86,7 @@ $versionOutput | Set-Content -LiteralPath $env:ROOTGLASS_QEMU_VERSION_OUTPUT -En
 exit $LASTEXITCODE
 '@ | Set-Content -LiteralPath $powershellVersionScript -Encoding utf8
 
-    foreach ($probeName in @("version-piped", "version-inherited", "version-repository-cwd", "version-powershell", "machine-none", "serial-null", "serial-stdio")) {
+    foreach ($probeName in @("version-piped", "version-inherited", "version-repository-cwd", "version-powershell", "version-msys2-env", "machine-none", "serial-null", "serial-stdio")) {
         $serialBackend = if ($probeName -like "serial-*") { $probeName -replace "^serial-", "" } else { "not applicable" }
         $qmpEnabled = $probeName -notlike "version-*"
         $redirectOutput = $probeName -ne "version-inherited"
@@ -120,11 +120,23 @@ exit $LASTEXITCODE
             $versionOutputPath = Join-Path $probeRoot "version-powershell-native.stdout.txt"
             $startInfo.Environment["ROOTGLASS_QEMU_VERSION_OUTPUT"] = $versionOutputPath
         }
+        if ($probeName -eq "version-msys2-env") {
+            $startInfo.Environment["MSYSTEM"] = "CLANGARM64"
+            $startInfo.Environment["MINGW_PREFIX"] = "/clangarm64"
+            $startInfo.Environment["MSYSTEM_PREFIX"] = "/clangarm64"
+            $startInfo.Environment["MINGW_CHOST"] = "aarch64-w64-mingw32"
+            $startInfo.Environment["MSYSTEM_CARCH"] = "aarch64"
+            $startInfo.Environment["MSYSTEM_CHOST"] = "aarch64-w64-mingw32"
+            $startInfo.Environment["MSYS2_PATH_TYPE"] = "inherit"
+            $startInfo.Environment["CHERE_INVOKING"] = "1"
+            $startInfo.Environment["HOME"] = $env:USERPROFILE
+        }
         $arguments = switch ($probeName) {
             "version-piped" { @("--version") }
             "version-inherited" { @("--version") }
             "version-repository-cwd" { @("--version") }
             "version-powershell" { @("-NoLogo", "-NoProfile", "-NonInteractive", "-File", $powershellVersionScript, $QemuPath) }
+            "version-msys2-env" { @("--version") }
             "machine-none" { @(
                 "-L", $dataDirectory,
                 "-machine", "none",
@@ -276,7 +288,7 @@ exit $LASTEXITCODE
                 $startInfo.Environment["QEMU_MODULE_DIR"] = $moduleDirectory
             }
             $startInfo.ArgumentList.Add("-lc")
-            $startInfo.ArgumentList.Add('printf "MSYSTEM=%s MINGW_PREFIX=%s MSYS2_PATH_TYPE=%s\\n" "$MSYSTEM" "$MINGW_PREFIX" "$MSYS2_PATH_TYPE"; "$ROOTGLASS_QEMU_EXE" --version')
+            $startInfo.ArgumentList.Add('printf "MSYSTEM=%s MINGW_PREFIX=%s MSYSTEM_PREFIX=%s MINGW_CHOST=%s MSYSTEM_CARCH=%s MSYSTEM_CHOST=%s MSYS2_PATH_TYPE=%s CHERE_INVOKING=%s HOME=%s\\n" "$MSYSTEM" "$MINGW_PREFIX" "$MSYSTEM_PREFIX" "$MINGW_CHOST" "$MSYSTEM_CARCH" "$MSYSTEM_CHOST" "$MSYS2_PATH_TYPE" "$CHERE_INVOKING" "$HOME"; "$ROOTGLASS_QEMU_EXE" --version')
 
             $process = [Diagnostics.Process]::new()
             $process.StartInfo = $startInfo
