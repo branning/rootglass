@@ -87,8 +87,25 @@ if ($TargetPlatform -eq "windows-aarch64") {
     # MSYS2's QEMU is a native ARM64 build. Copy its transitive PE DLL imports
     # into the private runtime bin directory so Windows can load it offline.
     $dependencyOutput = @(& $ntlddExe -R $qemuExe.FullName 2>&1)
-    if ($LASTEXITCODE -ne 0 -or ($dependencyOutput -join "`n") -match "(?i)=>\s*not found") {
-        throw "Could not resolve the native QEMU DLL dependencies: $($dependencyOutput -join ' ')"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not inspect the native QEMU DLL dependencies: $($dependencyOutput -join ' ')"
+    }
+    # ntldd -R also descends into Windows-owned system DLLs. On Windows 11 ARM64
+    # it reports API-set contracts, Azure attestation, and VM trust components
+    # as unresolved even though they are optional host imports and must not be
+    # bundled with QEMU. Keep failing for unresolved third-party DLLs.
+    $optionalWindowsImportPattern = '(?i)^(api-ms-|ext-ms-|AzureAttestManager\.dll$|HvsiFileTrust\.dll$|wpaxholder\.dll$)'
+    $unresolvedRuntimeDlls = @()
+    foreach ($line in $dependencyOutput) {
+        if ($line -match '(?i)^\s*(?<module>[^\s]+\.dll)\s*=>\s*not found\b') {
+            $moduleName = $Matches.module
+            if ($moduleName -notmatch $optionalWindowsImportPattern) {
+                $unresolvedRuntimeDlls += $moduleName
+            }
+        }
+    }
+    if ($unresolvedRuntimeDlls.Count -gt 0) {
+        throw "Could not resolve native QEMU runtime DLLs: $($unresolvedRuntimeDlls -join ', ')"
     }
     $copiedDlls = @{}
     foreach ($line in $dependencyOutput) {
@@ -114,7 +131,7 @@ if ($TargetPlatform -eq "windows-aarch64") {
             }
             continue
         }
-        if ($moduleName -match "(?i)^(api-ms-win-|ext-ms-win-)" -or
+        if ($moduleName -match $optionalWindowsImportPattern -or
             ($resolvedPath -and $resolvedPath -match "(?i)\\Windows\\(System32|WinSxS)\\")) {
             continue
         }
