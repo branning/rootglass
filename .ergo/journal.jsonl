@@ -546,3 +546,9 @@
 {"version":1,"task_id":"5FFC3O","kind":"result","at":"2026-11-15T20:36:04.504569909Z","text":"ADR-0003 now binds the complete encrypted asset set and defers shared schema/catalog alignment to ADR-0004."}
 {"version":1,"task_id":"LQA4Y3","kind":"result","at":"2026-11-15T22:32:30.650783963Z","agent":"codex@worker-1","text":"Maintainer accepted ZIP-first transport; ordinary ZIP tools can package and inspect existing partitioned disk images."}
 {"version":1,"task_id":"LQA4Y3","kind":"result","at":"2026-11-15T22:32:30.669918333Z","agent":"codex@worker-1","text":"Remaining catalog/schema/encryption/backend decisions need review; E00 and implementation tasks stay blocked/staged."}
+{"version":1,"task_id":"LQA4Y3","kind":"done","at":"2026-11-15T22:41:08.602183522Z","agent":"codex@worker-1","text":"ADR-0004 accepted in merged PR #146; ZIP-first transport and remaining architecture boundaries are recorded."}
+{"version":1,"task_id":"5FFC3O","kind":"open","at":"2026-11-15T22:41:08.621274976Z","text":"Maintainer approved ADR-0003 and ADR-0004 in PR #146; protocol review gate is satisfied."}
+{"version":1,"task_id":"5FFC3O","kind":"done","at":"2026-11-15T22:41:08.640154047Z","text":"Accepted encryption protocol merged in PR #146; schema-1 compatibility, asset-set binding, and open qualification limits are documented."}
+{"version":1,"task_id":"GBDJUA","kind":"open","at":"2026-11-15T22:41:08.661718532Z"}
+{"version":1,"task_id":"GBDJUA","kind":"claim","at":"2026-11-15T22:41:08.682425921Z","agent":"codex@worker-1"}
+{"version":1,"task_id":"GBDJUA","kind":"result","at":"2026-11-15T23:09:15.326939875Z","agent":"codex@worker-1","text":"Checks: manifest/signature tests, workspace check, clippy, fmt, and doc links passed"}

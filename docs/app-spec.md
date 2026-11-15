@@ -297,6 +297,14 @@ Use established platform directory-location APIs. Directory form in the source r
 
 The serialized `.glass` remains a ZIP with `rootglass.toml` and `signatures/glass.dsse.json`. Its in-toto-style signed subjects cover every other production archive file. The signed statement binds names to SHA-256 hashes; the DSSE envelope binds the statement to an Ed25519 publisher identity.
 
+Schema 1 keeps the v1 predicate and runtime behavior. Schema 2 uses a distinct
+v2 predicate and signs the manifest catalog together with every payload file;
+verification matches each logical artifact's ID, kind, size, digest, and ZIP
+entry mapping against those signed subjects. Schema-2 parsing, signing, and
+verification are available, while the current launch service rejects schema 2
+before QEMU until profile execution is implemented. See
+[bundle-format.md](bundle-format.md) for the implemented catalog model.
+
 **Import transaction:** open source → parse limits and safe paths → validate schema/signature/trusted key → hash every production subject (prefer streaming) → stage extraction into new temporary dir → verify staged file set and sizes → atomic move to digest-addressed immutable store → write registry atomically. Never accept partially verified extraction.
 
 Apply archive, member, aggregate expansion, compression-ratio, path, entry-count and envelope limits in the shared signature verifier as well as the app importer, signer and extractor. Mark the staged tree readonly before publishing its content-addressed path. If registry persistence fails after package publication, the package remains an unreferenced immutable object and is not listed as installed; a later import can verify and reuse it. Never rewrite an existing unsupported or corrupt registry automatically.
@@ -497,7 +505,7 @@ Use the defaults below for remaining implementation unless an ADR changes them.
 | Embedded terminal | Use libghostty; prove the external API/ABI and platform package before shipping | S16.6 prototype and maintainer platform review; see [tui-architecture.md](tui-architecture.md) |
 | Guest UI | Serial console first; no embedded web UI | S09; web-forward after v1 |
 | Execution | One world at a time per desktop process | S04; multiworld after v1 |
-| Bundle contents | Schema 1: one read-only rootfs and optional state template in ZIP. Follow-on proposal: signed artifact catalog and launch profiles, with ZIP behind logical IDs. | S01/S05; [ADR-0004](adr/0004-multi-artifact-bundles-and-container.md); Ergo 6VYQAW |
+| Bundle contents | Schema 1: one read-only rootfs and optional state template in ZIP. Accepted follow-on: signed artifact catalog and launch profiles, with ZIP behind logical IDs. | S01/S05; [ADR-0004](adr/0004-multi-artifact-bundles-and-container.md); Ergo 6VYQAW |
 | State behavior | Prefer OverlayFS upper/work on local state disk; signed root immutable | S06 |
 | Publisher trust | Explicit offline trusted keys, default deny unknown | S07 / issue #18 |
 | QEMU distribution | Bundle a versioned, verified runtime per desktop target; PATH is development-only | ADR-0002; S14 clean-host evidence remains |
@@ -506,7 +514,7 @@ Use the defaults below for remaining implementation unless an ADR changes them.
 | Platform support | Advertise only OS + CPU combinations verified by installer and guest tests | S11/S12 |
 | Data deletion | Uninstall policy distinguishes immutable packages from user state; destructive delete confirms | S05/S06 |
 | Release signing | Separate Rootglass app/installer signing and .glass publisher signing | S11 |
-| Encrypted bundles | Proposal only; schema-1 behavior remains authoritative until maintainer approval of [ADR-0003](adr/0003-encrypted-bundles-and-recipient-keys.md). Current unsigned-provider development does not decide the release signing or entitlement architecture; Secure Enclave remains in scope. | E00; signing setup is a temporary delivery constraint, not a decision to ship unsigned |
+| Encrypted bundles | Design accepted in [ADR-0003](adr/0003-encrypted-bundles-and-recipient-keys.md); not implemented yet. Schema-1 behavior remains unchanged. App signing is a temporary setup constraint; Secure Enclave remains in scope. | E00 approved in PR #146; E01–E14; app signing qualification remains deferred |
 
 ## 14. Source of truth and issue map
 

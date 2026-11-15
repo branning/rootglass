@@ -21,6 +21,7 @@ pub use signing::{
 pub const DSSE_PAYLOAD_TYPE: &str = "application/vnd.in-toto+json";
 pub const STATEMENT_TYPE: &str = "https://in-toto.io/Statement/v1";
 pub const PREDICATE_TYPE: &str = "https://rootglass.dev/predicate/glass/v1";
+pub const PREDICATE_TYPE_V2: &str = "https://rootglass.dev/predicate/glass/v2";
 pub const MAX_SIGNATURE_ENVELOPE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Resource limits applied while verifying a production archive or directory.
@@ -204,6 +205,9 @@ pub enum SignatureError {
 
     #[error("invalid glass manifest: {0}")]
     InvalidManifest(String),
+
+    #[error("artifact inventory mismatch for '{artifact_id}': {reason}")]
+    ArtifactInventoryMismatch { artifact_id: String, reason: String },
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -324,6 +328,9 @@ pub struct VerificationReport {
     pub publisher_identity: String,
     pub key_id: String,
     pub subject_count: usize,
+    pub schema_version: u32,
+    /// Present only after schema-2 storage paths, sizes and digests match signed subjects.
+    pub artifact_catalog: Option<rootglass_manifest::ArtifactCatalog>,
     /// Normalized member paths from the verified statement, in statement order.
     pub signed_paths: Vec<String>,
 }
@@ -636,13 +643,15 @@ fn verify_envelope_with_files(
         .map_err(|_| SignatureError::SignatureVerificationFailed)?;
 
     let statement: Statement = serde_json::from_slice(&payload)?;
-    let signed_paths = verify_statement(file_set, &statement, trusted)?;
+    let (signed_paths, artifact_catalog) = verify_statement(file_set, &statement, trusted)?;
 
     Ok(VerificationReport {
         publisher_name: statement.predicate.publisher.name,
         publisher_identity: statement.predicate.publisher.identity,
         key_id: dsse_signature.keyid.clone(),
         subject_count: statement.subject.len(),
+        schema_version: statement.predicate.schema_version,
+        artifact_catalog,
         signed_paths,
     })
 }
@@ -651,24 +660,25 @@ fn verify_statement(
     file_set: &dyn FileSet,
     statement: &Statement,
     trusted: &TrustedPublisher,
-) -> Result<Vec<String>, SignatureError> {
+) -> Result<(Vec<String>, Option<rootglass_manifest::ArtifactCatalog>), SignatureError> {
     if statement.statement_type != STATEMENT_TYPE {
         return Err(SignatureError::UnsupportedStatementType(
             statement.statement_type.clone(),
         ));
     }
 
-    if statement.predicate_type != PREDICATE_TYPE {
-        return Err(SignatureError::UnsupportedPredicateType(
-            statement.predicate_type.clone(),
-        ));
-    }
-
-    if statement.predicate.schema_version != rootglass_manifest::SUPPORTED_SCHEMA_VERSION {
+    if !rootglass_manifest::is_supported_schema_version(statement.predicate.schema_version) {
         return Err(SignatureError::InvalidStatement(format!(
             "unsupported predicate schema version {}",
             statement.predicate.schema_version
         )));
+    }
+    let expected_predicate_type = predicate_type_for_schema(statement.predicate.schema_version)
+        .expect("supported schema versions have predicate types");
+    if statement.predicate_type != expected_predicate_type {
+        return Err(SignatureError::UnsupportedPredicateType(
+            statement.predicate_type.clone(),
+        ));
     }
 
     if statement.predicate.publisher.identity != trusted.identity {
@@ -685,6 +695,7 @@ fn verify_statement(
     }
     let mut expected_subjects = BTreeSet::new();
     let mut signed_subjects = Vec::with_capacity(statement.subject.len());
+    let mut signed_manifest = None;
 
     if statement.subject.len() > file_set.max_entries() {
         return Err(SignatureError::TooManyArchiveEntries {
@@ -726,6 +737,7 @@ fn verify_statement(
         }
     }
 
+    let mut verified_subjects = BTreeMap::new();
     for (subject, (normalized, expected)) in statement.subject.iter().zip(&signed_subjects) {
         let bytes = file_set.read(normalized)?;
         let actual = hex_sha256(&bytes);
@@ -736,9 +748,91 @@ fn verify_statement(
                 actual,
             });
         }
+        if normalized == rootglass_manifest::MANIFEST_FILE_NAME {
+            signed_manifest = Some(bytes.clone());
+        }
+        verified_subjects.insert(normalized.as_str(), (expected.as_str(), bytes.len() as u64));
     }
 
-    Ok(signed_subjects.into_iter().map(|(path, _)| path).collect())
+    let artifact_catalog = if statement.predicate.schema_version
+        == rootglass_manifest::MULTI_ARTIFACT_SCHEMA_VERSION
+    {
+        let manifest_bytes = signed_manifest.ok_or_else(|| {
+            SignatureError::InvalidStatement(
+                "schema-2 statement must sign rootglass.toml".to_string(),
+            )
+        })?;
+        let manifest_text = std::str::from_utf8(&manifest_bytes)
+            .map_err(|error| SignatureError::InvalidManifest(error.to_string()))?;
+        let manifest = rootglass_manifest::Manifest::from_toml_str(manifest_text)
+            .map_err(|error| SignatureError::InvalidManifest(error.to_string()))?;
+        manifest
+            .validate_manifest_only()
+            .map_err(|error| SignatureError::InvalidManifest(error.to_string()))?;
+        if manifest.schema_version != statement.predicate.schema_version
+            || manifest.identifier != statement.predicate.glass_identifier
+            || manifest.version != statement.predicate.glass_version
+            || manifest.publisher.name != statement.predicate.publisher.name
+            || manifest.publisher.identity != statement.predicate.publisher.identity
+        {
+            return Err(SignatureError::InvalidStatement(
+                "schema-2 manifest identity does not match its signed predicate".to_string(),
+            ));
+        }
+        let catalog = manifest.artifact_catalog.ok_or_else(|| {
+            SignatureError::InvalidManifest(
+                "schema-2 manifest is missing its artifact catalog".to_string(),
+            )
+        })?;
+        for (artifact_id, artifact) in &catalog.artifacts {
+            let normalized =
+                path_to_string(&normalize_relative_path(Path::new(&artifact.storage.path))?);
+            let Some((signed_digest, signed_size)) = verified_subjects.get(normalized.as_str())
+            else {
+                return Err(SignatureError::ArtifactInventoryMismatch {
+                    artifact_id: artifact_id.clone(),
+                    reason: format!(
+                        "storage path '{}' is not a signed subject",
+                        artifact.storage.path
+                    ),
+                });
+            };
+            if signed_digest != &artifact.sha256 {
+                return Err(SignatureError::ArtifactInventoryMismatch {
+                    artifact_id: artifact_id.clone(),
+                    reason: format!(
+                        "catalog digest {} does not match signed subject digest {signed_digest}",
+                        artifact.sha256
+                    ),
+                });
+            }
+            if *signed_size != artifact.size_bytes {
+                return Err(SignatureError::ArtifactInventoryMismatch {
+                    artifact_id: artifact_id.clone(),
+                    reason: format!(
+                        "catalog size {} does not match signed subject size {signed_size}",
+                        artifact.size_bytes
+                    ),
+                });
+            }
+        }
+        Some(catalog)
+    } else {
+        None
+    };
+
+    Ok((
+        signed_subjects.into_iter().map(|(path, _)| path).collect(),
+        artifact_catalog,
+    ))
+}
+
+fn predicate_type_for_schema(schema_version: u32) -> Option<&'static str> {
+    match schema_version {
+        rootglass_manifest::LEGACY_SCHEMA_VERSION => Some(PREDICATE_TYPE),
+        rootglass_manifest::MULTI_ARTIFACT_SCHEMA_VERSION => Some(PREDICATE_TYPE_V2),
+        _ => None,
+    }
 }
 
 trait FileSet {
@@ -1308,6 +1402,8 @@ mod tests {
 
         assert_eq!(report.publisher_identity, "rootglass.dev/examples");
         assert_eq!(report.subject_count, 3);
+        assert_eq!(report.schema_version, 1);
+        assert!(report.artifact_catalog.is_none());
         assert_eq!(
             report.signed_paths,
             ["README.md", "metadata/README.md", "rootglass.toml"]
@@ -1326,6 +1422,8 @@ mod tests {
 
         assert_eq!(report.publisher_identity, "rootglass.dev/examples");
         assert_eq!(report.subject_count, 3);
+        assert_eq!(report.schema_version, 1);
+        assert!(report.artifact_catalog.is_none());
         assert_eq!(
             report.signed_paths,
             ["README.md", "metadata/README.md", "rootglass.toml"]
@@ -1343,6 +1441,60 @@ mod tests {
         .expect_err("archive with unsigned file should fail");
 
         assert!(matches!(error, SignatureError::UnsignedFile(path) if path == "extra.txt"));
+    }
+
+    #[test]
+    fn signs_and_verifies_schema2_catalog_and_rejects_payload_tampering() {
+        let (root, archive_path) = temp_schema2_bundle(false);
+        let key = SigningKey::from_bytes(&[42; 32]);
+        let trust = trust_store_for(&key);
+        let timestamp = "2026-11-15T00:00:00Z";
+
+        sign_glass_directory_at(&root, &key, timestamp).expect("schema 2 signs");
+        let report = verify_glass_dir(&root, "signatures/glass.dsse.json", &trust)
+            .expect("schema 2 verifies");
+        assert_eq!(report.schema_version, 2);
+        assert_eq!(report.subject_count, 3);
+        assert_eq!(
+            report
+                .artifact_catalog
+                .as_ref()
+                .expect("verified catalog is returned")
+                .artifacts
+                .len(),
+            2
+        );
+
+        package_glass_directory_at(&root, &archive_path, &key, timestamp)
+            .expect("schema 2 ZIP package verifies before publishing");
+        let archive_report =
+            verify_glass_archive(&archive_path, "signatures/glass.dsse.json", &trust)
+                .expect("schema 2 ZIP verifies");
+        assert_eq!(archive_report.schema_version, 2);
+        assert_eq!(archive_report.artifact_catalog.unwrap().artifacts.len(), 2);
+
+        fs::write(root.join("images/root.raw"), b"altered").expect("tamper with signed artifact");
+        let error = verify_glass_dir(&root, "signatures/glass.dsse.json", &trust)
+            .expect_err("tampered schema-2 artifact is rejected");
+        assert!(matches!(error, SignatureError::DigestMismatch { .. }));
+
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_file(archive_path);
+    }
+
+    #[test]
+    fn signing_rejects_catalog_metadata_that_does_not_match_payload() {
+        let (root, archive_path) = temp_schema2_bundle(true);
+        let key = SigningKey::from_bytes(&[43; 32]);
+        let error = sign_glass_directory_at(&root, &key, "2026-11-15T00:00:00Z")
+            .expect_err("wrong inventory digest cannot be signed");
+        assert!(matches!(
+            error,
+            SignatureError::ArtifactInventoryMismatch { artifact_id, .. }
+                if artifact_id == "linux-root"
+        ));
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_file(archive_path);
     }
 
     #[test]
@@ -1692,6 +1844,128 @@ mod tests {
             }]
         }))
         .unwrap()
+    }
+
+    fn temp_schema2_bundle(wrong_digest: bool) -> (PathBuf, PathBuf) {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after unix epoch")
+            .as_nanos();
+        let parent = std::env::temp_dir().join(format!("rootglass-schema2-{unique}"));
+        let root = parent.join("bundle.glass");
+        let archive = parent.join("bundle.zip");
+        fs::create_dir_all(root.join("images")).expect("create image directory");
+        fs::create_dir_all(root.join("firmware")).expect("create firmware directory");
+        fs::create_dir_all(root.join("signatures")).expect("create signature directory");
+        let rootfs = b"linux-rootfs";
+        let firmware = b"mcu-firmware";
+        fs::write(root.join("images/root.raw"), rootfs).expect("write rootfs");
+        fs::write(root.join("firmware/controller.bin"), firmware).expect("write firmware");
+        let root_digest = if wrong_digest {
+            "0".repeat(64)
+        } else {
+            hex_sha256(rootfs)
+        };
+        let text = format!(
+            r#"schema_version = 2
+name = "Schema 2 Test"
+identifier = "io.rootglass.tests.schema2"
+version = "0.2.0"
+
+[publisher]
+name = "Schema 2 Test Publisher"
+identity = "rootglass.test/schema2"
+signature = "signatures/glass.dsse.json"
+
+[artifact_catalog]
+catalog_version = 1
+default_profile = "default"
+
+[artifact_catalog.artifacts.linux-root]
+kind = "linux-boot-disk"
+format = "raw"
+size_bytes = {}
+sha256 = "{}"
+target_architecture = "aarch64"
+target_machine = "qemu:virt"
+
+[artifact_catalog.artifacts.linux-root.storage]
+kind = "zip-entry"
+path = "images/root.raw"
+
+[artifact_catalog.artifacts.controller-fw]
+kind = "mcu-firmware"
+format = "binary"
+size_bytes = {}
+sha256 = "{}"
+target_architecture = "arm"
+target_machine = "qemu:mps2-an385"
+
+[artifact_catalog.artifacts.controller-fw.storage]
+kind = "zip-entry"
+path = "firmware/controller.bin"
+
+[artifact_catalog.profiles.default]
+required_features = ["launch-profiles-v1", "linux-node-v1", "mcu-node-v1", "typed-devices-v1"]
+
+[artifact_catalog.profiles.default.resources]
+memory_mb = 1024
+cpus = 2
+
+[artifact_catalog.profiles.default.network]
+mode = "none"
+
+[[artifact_catalog.profiles.default.nodes]]
+id = "linux"
+startup_order = 0
+process_group = "linux"
+architecture = "aarch64"
+machine = "qemu:virt"
+boot = {{ kind = "linux", kernel = "builtin:aarch64-linux", device_tree = "builtin:aarch64-virt", rootfs_artifact = "linux-root", kernel_args = [] }}
+
+[[artifact_catalog.profiles.default.nodes]]
+id = "mcu"
+startup_order = 1
+process_group = "mcu"
+architecture = "arm"
+machine = "qemu:mps2-an385"
+boot = {{ kind = "mcu", firmware_artifact = "controller-fw" }}
+
+[[artifact_catalog.profiles.default.devices]]
+kind = "virtio-blk-mmio"
+id = "root-disk"
+node_id = "linux"
+artifact_id = "linux-root"
+read_only = true
+
+[[artifact_catalog.profiles.default.devices]]
+kind = "pl011-uart"
+id = "linux-console"
+node_id = "linux"
+
+[[artifact_catalog.profiles.default.devices]]
+kind = "mps2-uart"
+id = "mcu-console"
+node_id = "mcu"
+"#,
+            rootfs.len(),
+            root_digest,
+            firmware.len(),
+            hex_sha256(firmware)
+        );
+        fs::write(root.join("rootglass.toml"), text).expect("write schema 2 manifest");
+        (root, archive)
+    }
+
+    fn trust_store_for(key: &SigningKey) -> TrustStore {
+        let public_key = key.verifying_key().to_bytes();
+        let key_id = format!("ed25519:{}", hex_sha256(&public_key));
+        TrustStore::new([TrustedPublisher {
+            name: "Schema 2 Test Publisher".to_string(),
+            identity: "rootglass.test/schema2".to_string(),
+            key_id,
+            public_key_base64url: URL_SAFE_NO_PAD.encode(public_key),
+        }])
     }
 
     fn build_archive<I>(entries: I) -> Vec<u8>

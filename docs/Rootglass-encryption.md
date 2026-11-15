@@ -1,11 +1,10 @@
 # Rootglass encrypted bundles and multi-instance runtime
 
-**Status: proposal for maintainer security review.** No encrypted-bundle format
-or runtime behavior is approved or implemented yet. The current schema-1 bundle
-contract remains unchanged. See [ADR-0003](adr/0003-encrypted-bundles-and-recipient-keys.md)
-for the security decisions requiring review and [ADR-0004](adr/0004-multi-artifact-bundles-and-container.md)
-for the proposed multi-artifact catalog and container direction. The exact
-manifest schema/version boundary must be reconciled before implementation.
+**Status: design approved in PR #146; not implemented yet.** The current
+schema-1 bundle contract remains unchanged. See [ADR-0003](adr/0003-encrypted-bundles-and-recipient-keys.md)
+for the accepted security protocol and [ADR-0004](adr/0004-multi-artifact-bundles-and-container.md)
+for the accepted multi-artifact catalog and container direction. Implementation
+proceeds through the Ergo backlog.
 
 ## Goal
 
@@ -169,14 +168,13 @@ size, and recipient IDs/count remain visible. Rootglass does not promise secure
 physical deletion or protection against a same-user attacker controlling the
 host.
 
-## Review gate
+## Implementation constraints
 
-Before encrypted implementation work is opened, a maintainer must approve
-[ADR-0003](adr/0003-encrypted-bundles-and-recipient-keys.md) and reconcile it
-with [ADR-0004](adr/0004-multi-artifact-bundles-and-container.md). Review the
-shared manifest-version boundary, logical artifact catalog and encrypted-set
-binding together with the LUKS profile, delegated recipient authority and
-wrapping suites, login-Keychain behavior, ZIP extent rules, instance/state
-policy, QMP transport, and threat boundary. Implementation must preserve
-schema-1 verification and must not make ZIP paths or `rootfs.img` the permanent
-logical API.
+The shared manifest-version boundary, logical artifact catalog and
+encrypted-set binding are accepted in [ADR-0003](adr/0003-encrypted-bundles-and-recipient-keys.md)
+and [ADR-0004](adr/0004-multi-artifact-bundles-and-container.md). Implementation
+must preserve schema-1 verification, address ZIP assets by logical ID, and
+follow the approved LUKS profile, recipient-authority rules, provider
+capabilities, ZIP extent checks, instance/state policy, QMP transport, and
+threat boundary. The Secure Enclave and signed-app qualifications remain open
+until the required credentials and host evidence are available.

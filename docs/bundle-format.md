@@ -78,22 +78,27 @@ MVP constraints:
 - Only one writable overlay may be loaded at a time with the rootfs.
 - Multiple read-only overlay packs may be useful later, but are not part of the MVP.
 
-## Proposed multi-artifact direction
+## Accepted multi-artifact direction
 
-These are follow-on design constraints, not changes to the schema-1 MVP above.
-See [ADR-0004](adr/0004-multi-artifact-bundles-and-container.md) for the
-maintainer-review proposal.
+Schema 2 now implements the signed catalog and typed profile model described
+below. It can be parsed, signed, packaged as ZIP, and verified. The current
+runtime still launches schema 1 only; it rejects schema 2 before starting QEMU
+until profile execution and preflight are implemented. Schema-1 manifests and
+signatures keep their existing wire format. See
+[ADR-0004](adr/0004-multi-artifact-bundles-and-container.md) for the accepted
+architecture.
 
-- A future `.glass` can carry at least five Linux boot images and five MCU
-  firmware assets in one signed bundle. Profiles select named assets and may
-  compose several Linux and MCU nodes into one run.
+- A schema-2 `.glass` can catalog at least five Linux boot images and five MCU
+  firmware assets. Profiles select named assets and can describe composed Linux
+  and MCU nodes; each node declares its process group and startup order.
 - Runtime profiles refer to stable logical artifact IDs, not archive paths or
-  byte offsets. Each signed artifact declares its kind, format, target
-  architecture or board, size, and digest.
-- New schema manifests use versioned required-feature IDs for artifact
-  catalogs, composed profiles, MCU nodes, typed devices, and any host backend
-  support. These are typed capabilities rather than a free-form flags bag;
-  unsupported required features fail closed.
+  byte offsets. Each catalog entry declares a stable lower-case ASCII ID, kind,
+  format, target, size, SHA-256 digest, and a `zip-entry` storage path. The
+  catalog is part of the signed manifest, and verification checks each mapping
+  against the signed file subject.
+- Profiles use versioned required-feature IDs for Linux and MCU nodes, typed
+  devices, and approved host backends. Unknown or unsupported feature IDs fail
+  closed; the manifest has no generic flags field.
 - Keep ZIP as the accepted first outer transport for convenience, with each
   directly accessed large image stored as a separately verifiable entry.
   Authors can inspect and package complete disk image files with ordinary ZIP
@@ -104,13 +109,81 @@ maintainer-review proposal.
   justify it.
 - An Android-style partition catalog is a useful model for logical names and
   extent maps. Android `super.img`, A/B slots, and OTA semantics are not part of
-  the proposal.
+  the accepted format.
 - MCU profiles name a concrete QEMU board/machine and firmware loading
-  contract. QOM and virtio devices use typed, allowlisted properties. External
-  backend binaries are host code and require a separate trust, capability, and
-  isolation policy.
-- Preserve schema-1 manifests and signatures unchanged. Coordinate the
-  manifest version boundary with the encryption proposal before implementation.
+  contract. The initial allowlist is `qemu:virt` for Linux and
+  `qemu:mps2-an385` for ARM MCU firmware. QOM and virtio devices use typed
+  declarations with no arbitrary QEMU arguments. External backend binaries are
+  signed host-code assets whose OS, architecture, publisher identity,
+  capabilities, IPC transports, lifecycle, isolation, and device IDs are
+  declared in the catalog. Rootglass does not execute those binaries yet.
+- Preserve schema-1 manifests and signatures unchanged. Use the coordinated
+  schema-2 boundary in [ADR-0003](adr/0003-encrypted-bundles-and-recipient-keys.md)
+  and [ADR-0004](adr/0004-multi-artifact-bundles-and-container.md).
+- Schema-2 catalog limits are 256 artifacts, 64 profiles, 256 MiB per artifact,
+  and 512 MiB of catalog payloads in total. Existing ZIP/signature verification
+  bounds still apply independently.
+
+### Schema-2 catalog example
+
+```toml
+# Replace the sample byte size and digest with the exact payload values.
+schema_version = 2
+name = "Multi-device example"
+identifier = "io.example.multi-device"
+version = "0.1.0"
+
+[publisher]
+name = "Example Publisher"
+identity = "example.com"
+signature = "signatures/glass.dsse.json"
+
+[artifact_catalog]
+catalog_version = 1
+default_profile = "default"
+
+[artifact_catalog.artifacts.linux-root]
+kind = "linux-boot-disk"
+format = "raw"
+size_bytes = 1048576
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+target_architecture = "aarch64"
+target_machine = "qemu:virt"
+
+[artifact_catalog.artifacts.linux-root.storage]
+kind = "zip-entry"
+path = "images/root.raw"
+
+[artifact_catalog.profiles.default]
+required_features = ["launch-profiles-v1", "linux-node-v1", "typed-devices-v1"]
+
+[artifact_catalog.profiles.default.resources]
+memory_mb = 1024
+cpus = 2
+
+[artifact_catalog.profiles.default.network]
+mode = "none"
+
+[[artifact_catalog.profiles.default.nodes]]
+id = "linux"
+startup_order = 0
+process_group = "linux"
+architecture = "aarch64"
+machine = "qemu:virt"
+boot = { kind = "linux", kernel = "builtin:aarch64-linux", device_tree = "builtin:aarch64-virt", rootfs_artifact = "linux-root", kernel_args = [] }
+
+[[artifact_catalog.profiles.default.devices]]
+kind = "virtio-blk-mmio"
+id = "root-disk"
+node_id = "linux"
+artifact_id = "linux-root"
+read_only = true
+```
+
+The digest and byte size above must match the complete ZIP entry. MCU firmware
+uses `kind = "mcu-firmware"`, `format = "binary"`, architecture `arm`, and a
+concrete machine such as `qemu:mps2-an385`. Catalogs may include additional
+artifact IDs and profiles without changing schema version 2.
 
 ## Draft manifest
 
