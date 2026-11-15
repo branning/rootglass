@@ -544,3 +544,5 @@
 {"version":1,"task_id":"LQA4Y3","kind":"result","at":"2026-11-15T20:36:04.46737496Z","agent":"codex@worker-1","text":"Proposal: retain ZIP transport; add a signed logical artifact catalog and profiles independent of paths/offsets."}
 {"version":1,"task_id":"LQA4Y3","kind":"result","at":"2026-11-15T20:36:04.487177886Z","agent":"codex@worker-1","text":"ADR-0004 drafted; maintainer review of container, schema alignment, MCU, and backend boundaries is pending."}
 {"version":1,"task_id":"5FFC3O","kind":"result","at":"2026-11-15T20:36:04.504569909Z","text":"ADR-0003 now binds the complete encrypted asset set and defers shared schema/catalog alignment to ADR-0004."}
+{"version":1,"task_id":"LQA4Y3","kind":"result","at":"2026-11-15T22:32:30.650783963Z","agent":"codex@worker-1","text":"Maintainer accepted ZIP-first transport; ordinary ZIP tools can package and inspect existing partitioned disk images."}
+{"version":1,"task_id":"LQA4Y3","kind":"result","at":"2026-11-15T22:32:30.669918333Z","agent":"codex@worker-1","text":"Remaining catalog/schema/encryption/backend decisions need review; E00 and implementation tasks stay blocked/staged."}

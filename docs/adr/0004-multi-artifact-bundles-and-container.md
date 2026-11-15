@@ -1,6 +1,6 @@
 # ADR-0004: Multi-artifact `.glass` bundles and container layout
 
-- Status: Proposed; maintainer review required before implementation
+- Status: Proposed; ZIP-first transport accepted; catalog/security review pending
 - Date: 2026-11-15
 - Scope: Logical artifacts, launch profiles, and the physical `.glass` container
 - Related: [bundle format](../bundle-format.md), [encryption proposal](../Rootglass-encryption.md), [ADR-0003](0003-encrypted-bundles-and-recipient-keys.md)
@@ -23,9 +23,12 @@ mean every image must boot at once.
 The current v1 contract is a ZIP archive with a single Linux rootfs, optional
 state image, and one desktop guest at a time. ZIP is convenient to author,
 inspect, sign, copy, and distribute, and it already has a bounded verifier and
-an immutable content-addressed import path. Its central directory can locate
-individually stored payload entries without inventing a second container
-format. It does not by itself provide a stable logical partition model,
+an immutable content-addressed import path. Users can inspect or package a
+complete disk image with ordinary ZIP tools, including a disk image that
+already contains its own partition table; the archive does not need to
+understand or rewrite those internal partitions. Its central directory can
+locate independently stored payload entries without inventing a second
+container format. ZIP does not by itself provide a stable logical catalog,
 container-level sparse allocation, or efficient in-place updates.
 
 Android dynamic partitions provide a useful design reference: logical names
@@ -45,11 +48,15 @@ independent of Android tooling.
 
 ## Proposed decision
 
-1. Keep the serialized `.glass` as ZIP for the first multi-artifact format.
-   Store each large Linux image and firmware blob as its own ZIP entry using
-   STORED mode when direct range access is needed. Small metadata may use ZIP
-   compression. The verifier returns a checked artifact reader; runtime code
-   never consumes archive paths or unvalidated offsets directly.
+1. **Accepted by the maintainer:** keep the serialized `.glass` as ZIP for the
+   first multi-artifact format. Store each large Linux image and firmware blob
+   as its own ZIP entry using STORED mode when direct range access is needed;
+   small metadata may use ZIP compression. Authors can package partitioned
+   disk images with ordinary ZIP tools instead of building a Rootglass-specific
+   container. A production `.glass` still requires a valid signed manifest and
+   publisher signature; editing a signed member requires republishing it. The
+   verifier returns a checked artifact reader; runtime code never consumes
+   archive paths or unvalidated offsets directly.
 2. Put stable logical artifact IDs and launch profiles in the signed manifest.
    Runtime and profile references use IDs, never ZIP paths, entry ordering, or
    raw offsets. A signed storage map connects each ID to the ZIP entry. This

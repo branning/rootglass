@@ -94,9 +94,12 @@ maintainer-review proposal.
   catalogs, composed profiles, MCU nodes, typed devices, and any host backend
   support. These are typed capabilities rather than a free-form flags bag;
   unsupported required features fail closed.
-- Keep ZIP as the proposed first outer transport for convenience, with each
-  directly accessed large image stored as a separately verifiable entry. The
-  logical artifact reader must not depend on ZIP so a partitioned container
+- Keep ZIP as the accepted first outer transport for convenience, with each
+  directly accessed large image stored as a separately verifiable entry.
+  Authors can inspect and package complete disk image files with ordinary ZIP
+  tools, including images that contain their own partition tables; production
+  `.glass` files still require a valid signed manifest and publisher signature.
+  The logical artifact reader must not depend on ZIP so a partitioned container
   can be considered later if sparse extents, updates, or measured size limits
   justify it.
 - An Android-style partition catalog is a useful model for logical names and
