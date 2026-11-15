@@ -822,25 +822,48 @@ public static class RootglassSmokeWindow {
     $tuiOutputLog = Join-Path $EvidenceDirectory "tui-smoke-output.txt"
     $tuiErrorLog = Join-Path $EvidenceDirectory "tui-smoke-error.txt"
     $processMonitor = Join-Path $EvidenceDirectory "qemu-process-monitor.txt"
+    $processDetails = Join-Path $EvidenceDirectory "qemu-process-details.txt"
+    $sampledQemuProcesses = @{}
     $pythonArguments = @("-B", $TuiSmokeScript, $RootglassExe, $glass[0].FullName, $tuiOutput)
     $argumentLine = ($pythonArguments | ForEach-Object { '"{0}"' -f $_.Replace('"', '\"') }) -join " "
     $repositoryRoot = Split-Path -Parent $PSScriptRoot
     $tuiProcess = Start-Process -FilePath $python -ArgumentList $argumentLine `
         -WorkingDirectory $repositoryRoot -PassThru -NoNewWindow `
         -RedirectStandardOutput $tuiOutputLog -RedirectStandardError $tuiErrorLog
-    "timestamp pid cpu_seconds working_set_bytes thread_count tcp_listeners" |
+    "timestamp pid cpu_seconds working_set_bytes thread_count thread_wait_states tcp_listeners" |
         Set-Content -LiteralPath $processMonitor -Encoding utf8
     while (-not $tuiProcess.HasExited) {
         foreach ($qemu in @(Get-RootglassQemuProcesses $qemuExe)) {
             $process = Get-Process -Id $qemu.ProcessId -ErrorAction SilentlyContinue
+            $threadWaitStates = @(Get-CimInstance Win32_Thread `
+                -Filter "ProcessHandle = '$($qemu.ProcessId)'" -ErrorAction SilentlyContinue |
+                ForEach-Object { "$($_.ThreadState):$($_.ThreadWaitReason)" })
             $listeners = @(Get-NetTCPConnection -OwningProcess $qemu.ProcessId -State Listen -ErrorAction SilentlyContinue |
                 ForEach-Object { "$($_.LocalAddress):$($_.LocalPort)" })
             $cpu = if ($process) { $process.CPU } else { "unknown" }
             $workingSet = if ($process) { $process.WorkingSet64 } else { "unknown" }
             $threads = if ($process) { $process.Threads.Count } else { "unknown" }
+            $waitText = if ($threadWaitStates.Count -gt 0) { $threadWaitStates -join ";" } else { "unknown" }
             $listenerText = if ($listeners.Count -gt 0) { $listeners -join ";" } else { "none" }
-            "$(Get-Date -Format o) $($qemu.ProcessId) $cpu $workingSet $threads $listenerText" |
+            "$(Get-Date -Format o) $($qemu.ProcessId) $cpu $workingSet $threads $waitText $listenerText" |
                 Add-Content -LiteralPath $processMonitor -Encoding utf8
+            if (-not $sampledQemuProcesses.ContainsKey($qemu.ProcessId)) {
+                $sampledQemuProcesses[$qemu.ProcessId] = $true
+                try {
+                    $moduleNames = @($process.Modules | ForEach-Object { $_.ModuleName }) -join ";"
+                } catch {
+                    $moduleNames = "unavailable: $($_.Exception.Message)"
+                }
+                @(
+                    "ProcessId: $($qemu.ProcessId)",
+                    "ExecutablePath: $($qemu.ExecutablePath)",
+                    "CommandLine: $($qemu.CommandLine)",
+                    "LoadedModules: $moduleNames",
+                    "InitialThreadWaitStates: $waitText",
+                    "InitialTcpListeners: $listenerText",
+                    ""
+                ) | Add-Content -LiteralPath $processDetails -Encoding utf8
+            }
         }
         Start-Sleep -Seconds 1
         $tuiProcess.Refresh()
