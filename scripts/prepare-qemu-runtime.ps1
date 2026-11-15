@@ -33,6 +33,14 @@ if ($TargetPlatform -eq "windows-aarch64") {
     if (-not $qemuExe) {
         throw "Native ARM64 qemu-system-aarch64.exe was not found under $qemuRoot"
     }
+    $sourceModules = Join-Path $qemuRoot "lib/qemu"
+    if (-not (Test-Path -LiteralPath $sourceModules -PathType Container)) {
+        throw "Native ARM64 QEMU module directory was not found: $sourceModules"
+    }
+    $sourceModuleFiles = @(Get-ChildItem -LiteralPath $sourceModules -Filter "*.dll" -File -Recurse)
+    if ($sourceModuleFiles.Count -eq 0) {
+        throw "Native ARM64 QEMU module directory contains no plugin DLLs: $sourceModules"
+    }
     $ntlddExe = Join-Path $qemuRoot "bin/ntldd.exe"
     if (-not (Test-Path -LiteralPath $ntlddExe -PathType Leaf)) {
         throw "ntldd.exe was not found under $qemuRoot; install mingw-w64-clang-aarch64-ntldd"
@@ -93,11 +101,10 @@ if ($TargetPlatform -eq "windows-aarch64") {
     $env:PATH = "$($qemuRoot)\bin;$Msys2Root\usr\bin;$env:PATH"
     $pendingRuntimeBinaries = [System.Collections.Generic.Queue[string]]::new()
     $pendingRuntimeBinaries.Enqueue($qemuExe.FullName)
-    if ($sourceModules -and (Test-Path -LiteralPath $sourceModules -PathType Container)) {
+    if ($sourceModuleFiles.Count -gt 0) {
         # QEMU loads these DLLs at runtime, so their imports are not reachable
         # from the main executable's PE import table alone.
-        Get-ChildItem -LiteralPath $sourceModules -Filter "*.dll" -File -Recurse |
-            ForEach-Object { $pendingRuntimeBinaries.Enqueue($_.FullName) }
+        $sourceModuleFiles | ForEach-Object { $pendingRuntimeBinaries.Enqueue($_.FullName) }
     }
     $visitedRuntimeBinaries = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     $copiedDlls = @{}
