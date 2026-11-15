@@ -3,8 +3,16 @@ name: Installed Ubuntu clean-install smoke
 on:
   workflow_dispatch:
     inputs:
+      architecture:
+        description: Linux package architecture to install
+        type: choice
+        required: true
+        default: x86_64
+        options:
+          - x86_64
+          - aarch64
       package_run_id:
-        description: Successful Linux x64 package run for this commit, or an ancestor changed only in this workflow
+        description: Successful matching Linux package run for this commit
         type: string
         required: true
 
@@ -12,13 +20,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: installed-ubuntu-smoke-${{ github.workflow }}-${{ github.ref }}
+  group: installed-ubuntu-smoke-${{ github.workflow }}-${{ github.ref }}-${{ inputs.architecture }}
   cancel-in-progress: true
 
 jobs:
   install-and-smoke:
-    name: Install and exercise Linux x64 package offline
-    runs-on: ubuntu-24.04
+    name: Install and exercise Ubuntu ${{ inputs.architecture }} package offline
+    runs-on: ${{ inputs.architecture == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     timeout-minutes: 25
     permissions:
       actions: read
@@ -31,6 +39,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PACKAGE_RUN_ID: ${{ inputs.package_run_id }}
+          ARCHITECTURE: ${{ inputs.architecture }}
         run: |
           set -euo pipefail
           [[ "$PACKAGE_RUN_ID" =~ ^[0-9]+$ ]] || {
@@ -74,8 +83,13 @@ jobs:
             done <<< "$changed_files"
             echo "Package source $package_sha matches current product code; only smoke workflow/scripts and Ergo metadata changed"
           fi
+          case "$ARCHITECTURE" in
+            x86_64) required_package_job="Linux x64 package" ;;
+            aarch64) required_package_job="Linux arm64 package" ;;
+            *) echo "Unsupported Linux architecture: $ARCHITECTURE" >&2; exit 1 ;;
+          esac
           jobs_json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PACKAGE_RUN_ID/jobs?per_page=100")
-          for required_job in "Materialize pinned guest boot assets" "Linux x64 package"; do
+          for required_job in "Materialize pinned guest boot assets" "$required_package_job"; do
             conclusion=$(jq -r --arg name "$required_job" \
               '[.jobs[] | select(.name == $name) | .conclusion] | first // "missing"' \
               <<< "$jobs_json")
@@ -84,12 +98,12 @@ jobs:
               exit 1
             }
           done
-          echo "Validated Linux x64 package run $PACKAGE_RUN_ID at $GITHUB_SHA"
+          echo "Validated Linux $ARCHITECTURE package run $PACKAGE_RUN_ID at $GITHUB_SHA"
 
       - name: Download Linux package artifact
         uses: actions/download-artifact@v4
         with:
-          name: rootglass-deb-Linux-X64
+          name: rootglass-deb-Linux-${{ inputs.architecture == 'aarch64' && 'ARM64' || 'X64' }}
           path: ${{ runner.temp }}/rootglass-package
           repository: ${{ github.repository }}
           run-id: ${{ inputs.package_run_id }}
@@ -120,6 +134,9 @@ jobs:
           EXAMPLE_DIR: ${{ runner.temp }}/rootglass-example
           TEST_HOME: ${{ runner.temp }}/rootglass-user-home
           EVIDENCE_DIR: ${{ runner.temp }}/rootglass-install-evidence
+          EXPECTED_RUNTIME_PLATFORM: ${{ inputs.architecture == 'aarch64' && 'linux-aarch64' || 'linux-x86_64' }}
+          EXPECTED_HOST_MACHINE: ${{ inputs.architecture }}
+          EXPECTED_DEB_ARCH: ${{ inputs.architecture == 'aarch64' && 'arm64' || 'amd64' }}
         run: |
           set -euo pipefail
           mkdir -p "$EVIDENCE_DIR" "$TEST_HOME/.config/rootglass" "$TEST_HOME/.local/share"
@@ -196,11 +213,22 @@ jobs:
 
           deb=$(cat "$PACKAGE_DIR/package-path.txt")
           package_name=$(dpkg-deb -f "$deb" Package)
+          package_arch=$(dpkg-deb -f "$deb" Architecture)
           package_depends=$(dpkg-deb -f "$deb" Depends)
+          [[ "$package_arch" == "$EXPECTED_DEB_ARCH" ]] || {
+            echo "Expected Debian architecture $EXPECTED_DEB_ARCH, got $package_arch" >&2
+            exit 1
+          }
+          host_machine=$(uname -m)
+          [[ "$host_machine" == "$EXPECTED_HOST_MACHINE" ]] || {
+            echo "Expected host architecture $EXPECTED_HOST_MACHINE, got $host_machine" >&2
+            exit 1
+          }
           {
             echo "Package: $package_name"
             dpkg-deb -f "$deb" Package Version Architecture
             echo "Depends: $package_depends"
+            echo "Host machine: $host_machine"
           } | tee "$EVIDENCE_DIR/package.txt"
           for dependency in libxcb1 libxkbcommon0 libxkbcommon-x11-0 shared-mime-info; do
             if [[ "$package_depends" != *"$dependency"* ]]; then
@@ -252,6 +280,8 @@ jobs:
         timeout-minutes: 4
         env:
           EVIDENCE_DIR: ${{ runner.temp }}/rootglass-install-evidence
+          EXPECTED_RUNTIME_PLATFORM: ${{ inputs.architecture == 'aarch64' && 'linux-aarch64' || 'linux-x86_64' }}
+          EXPECTED_HOST_MACHINE: ${{ inputs.architecture }}
         run: |
           set -euo pipefail
           progress() {
@@ -267,14 +297,16 @@ jobs:
           if timeout --signal=TERM --kill-after=5s 120s \
             python3 - "$runtime_root" > "$EVIDENCE_DIR/runtime-inventory.txt" 2>&1 <<'PY'
           import json
+          import os
           import pathlib
           import sys
 
           root = pathlib.Path(sys.argv[1])
           info = json.loads((root / "runtime-info.json").read_text(encoding="utf-8"))
           manifest = json.loads((root / "assets.json").read_text(encoding="utf-8"))
-          if info["target_platform"] != "linux-x86_64":
-              raise SystemExit(f"unexpected runtime platform: {info['target_platform']}")
+          expected_platform = os.environ["EXPECTED_RUNTIME_PLATFORM"]
+          if info["target_platform"] != expected_platform:
+              raise SystemExit(f"expected runtime platform {expected_platform}, found {info['target_platform']}")
           for asset in manifest["assets"]:
               path = root / asset["path"]
               if not path.is_file():

@@ -1,6 +1,6 @@
 # Desktop package builds
 
-The desktop package workflow builds on hosted Linux x64, macOS arm64, and Windows x64 runners. Manual builds upload review artifacts to Actions for 14 days. To create a release, build from a new draft prerelease's tag with `platform=all` and `release_tag` set to that same tag; the workflow materializes and verifies the example `.glass`, builds all three installers and matching QEMU runtimes, then attaches the full asset set while the release is still mutable. Publish the draft only after the attachment job succeeds. Pull requests and pushes do not run package builds.
+The release package workflow builds Linux x64, macOS arm64, and Windows x64 on hosted runners. Manual builds can also target a Linux ARM64 qualification artifact; it is excluded from `platform=all` and published releases until its qualification is complete. Manual builds upload review artifacts to Actions for 14 days. To create a release, build from a new draft prerelease's tag with `platform=all` and `release_tag` set to that same tag; the workflow materializes and verifies the example `.glass`, builds the three release installers and matching QEMU runtimes, then attaches the full asset set while the release is still mutable. Publish the draft only after the attachment job succeeds. Pull requests and pushes do not run package builds.
 
 GitHub does not trigger `release.created` for draft releases, and publishing an
 immutable release is too late to add assets. The published `v0.0.1` release
@@ -33,8 +33,9 @@ available on every host.
 ## Manual package builds
 
 In Actions, select **Desktop packages → Run workflow**, choose a branch or tag,
-and select `all` (the default), `linux`, `macos`, or `windows`. A single-platform
-selection starts only that platform's package job and cannot attach a release.
+and select `all` (the default), `linux` (x64), `linux-arm64` (qualification
+artifact), `macos`, or `windows`. A single-platform selection starts only that
+platform's package job and cannot attach a release.
 
 For example, build only the Windows app from `main` with GitHub CLI:
 
@@ -204,10 +205,12 @@ performance; no macOS acceleration claim is made.
 
 ## Manual installed Ubuntu package smoke
 
-The **Installed Ubuntu clean-install smoke** workflow checks the Linux x64
-package on a fresh Ubuntu 24.04 Actions runner. First run **Desktop packages**
-with `platform=linux` on the commit under review, then dispatch the install
-smoke on that same commit and provide the package run ID as `package_run_id`.
+The **Installed Ubuntu clean-install smoke** workflow checks a Linux package on
+a fresh Ubuntu 24.04 Actions runner. Choose `x86_64` or `aarch64` as the
+`architecture` input. First run **Desktop packages** with `platform=linux` for
+x86_64 or `platform=linux-arm64` for aarch64 on the commit under review, then
+dispatch the install smoke on that same commit and provide the package run ID
+as `package_run_id`.
 The `.deb` declares its required X11/XKB runtime libraries, and the smoke checks
 that dependency metadata before installing it through APT.
 It installs the `.deb`, checks its runtime inventory and `.glass` MIME handler,
@@ -217,10 +220,12 @@ from temporary directories outside the checkout; failing shims catch any use of
 `cargo`, `rustc`, or system QEMU. Screenshots, install inventory, plan output,
 serial logs, and uninstall/data-retention evidence are kept for 14 days.
 
-This workflow qualifies only the Linux x64 package on the hosted TCG path. It
-does not qualify Linux aarch64 package support, KVM hardware acceleration, or
-native interaction on a user's desktop. Those limits remain part of the
-platform decision.
+The x86_64 cell uses a hosted Ubuntu runner and the aarch64 cell uses a hosted
+Ubuntu ARM64 runner. Both exercise the package's bundled QEMU with TCG while
+offline. Neither cell qualifies KVM hardware acceleration or native interaction
+on a user's desktop. Linux ARM64 is not included in published release artifacts
+until its package build and installed smoke pass and the maintainer approves
+that target.
 
 ## Manual installed Windows package smoke
 

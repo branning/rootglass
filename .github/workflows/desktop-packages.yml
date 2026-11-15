@@ -11,6 +11,7 @@ on:
         options:
           - all
           - linux
+          - linux-arm64
           - macos
           - windows
       artifact_run_id:
@@ -76,7 +77,7 @@ jobs:
           ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
         run: |
           case "$PLATFORM" in
-            all|linux|macos|windows) ;;
+            all|linux|linux-arm64|macos|windows) ;;
             *) echo "Unsupported platform: $PLATFORM" >&2; exit 1 ;;
           esac
           if [[ -n "$RELEASE_TAG" && "$PLATFORM" != all ]]; then
@@ -104,10 +105,11 @@ jobs:
         run: |
           matrix=$(jq -cn --arg platform "$PLATFORM" '
             {include: ([
-              {config: "linux", name: "Linux x64", runner: "ubuntu-24.04", format: "deb", extension: "deb"},
+              {config: "linux", runtime: "linux-x86_64", name: "Linux x64", runner: "ubuntu-24.04", format: "deb", extension: "deb"},
+              {config: "linux-arm64", runtime: "linux-aarch64", name: "Linux arm64", runner: "ubuntu-24.04-arm", format: "deb", extension: "deb"},
               {config: "macos", name: "macOS arm64", runner: "macos-15", format: "dmg", extension: "dmg"},
               {config: "windows", name: "Windows x64", runner: "windows-2025", format: "nsis", extension: "exe"}
-            ] | map(select($platform == "all" or .config == $platform)))}')
+            ] | map(select(.config == $platform or ($platform == "all" and .config != "linux-arm64"))))}')
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           if [[ -n "$ARTIFACT_RUN_ID" ]]; then
             echo "build_packages=false" >> "$GITHUB_OUTPUT"
@@ -247,7 +249,7 @@ jobs:
         if: runner.os == 'Linux'
         env:
           RUNTIME_VERSION: ${{ needs.runtime_assets.outputs.runtime_version }}
-        run: bash scripts/prepare-qemu-runtime.sh "$RUNTIME_VERSION" linux-x86_64 "$RUNNER_TEMP/rootglass-guest-assets"
+        run: bash scripts/prepare-qemu-runtime.sh "$RUNTIME_VERSION" "${{ matrix.runtime }}" "$RUNNER_TEMP/rootglass-guest-assets"
 
       - name: Prepare bundled macOS QEMU runtime
         if: runner.os == 'macOS'
@@ -295,7 +297,7 @@ jobs:
       - name: Write package checksum
         if: runner.os == 'Linux'
         working-directory: crates/rootglass-desktop
-        run: sha256sum target/release/*.${{ matrix.extension }} "$RUNNER_TEMP"/rootglass-runtime-linux-x86_64-${{ needs.runtime_assets.outputs.runtime_version }}.tar.gz > target/release/SHA256SUMS-${{ matrix.config }}.txt
+        run: sha256sum target/release/*.${{ matrix.extension }} "$RUNNER_TEMP"/rootglass-runtime-${{ matrix.runtime }}-${{ needs.runtime_assets.outputs.runtime_version }}.tar.gz > target/release/SHA256SUMS-${{ matrix.config }}.txt
 
       - name: Write package checksum
         if: runner.os == 'macOS'
