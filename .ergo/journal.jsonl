@@ -530,3 +530,4 @@
 {"version":1,"task_id":"5FFC3O","kind":"result","at":"2026-11-15T18:19:12.704948166Z","agent":"codex@worker-1","text":"Protocol draft: ADR-0003 reconciles schema, wrapping, ZIP/QEMU, keychain, state and threat model."}
 {"version":1,"task_id":"5FFC3O","kind":"block","at":"2026-11-15T18:19:12.877358952Z","agent":"codex@worker-1","text":"Await maintainer approval of ADR-0003; implementation children remain staged until approval."}
 {"version":1,"task_id":"5FFC3O","kind":"result","at":"2026-11-15T18:22:05.983761503Z","text":"CLI contract added: public identity, recipient selection, and local instance commands."}
+{"version":1,"task_id":"5FFC3O","kind":"result","at":"2026-11-15T18:23:07.721434699Z","text":"PR #146 opened; awaiting maintainer protocol approval before implementation tasks open."}
