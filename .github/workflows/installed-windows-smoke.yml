@@ -154,6 +154,29 @@ jobs:
           cache: true
           install: mingw-w64-clang-aarch64-qemu mingw-w64-clang-aarch64-ntldd
 
+      - name: Compare installed QEMU in the native MSYS2 environment
+        if: inputs.qemu_probe_only && matrix.id == 'windows-arm64'
+        shell: msys2 {0}
+        run: |
+          set +e
+          runtime_dir="$(find "$(cygpath -u "$LOCALAPPDATA")/Rootglass/rootglass/runtime-assets" -mindepth 1 -maxdepth 1 -type d | sort | tail -n 1)"
+          qemu="$runtime_dir/bin/qemu-system-aarch64.exe"
+          test -f "$qemu" || { echo "Installed QEMU not found at $qemu"; exit 1; }
+          printf 'MSYSTEM=%s\nMINGW_PREFIX=%s\nMSYS2_PATH_TYPE=%s\n' "$MSYSTEM" "$MINGW_PREFIX" "$MSYS2_PATH_TYPE"
+          env | sort | grep -E '^(GDK|GTK|GSETTINGS|LANG=|LC_ALL=|MSYSTEM|MSYS2|MINGW|PATH=|XDG_)' | sed -E 's#(/[A-Za-z0-9._-]+){5,}#<path>#g'
+
+          echo '--- QEMU directly in the native MSYS2 shell ---'
+          timeout -k 2s 10s "$qemu" --version
+          direct_status=$?
+          echo "native-shell qemu --version status: $direct_status"
+
+          echo '--- QEMU through PowerShell inheriting the native MSYS2 environment ---'
+          export ROOTGLASS_QEMU_PROBE_PATH="$(cygpath -w "$qemu")"
+          timeout -k 2s 10s pwsh -NoLogo -NoProfile -NonInteractive -Command '& $env:ROOTGLASS_QEMU_PROBE_PATH --version'
+          powershell_status=$?
+          echo "native-shell PowerShell qemu --version status: $powershell_status"
+          exit 0
+
       - name: Set up Python
         if: inputs.qemu_probe_only != true
         uses: actions/setup-python@v6
