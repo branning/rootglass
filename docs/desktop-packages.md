@@ -1,29 +1,32 @@
 # Desktop package builds
 
 The package workflow builds Linux x86_64, Linux aarch64, macOS arm64, Windows
-x64, and Windows ARM64 on hosted runners. Linux ARM64 passed the Ubuntu 24.04.5
-installed smoke. The Windows ARM64 package now has a native ARM64 build/runtime
-cell. Its Windows 11 ARM64 clean-install smoke passed; the recorded result is
-below. Both ARM64 packages are included in `platform=all` and will be attached to
-new releases built after this change; existing published releases remain
-unchanged. Manual builds upload review artifacts to Actions for 14 days. To
-create a release,
-build from a new draft prerelease's tag with `platform=all` and `release_tag`
-set to that same tag; the workflow materializes and verifies the example
-`.glass`, builds all five installers and matching QEMU runtimes, then attaches
-the full asset set while the release is still mutable. Publish the draft only
-after the attachment job succeeds. Pull requests and pushes do not run package
-builds.
+x64, and Windows ARM64 on hosted runners. Manual package builds remain unsigned
+review artifacts in Actions for 14 days. Release builds use separate protected
+signing environments: macOS Developer ID signing and notarization, plus
+Windows Authenticode signing. A GitHub Actions OIDC signature authenticates the
+release checksum manifest. Pull requests and pushes do not run package or
+signing jobs.
+
+Linux ARM64 passed the Ubuntu 24.04.5 installed smoke. The Windows ARM64 package
+passed the native Windows 11 ARM64 clean-install smoke. Windows x64 evidence is
+for Windows Server 2025; it does not qualify Windows 11 x64. Both ARM64 packages
+are included in `platform=all`; existing published releases remain unchanged.
+To create a release, build from a new draft prerelease's tag with
+`platform=all` and `release_tag` set to that same tag. The workflow materializes
+and verifies the example `.glass`, builds all five installers and matching
+QEMU runtimes, signs the platform packages, and attaches the verified asset set
+while the release is still mutable. Publish only after the attachment and
+download verification steps succeed.
 
 GitHub does not trigger `release.created` for draft releases, and publishing an
 immutable release is too late to add assets. The published `v0.0.1` release
 remains unchanged. Prepare a version-matched draft prerelease before
-publication; the `v0.0.2` preview used this flow. The published `v0.0.4`
-preview has the complete asset set and passed the installed macOS TUI smoke
-against its exact tag. Its Linux and complete Windows 11 clean-host
-qualification remains incomplete.
+publication; the `v0.0.2` through `v0.0.6` previews used this flow before
+signing was configured. The published `v0.0.4` preview has the complete asset
+set and passed the installed macOS TUI smoke against its exact tag.
 
-Each installer declares the `.glass` association and includes the repository license, notices, and a versioned offline runtime. Runtime manifests contain SHA-256 hashes for the QEMU executable, its bundled shared libraries and data files, and the Alpine kernel and initramfs. The app verifies those files before launching a guest and resolves them independently of the current working directory. Standalone runtime archives are also attached so reviewers can inspect the exact per-platform inventory.
+Each installer declares the `.glass` association and includes the repository license, notices, the locked Rust dependency license report, and a versioned offline runtime. Runtime manifests contain SHA-256 hashes for the QEMU executable, its bundled shared libraries and data files, and the Alpine kernel and initramfs. The app verifies those files before launching a guest and resolves them independently of the current working directory. Standalone runtime archives are also attached so reviewers can inspect the exact per-platform inventory.
 
 The Linux runtime uses Ubuntu 24.04's `qemu-system-arm` package, macOS uses
 the Homebrew `qemu` formula, Windows x64 uses the Chocolatey QEMU package, and
@@ -44,10 +47,10 @@ ad-hoc signs the relocated QEMU executable and bundled dynamic libraries and
 verifies those signatures before archiving the runtime. The Rootglass app itself
 remains unsigned and not notarized in preview builds.
 
-These are preview review artifacts. The desktop apps and installers are not
-Developer ID signed or notarized and have not passed complete native clean-host
-qualification. They make no claim that HVF, KVM, or WHPX acceleration is
-available on every host.
+The v0.0.2–v0.0.6 preview artifacts are not Developer ID signed or notarized.
+New releases are blocked unless every signing job succeeds. Signing does not
+expand the recorded OS qualification claims or make any claim that HVF, KVM, or
+WHPX acceleration is available on every host.
 
 ## Manual package builds
 
@@ -74,17 +77,62 @@ gh workflow run desktop-packages.yml --repo branning/rootglass --ref "$release_t
   -f platform=all -f "release_tag=$release_tag"
 ```
 
-The job checks that the target is still a mutable prerelease draft, verifies
-the runtime and example checksums, and attaches 22 assets: an installer,
-manifest, QEMU runtime archive, and runtime checksum for each of five targets,
-plus `rootglass-hello-world-0.1.0.glass` and `SHA256SUMS-example.txt`. On
-Windows it selects the NSIS `*-setup.exe` installer and omits the unpackaged
-desktop executable. Publish the release after the job completes.
+The workflow checks that the target is still a mutable prerelease draft,
+verifies the source run and artifact hashes, signs and verifies the macOS and
+Windows installers, notarizes and staples the macOS app/DMG, then attaches the
+five installers, five runtime archives and checksums, materialized example,
+SBOMs, notices/licenses, signing reports, provenance inventory, and signed
+release checksum manifest. On Windows it selects the NSIS `*-setup.exe`
+installer and omits the unpackaged desktop executable. Publish only after the
+workflow downloads the draft assets again and verifies the signed checksum
+manifest and every listed hash.
+
+Before the first signed release, configure these protected GitHub Environments
+under **Settings → Environments**:
+
+- `rootglass-macos-signing`: require maintainer approval and restrict deployment
+  to `v*` tags. Add `MACOS_CERTIFICATE_P12_BASE64`,
+  `MACOS_CERTIFICATE_PASSWORD`, `MACOS_DEVELOPER_ID_APPLICATION`, `APPLE_ID`,
+  `APPLE_APP_SPECIFIC_PASSWORD`, and `APPLE_TEAM_ID` as environment secrets.
+- `rootglass-windows-signing`: require maintainer approval and restrict
+  deployment to `v*` tags. Add `WINDOWS_CERTIFICATE_PFX_BASE64` and
+  `WINDOWS_CERTIFICATE_PASSWORD` as environment secrets.
+
+Use a Developer ID Application certificate and an Apple app-specific password
+for macOS. The Windows PFX must contain a trusted code-signing certificate and
+private key. Keep private certificates and passwords in the protected
+environments; never commit them or add them as workflow variables. Both
+environments must be configured before a release run; missing credentials fail
+the signing jobs and prevent asset attachment.
 
 To reuse a completed all-platform run from the same tag, set both
 `artifact_run_id` and `release_tag`. The workflow checks that the run's source
 commit matches the release tag and that all five package jobs succeeded before
-attaching the assets.
+signing those artifacts and attaching them.
+
+### Verify a downloaded release
+
+Download all assets for the draft or published tag into one directory. Verify
+the checksum manifest's GitHub OIDC signature first, then verify every release
+asset hash:
+
+```sh
+cosign verify-blob \
+  --bundle SHA256SUMS-release.sigstore.json \
+  --certificate-identity "https://github.com/branning/rootglass/.github/workflows/desktop-packages.yml@refs/tags/vX.Y.Z" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  SHA256SUMS-release.txt
+sha256sum --check SHA256SUMS-release.txt
+```
+
+Replace `vX.Y.Z` with the downloaded release tag. `RELEASE-PROVENANCE.json`
+records the source commit and workflow run, every released file's SHA-256,
+QEMU/runtime versions and asset hashes, app/installer signing details, and the
+historical platform qualification references. The `rootglass-*-sbom.spdx.json`
+files cover locked Rust dependencies and packaged release/runtime archives;
+the license HTML and runtime license archive carry the corresponding texts.
+The Windows signing job verifies Authenticode. The macOS signing job verifies
+code signatures, Gatekeeper assessment, and the stapled notarization ticket.
 
 The materialized example is signed with the public development fixture key and
 contains the disposable `rootglass-ci` guest password. It is for verifying
@@ -343,7 +391,7 @@ QEMU starts.
 
 ## Remaining release limits
 
-- App and installer signing, macOS notarization, and release provenance are not configured. No signing credentials are stored in the repository.
+- The protected signing environments and their secrets must be configured before a signed release can run. No signing credentials are stored in the repository.
 - The published `v0.0.1` release is immutable and has no package or example assets; it cannot be updated in place.
 - The standard package jobs only build artifacts; the separate installed smoke workflows install the exact package on clean hosted OS images and verify the `.glass` association. Qualification is limited to the hosts and artifact digests recorded above.
 - Linux packaging emits a Debian package. macOS emits a DMG. Windows emits an NSIS installer.

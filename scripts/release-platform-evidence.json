@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "note": "These are existing platform qualification references, not tests of the exact signed release being assembled. Release-specific signature and notarization checks are recorded separately.",
+  "targets": {
+    "linux-x86_64": {
+      "qualification": "Ubuntu 24.04 x86_64 clean install, offline GUI/TUI use, and guest boot with QEMU TCG",
+      "run_id": "43671998003",
+      "url": "https://github.com/branning/rootglass/actions/runs/43671998003",
+      "release_claim": "Ubuntu 24.04 x86_64"
+    },
+    "linux-aarch64": {
+      "qualification": "Ubuntu 24.04 ARM64 clean install, offline GUI/TUI use, and guest boot with QEMU TCG",
+      "run_id": "43674044104",
+      "url": "https://github.com/branning/rootglass/actions/runs/43674044104",
+      "release_claim": "Ubuntu 24.04 ARM64"
+    },
+    "macos-arm64": {
+      "qualification": "Hosted macOS Apple Silicon app install, signed example open, guest boot, and stop",
+      "run_id": "42909500277",
+      "url": "https://github.com/branning/rootglass/actions/runs/42909500277",
+      "release_claim": "macOS 15 Apple Silicon; this run predates Developer ID signing and notarization"
+    },
+    "windows-x86_64": {
+      "qualification": "Windows Server 2025 x64 clean install, offline guest boot, and stop",
+      "run_id": "43203983228",
+      "url": "https://github.com/branning/rootglass/actions/runs/43203983228",
+      "release_claim": "Windows Server 2025 x64 only; this does not qualify Windows 11 x64"
+    },
+    "windows-aarch64": {
+      "qualification": "Windows 11 ARM64 native package clean install, offline guest boot, and stop",
+      "run_id": "43724549765",
+      "url": "https://github.com/branning/rootglass/actions/runs/43724549765",
+      "release_claim": "Windows 11 ARM64"
+    }
+  }
+}

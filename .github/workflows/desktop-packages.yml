@@ -51,7 +51,7 @@ jobs:
           ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [[ -z "$ARTIFACT_RUN_ID" && ( "$GITHUB_REF_TYPE" != tag || "$GITHUB_REF_NAME" != "$RELEASE_TAG" ) ]]; then
+          if [[ "$GITHUB_REF_TYPE" != tag || "$GITHUB_REF_NAME" != "$RELEASE_TAG" ]]; then
             echo "Build against the same tag named by release_tag" >&2
             exit 1
           fi
@@ -93,7 +93,7 @@ jobs:
             echo "artifact_run_id must be numeric" >&2
             exit 1
           fi
-          if [[ -n "$RELEASE_TAG" && -z "$ARTIFACT_RUN_ID" && ( "$GITHUB_REF_TYPE" != tag || "$GITHUB_REF_NAME" != "$RELEASE_TAG" ) ]]; then
+          if [[ -n "$RELEASE_TAG" && ( "$GITHUB_REF_TYPE" != tag || "$GITHUB_REF_NAME" != "$RELEASE_TAG" ) ]]; then
             echo "Build against the same tag named by release_tag" >&2
             exit 1
           fi
@@ -161,6 +161,24 @@ jobs:
             . -> target
             crates/rootglass-desktop -> target
 
+      - name: Install Cargo About for dependency license inventory
+        run: cargo install cargo-about --locked --version 0.9.3
+
+      - name: Generate the desktop dependency license report
+        run: |
+          mkdir -p "$RUNNER_TEMP/rootglass-cargo-licenses"
+          cargo about generate --manifest-path crates/rootglass-desktop/Cargo.toml \
+            --locked --fail docs/third-party-licenses.hbs \
+            --output-file "$RUNNER_TEMP/rootglass-cargo-licenses/THIRD-PARTY-CARGO-LICENSES.html"
+
+      - name: Upload desktop dependency license report
+        uses: actions/upload-artifact@v4
+        with:
+          name: third-party-cargo-licenses
+          path: ${{ runner.temp }}/rootglass-cargo-licenses/THIRD-PARTY-CARGO-LICENSES.html
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Materialize Alpine guest assets
         env:
           ROOTFS_SIZE_MB: "128"
@@ -210,6 +228,12 @@ jobs:
         with:
           name: guest-runtime-assets
           path: ${{ runner.temp }}/rootglass-guest-assets
+
+      - name: Download desktop dependency license report
+        uses: actions/download-artifact@v4
+        with:
+          name: third-party-cargo-licenses
+          path: ${{ runner.temp }}/rootglass-cargo-licenses
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -284,6 +308,21 @@ jobs:
 
       - name: Install Cargo Packager
         run: cargo install cargo-packager --locked --version 0.11.8
+
+      - name: Stage desktop dependency licenses (Linux and macOS)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p crates/rootglass-desktop/target/release
+          cp "$RUNNER_TEMP/rootglass-cargo-licenses/THIRD-PARTY-CARGO-LICENSES.html" \
+            crates/rootglass-desktop/target/release/
+
+      - name: Stage desktop dependency licenses (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path crates/rootglass-desktop/target/release | Out-Null
+          Copy-Item -LiteralPath "$env:RUNNER_TEMP/rootglass-cargo-licenses/THIRD-PARTY-CARGO-LICENSES.html" `
+            -Destination crates/rootglass-desktop/target/release/
 
       - name: Build and package desktop (Linux ccache)
         if: runner.os == 'Linux'
@@ -362,53 +401,19 @@ jobs:
           compression-level: 0
           retention-days: 14
 
-  attach-current-release-assets:
-    name: Attach current build artifacts to a draft prerelease
-    if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.release_tag && needs.select_platforms.result == 'success' && needs.package.result == 'success' && needs.runtime_assets.result == 'success' && fromJSON(needs.select_platforms.outputs.build_packages) }}
-    needs: [select_platforms, package, runtime_assets]
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Download artifacts from this run
-        uses: actions/download-artifact@v4
-        with:
-          pattern: rootglass-*
-          path: release-artifacts
-          merge-multiple: false
-
-      - name: Verify and attach complete release assets
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: bash scripts/assemble-release-artifacts.sh release-artifacts "$RUNNER_TEMP/release-assets-ready" "$RELEASE_TAG"
-
-  attach-existing-release-assets:
-    name: Attach artifacts from an existing package run
-    if: ${{ always() && needs.select_platforms.result == 'success' && !fromJSON(needs.select_platforms.outputs.build_packages) }}
-    needs: [select_platforms]
+  validate-existing-package-run:
+    name: Validate selected package run for release
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.release_tag && inputs.artifact_run_id && needs.validate-release.result == 'success' && needs.select_platforms.result == 'success' }}
+    needs: [validate-release, select_platforms]
     runs-on: ubuntu-24.04
     permissions:
       actions: read
-      contents: write
+      contents: read
+    outputs:
+      source_sha: ${{ steps.validate.outputs.source_sha }}
     steps:
-      - name: Download package artifacts from the selected run
-        uses: actions/download-artifact@v4
-        with:
-          pattern: rootglass-*
-          path: downloaded-artifacts
-          merge-multiple: false
-          repository: ${{ github.repository }}
-          run-id: ${{ inputs.artifact_run_id }}
-          github-token: ${{ github.token }}
-
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Verify source run and attach release assets
+      - name: Verify source run belongs to the release tag
+        id: validate
         env:
           GH_TOKEN: ${{ github.token }}
           ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
@@ -417,13 +422,17 @@ jobs:
           set -euo pipefail
           [[ "$ARTIFACT_RUN_ID" =~ ^[0-9]+$ ]] || { echo "artifact_run_id must be numeric" >&2; exit 1; }
           [[ -n "$RELEASE_TAG" ]] || { echo "release_tag is required with artifact_run_id" >&2; exit 1; }
-
-          run_status=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ARTIFACT_RUN_ID" --jq '.status')
-          [[ "$run_status" == "completed" ]] || {
-            echo "Artifact run $ARTIFACT_RUN_ID must be complete (found $run_status)" >&2
+          run_json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ARTIFACT_RUN_ID")
+          [[ "$(jq -r '.path' <<< "$run_json")" == ".github/workflows/desktop-packages.yml" ]] || {
+            echo "Run $ARTIFACT_RUN_ID is not the Desktop packages workflow" >&2
             exit 1
           }
-          run_head_sha=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ARTIFACT_RUN_ID" --jq '.head_sha')
+          [[ "$(jq -r '.status' <<< "$run_json")" == "completed" && \
+             "$(jq -r '.conclusion' <<< "$run_json")" == "success" ]] || {
+            echo "Artifact run $ARTIFACT_RUN_ID must have completed successfully" >&2
+            exit 1
+          }
+          run_head_sha=$(jq -r '.head_sha' <<< "$run_json")
           tag_type=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.type')
           tag_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.sha')
           while [[ "$tag_type" == "tag" ]]; do
@@ -435,7 +444,6 @@ jobs:
             echo "Artifact run $ARTIFACT_RUN_ID was not built from release tag $RELEASE_TAG" >&2
             exit 1
           }
-
           source_jobs_text=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ARTIFACT_RUN_ID/jobs" --paginate --jq '.jobs[] | select(.name == "Materialize pinned guest boot assets" or .name == "Linux x64 package" or .name == "Linux arm64 package" or .name == "macOS arm64 package" or .name == "Windows x64 package" or .name == "Windows ARM64 package") | [.name, .conclusion] | @tsv')
           mapfile -t source_jobs <<< "$source_jobs_text"
           if [[ "${#source_jobs[@]}" -ne 6 ]]; then
@@ -456,5 +464,280 @@ jobs:
               exit 1
             fi
           done
+          echo "source_sha=$run_head_sha" >> "$GITHUB_OUTPUT"
 
-          bash scripts/assemble-release-artifacts.sh downloaded-artifacts "$RUNNER_TEMP/release-assets-ready" "$RELEASE_TAG"
+  release-source:
+    name: Select verified release package source
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.release_tag && needs.validate-release.result == 'success' && needs.select_platforms.result == 'success' && ((fromJSON(needs.select_platforms.outputs.build_packages) && needs.package.result == 'success' && needs.runtime_assets.result == 'success') || (!fromJSON(needs.select_platforms.outputs.build_packages) && needs.validate-existing-package-run.result == 'success')) }}
+    needs: [validate-release, select_platforms, package, runtime_assets, validate-existing-package-run]
+    runs-on: ubuntu-24.04
+    outputs:
+      run_id: ${{ steps.source.outputs.run_id }}
+      source_sha: ${{ steps.source.outputs.source_sha }}
+    steps:
+      - name: Record verified source run
+        id: source
+        env:
+          ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
+          VALIDATED_SOURCE_SHA: ${{ needs.validate-existing-package-run.outputs.source_sha }}
+        run: |
+          if [[ -n "$ARTIFACT_RUN_ID" ]]; then
+            echo "run_id=$ARTIFACT_RUN_ID" >> "$GITHUB_OUTPUT"
+            echo "source_sha=$VALIDATED_SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_id=$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
+            echo "source_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          fi
+
+  sign-macos-release:
+    name: Sign and notarize macOS release app
+    needs: [release-source]
+    if: ${{ always() && needs.release-source.result == 'success' }}
+    runs-on: macos-15
+    environment: rootglass-macos-signing
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Checkout signing workflow sources
+        uses: actions/checkout@v6
+
+      - name: Download unsigned macOS package
+        uses: actions/download-artifact@v4
+        with:
+          name: rootglass-dmg-macOS-ARM64
+          path: ${{ runner.temp }}/rootglass-macos-package
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.release-source.outputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Sign, notarize, staple, and verify the app and disk image
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_DEVELOPER_ID_APPLICATION: ${{ secrets.MACOS_DEVELOPER_ID_APPLICATION }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          INPUT_DMG: ${{ runner.temp }}/rootglass-macos-package
+          OUTPUT_DIR: ${{ runner.temp }}/rootglass-signed-macos
+        run: |
+          set -euo pipefail
+          mapfile -t dmgs < <(find "$INPUT_DMG" -type f -name '*.dmg' -print)
+          [[ "${#dmgs[@]}" -eq 1 ]] || { echo "Expected one macOS DMG" >&2; exit 1; }
+          bash scripts/sign-macos-release-dmg.sh "${dmgs[0]}" "$OUTPUT_DIR" "$GITHUB_WORKSPACE"
+
+      - name: Upload signed macOS assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: rootglass-release-macos-arm64
+          path: ${{ runner.temp }}/rootglass-signed-macos/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  sign-windows-release:
+    name: Sign Windows ${{ matrix.arch }} installer
+    needs: [release-source]
+    if: ${{ always() && needs.release-source.result == 'success' }}
+    runs-on: ${{ matrix.runner }}
+    environment: rootglass-windows-signing
+    permissions:
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-2025
+            package_artifact: rootglass-nsis-Windows-X64
+          - arch: arm64
+            runner: windows-11-arm
+            package_artifact: rootglass-nsis-Windows-ARM64
+    steps:
+      - name: Checkout signing workflow sources
+        uses: actions/checkout@v6
+
+      - name: Download unsigned Windows installer
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.package_artifact }}
+          path: ${{ runner.temp }}/rootglass-windows-package
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.release-source.outputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Authenticode-sign and verify the installer
+        env:
+          WINDOWS_CERTIFICATE_PFX_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_PFX_BASE64 }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          ARCHITECTURE: ${{ matrix.arch }}
+          OUTPUT_DIR: ${{ runner.temp }}/rootglass-signed-windows
+        shell: pwsh
+        run: |
+          $installer = @(Get-ChildItem "$env:RUNNER_TEMP/rootglass-windows-package/*-setup.exe")
+          if ($installer.Count -ne 1) { throw "Expected exactly one Windows installer" }
+          .\scripts\sign-windows-release-installer.ps1 `
+            -InputInstaller $installer[0].FullName `
+            -OutputDirectory $env:OUTPUT_DIR `
+            -Architecture $env:ARCHITECTURE
+
+      - name: Upload signed Windows assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: rootglass-release-windows-${{ matrix.arch }}
+          path: ${{ runner.temp }}/rootglass-signed-windows/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  attach-release-assets:
+    name: Assemble, attest, and verify release assets
+    needs: [release-source, sign-macos-release, sign-windows-release]
+    if: ${{ always() && needs.release-source.result == 'success' && needs.sign-macos-release.result == 'success' && needs.sign-windows-release.result == 'success' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: write
+      id-token: write
+    steps:
+      - name: Checkout the release inventory and scripts
+        uses: actions/checkout@v6
+
+      - name: Download package and signing artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ needs.release-source.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'rootglass-*' --dir "$RUNNER_TEMP/release-artifacts"
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'rootglass-release-*' --dir "$RUNNER_TEMP/release-signatures"
+          gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name third-party-cargo-licenses --dir "$RUNNER_TEMP/rootglass-cargo-licenses"
+
+      - name: Verify and assemble signed product assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          bash scripts/assemble-release-artifacts.sh \
+            "$RUNNER_TEMP/release-artifacts" \
+            "$RUNNER_TEMP/release-assets-ready" \
+            "$RELEASE_TAG" \
+            "$RUNNER_TEMP/release-signatures"
+
+      - name: Include project notices and exact runtime license texts
+        run: |
+          set -euo pipefail
+          cp LICENSE "$RUNNER_TEMP/release-assets-ready/LICENSE"
+          cp NOTICE.md "$RUNNER_TEMP/release-assets-ready/THIRD-PARTY-NOTICES.md"
+          cp "$RUNNER_TEMP/rootglass-cargo-licenses/THIRD-PARTY-CARGO-LICENSES.html" \
+            "$RUNNER_TEMP/release-assets-ready/THIRD-PARTY-CARGO-LICENSES.html"
+          python3 scripts/collect-runtime-licenses.py \
+            "$RUNNER_TEMP/release-assets-ready" \
+            "$RUNNER_TEMP/release-assets-ready/THIRD-PARTY-RUNTIME-LICENSES.tar.gz"
+
+      - name: Generate SPDX SBOM from locked Rust source dependencies
+        uses: anchore/sbom-action@v0.24.3
+        with:
+          path: ${{ github.workspace }}
+          format: spdx-json
+          output-file: ${{ runner.temp }}/release-assets-ready/rootglass-source-sbom.spdx.json
+          syft-version: v1.57.1
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Generate SPDX SBOM from release packages and runtime archives
+        uses: anchore/sbom-action@v0.24.3
+        with:
+          path: ${{ runner.temp }}/release-assets-ready
+          format: spdx-json
+          output-file: ${{ runner.temp }}/release-assets-ready/rootglass-release-sbom.spdx.json
+          syft-version: v1.57.1
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Record exact release, runtime, signing, and qualification inventory
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_COMMIT: ${{ needs.release-source.outputs.source_sha }}
+          PACKAGE_RUN_ID: ${{ needs.release-source.outputs.run_id }}
+          SIGNING_RUN_ID: ${{ github.run_id }}
+        run: |
+          python3 scripts/write-release-provenance.py \
+            "$RUNNER_TEMP/release-assets-ready" \
+            "$RELEASE_TAG" "$SOURCE_COMMIT" "$PACKAGE_RUN_ID" \
+            "$SIGNING_RUN_ID" "$GITHUB_REPOSITORY"
+
+      - name: Create and verify release checksum manifest
+        env:
+          READY_ROOT: ${{ runner.temp }}/release-assets-ready
+        run: |
+          set -euo pipefail
+          cd "$READY_ROOT"
+          mapfile -t assets < <(find . -maxdepth 1 -type f \
+            ! -name 'SHA256SUMS-release.txt' \
+            ! -name 'SHA256SUMS-release.sigstore.json' -printf '%f\n' | sort)
+          [[ "${#assets[@]}" -gt 30 ]] || { echo "Release inventory is incomplete" >&2; exit 1; }
+          sha256sum "${assets[@]}" > SHA256SUMS-release.txt
+          sha256sum --check SHA256SUMS-release.txt
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: v3.1.4
+
+      - name: Sign release checksums with GitHub Actions OIDC
+        env:
+          READY_ROOT: ${{ runner.temp }}/release-assets-ready
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          cosign sign-blob --yes \
+            --bundle "$READY_ROOT/SHA256SUMS-release.sigstore.json" \
+            "$READY_ROOT/SHA256SUMS-release.txt"
+          cosign verify-blob \
+            --bundle "$READY_ROOT/SHA256SUMS-release.sigstore.json" \
+            --certificate-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/desktop-packages.yml@refs/tags/$RELEASE_TAG" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$READY_ROOT/SHA256SUMS-release.txt"
+
+      - name: Attach assets to the validated draft prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          READY_ROOT: ${{ runner.temp }}/release-assets-ready
+        run: |
+          set -euo pipefail
+          mapfile -t assets < <(find "$READY_ROOT" -maxdepth 1 -type f -print | sort)
+          gh release upload "$RELEASE_TAG" "${assets[@]}" \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
+      - name: Download the attached release and verify its signed checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/desktop-packages.yml@refs/tags/${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          downloaded="$RUNNER_TEMP/release-downloaded"
+          mkdir -p "$downloaded"
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern '*' --dir "$downloaded"
+          cosign verify-blob \
+            --bundle "$downloaded/SHA256SUMS-release.sigstore.json" \
+            --certificate-identity "$RELEASE_IDENTITY" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$downloaded/SHA256SUMS-release.txt"
+          (cd "$downloaded" && sha256sum --check SHA256SUMS-release.txt)
+          expected_files="$RUNNER_TEMP/release-expected-files.txt"
+          actual_files="$RUNNER_TEMP/release-actual-files.txt"
+          {
+            awk '{ print $2 }' "$downloaded/SHA256SUMS-release.txt"
+            printf '%s\n' SHA256SUMS-release.txt SHA256SUMS-release.sigstore.json
+          } | sort -u > "$expected_files"
+          find "$downloaded" -maxdepth 1 -type f -printf '%f\n' | sort -u > "$actual_files"
+          diff -u "$expected_files" "$actual_files"

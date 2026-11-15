@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rootglass third-party Rust licenses</title>
+  <style>
+    body { font: 16px/1.55 system-ui, sans-serif; margin: 2rem auto; max-width: 70rem; padding: 0 1rem; }
+    pre { overflow-wrap: anywhere; white-space: pre-wrap; }
+    section { border-top: 1px solid #888; margin-top: 2rem; padding-top: 1rem; }
+  </style>
+</head>
+<body>
+  <h1>Rootglass third-party Rust licenses</h1>
+  <p>This inventory is generated from the locked desktop dependency graph for this release.</p>
+  {{#each licenses}}
+  <section id="{{id}}">
+    <h2>{{name}}</h2>
+    <p>Used by:</p>
+    <ul>
+      {{#each used_by}}
+      <li><a href="{{#if crate.repository}}{{crate.repository}}{{else}}https://crates.io/crates/{{crate.name}}{{/if}}">{{crate.name}} {{crate.version}}</a></li>
+      {{/each}}
+    </ul>
+    <pre>{{text}}</pre>
+  </section>
+  {{/each}}
+</body>
+</html>
