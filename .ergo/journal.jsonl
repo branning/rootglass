@@ -457,3 +457,4 @@
 {"version":1,"task_id":"IEELHO","kind":"result","at":"2026-11-15T01:57:07.713640776Z","agent":"codex@specialized-images","text":"PR #136 merged as 366c1f4; standard CI 43664626584 passed."}
 {"version":1,"task_id":"IEELHO","kind":"result","at":"2026-11-15T01:57:07.73043204Z","agent":"codex@specialized-images","text":"Run 43664639096 installed the .deb and verified runtime inventory before stalling."}
 {"version":1,"task_id":"IEELHO","kind":"result","at":"2026-11-15T01:57:07.747071971Z","agent":"codex@specialized-images","text":"OS association smoke remains unresolved; streamed logs are needed to locate the hang."}
+{"version":1,"task_id":"IEELHO","kind":"result","at":"2026-11-15T02:02:51.886102721Z","agent":"codex@specialized-images","text":"Run 43664639096 was canceled after stalling at OS association; gh did not expose its logs."}
