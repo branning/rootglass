@@ -202,7 +202,7 @@ jobs:
             dpkg-deb -f "$deb" Package Version Architecture
             echo "Depends: $package_depends"
           } | tee "$EVIDENCE_DIR/package.txt"
-          for dependency in libxcb1 libxkbcommon0 libxkbcommon-x11-0; do
+          for dependency in libxcb1 libxkbcommon0 libxkbcommon-x11-0 shared-mime-info; do
             if [[ "$package_depends" != *"$dependency"* ]]; then
               echo "Debian package is missing runtime dependency: $dependency" >&2
               exit 1

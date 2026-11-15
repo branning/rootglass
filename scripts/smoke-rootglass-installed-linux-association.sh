@@ -74,6 +74,18 @@ export ROOTGLASS_DESKTOP_SMOKE=1
 export ROOTGLASS_DESKTOP_SMOKE_EVENT_LOG="$event_log"
 
 mime_type="application/vnd.rootglass.glass"
+mime_package_file="/usr/share/mime/packages/rootglass.xml"
+[[ -f "$mime_package_file" ]] || {
+  echo "The installed package is missing its shared MIME definition: $mime_package_file" >&2
+  exit 1
+}
+glass_content_type="$(gio info --attributes=standard::content-type -- "$glass_file" \
+  | awk '/standard::content-type:/ { print $2; exit }')"
+[[ "$glass_content_type" == "$mime_type" ]] || {
+  printf 'Expected GIO to identify %s as %s, got %s\n' \
+    "$glass_file" "$mime_type" "${glass_content_type:-<none>}" >&2
+  exit 1
+}
 log "looking for installed .glass desktop handler"
 mapfile -t matching_desktop_files < <(find /usr/share/applications /usr/local/share/applications \
   -type f -name '*.desktop' -exec grep -Fl "$mime_type" {} + 2>/dev/null | sort)
