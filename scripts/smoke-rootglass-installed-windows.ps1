@@ -187,6 +187,11 @@ public static class RootglassSmokeWindow {
     private static extern uint GetCurrentThreadId();
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool AttachThreadInput(uint attach, uint attachTo, bool attachInput);
+    public delegate bool EnumWindowsProc(IntPtr window, IntPtr lParam);
+    [DllImport("user32.dll")]
+    private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(IntPtr window);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct RECT {
@@ -204,6 +209,30 @@ public static class RootglassSmokeWindow {
         public int X;
         public int Y;
         public POINT(int x, int y) { X = x; Y = y; }
+    }
+
+    public static IntPtr FindMainVisibleWindow(uint processId) {
+        IntPtr bestWindow = IntPtr.Zero;
+        long bestArea = 0;
+        EnumWindows(delegate(IntPtr window, IntPtr lParam) {
+            uint candidateProcessId;
+            GetWindowThreadProcessId(window, out candidateProcessId);
+            if (candidateProcessId != processId || !IsWindowVisible(window)) return true;
+            StringBuilder className = new StringBuilder(256);
+            GetClassName(window, className, className.Capacity);
+            if (className.ToString() == "ConsoleWindowClass") return true;
+            RECT rect;
+            if (!GetClientRect(window, out rect)) return true;
+            long width = Math.Max(0, rect.Right - rect.Left);
+            long height = Math.Max(0, rect.Bottom - rect.Top);
+            long area = width * height;
+            if (area > bestArea) {
+                bestArea = area;
+                bestWindow = window;
+            }
+            return true;
+        }, IntPtr.Zero);
+        return bestWindow;
     }
 
     public static bool ActivateWindow(IntPtr window) {
@@ -401,24 +430,27 @@ public static class RootglassSmokeWindow {
     Complete-WindowsPrivacyOobe
     $RootglassProcess = Start-Process -FilePath $RootglassExe -PassThru
     $windowDeadline = (Get-Date).AddSeconds(30)
+    $RootglassWindowHandle = [IntPtr]::Zero
     while ((Get-Date) -lt $windowDeadline) {
         $RootglassProcess.Refresh()
-        if ($RootglassProcess.MainWindowHandle -ne [IntPtr]::Zero) { break }
+        $RootglassWindowHandle = [RootglassSmokeWindow]::FindMainVisibleWindow([uint32]$RootglassProcess.Id)
+        if ($RootglassWindowHandle -ne [IntPtr]::Zero) { break }
         Start-Sleep -Milliseconds 250
     }
-    if ($RootglassProcess.MainWindowHandle -eq [IntPtr]::Zero) {
-        throw "Installed Rootglass did not expose a foreground window for the picker smoke."
+    if ($RootglassWindowHandle -eq [IntPtr]::Zero) {
+        throw "Installed Rootglass did not expose a visible non-console window for the picker smoke. MainWindowHandle: $([RootglassSmokeWindow]::DescribeWindow($RootglassProcess.MainWindowHandle))"
     }
+    Write-ProgressLine "selected Rootglass UI window $([RootglassSmokeWindow]::DescribeWindow($RootglassWindowHandle)); process main window $([RootglassSmokeWindow]::DescribeWindow($RootglassProcess.MainWindowHandle))"
     $foregroundWindow = [IntPtr]::Zero
     $foregroundSet = $false
     for ($focusAttempt = 0; $focusAttempt -lt 3; $focusAttempt++) {
-        $foregroundSet = [RootglassSmokeWindow]::ActivateWindow($RootglassProcess.MainWindowHandle)
+        $foregroundSet = [RootglassSmokeWindow]::ActivateWindow($RootglassWindowHandle)
         Start-Sleep -Milliseconds 500
         $foregroundWindow = [RootglassSmokeWindow]::GetForegroundWindow()
-        if ($foregroundWindow -eq $RootglassProcess.MainWindowHandle) { break }
+        if ($foregroundWindow -eq $RootglassWindowHandle) { break }
         if (-not (Dismiss-AmbientWindowsShellPrompt $foregroundWindow)) { break }
     }
-    Write-ProgressLine "foreground request=$foregroundSet target=$($RootglassProcess.MainWindowHandle) active=$foregroundWindow"
+    Write-ProgressLine "foreground request=$foregroundSet target=$RootglassWindowHandle active=$foregroundWindow"
     try {
         Add-Type -AssemblyName System.Drawing
         $screenBounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
@@ -431,13 +463,13 @@ public static class RootglassSmokeWindow {
     } catch {
         Write-ProgressLine "desktop screenshot capture failed: $($_.Exception.Message)"
     }
-    if ($foregroundWindow -ne $RootglassProcess.MainWindowHandle) {
+    if ($foregroundWindow -ne $RootglassWindowHandle) {
         throw "Could not bring installed Rootglass to the foreground. $([RootglassSmokeWindow]::DescribeWindow($foregroundWindow))"
     }
     $importMethod = ""
     $importBounds = $null
     try {
-        $windowAutomation = [System.Windows.Automation.AutomationElement]::FromHandle($RootglassProcess.MainWindowHandle)
+        $windowAutomation = [System.Windows.Automation.AutomationElement]::FromHandle($RootglassWindowHandle)
         $elements = $windowAutomation.FindAll(
             [System.Windows.Automation.TreeScope]::Descendants,
             [System.Windows.Automation.Condition]::TrueCondition
@@ -466,7 +498,7 @@ public static class RootglassSmokeWindow {
             $clickPoint = [RootglassSmokeWindow]::ClickAt($x, $y)
             $importMethod = "mouse click on the accessible Import Glass bounds at $clickPoint"
         } else {
-            $clickPoint = [RootglassSmokeWindow]::ClickImportGlass($RootglassProcess.MainWindowHandle)
+            $clickPoint = [RootglassSmokeWindow]::ClickImportGlass($RootglassWindowHandle)
             $importMethod = "mouse click on the library header Import Glass location at $clickPoint"
         }
     }
@@ -513,7 +545,7 @@ public static class RootglassSmokeWindow {
                     $current = $candidate.Current
                     $windowHandle = [IntPtr]$current.NativeWindowHandle
                     if ($windowHandle -eq [IntPtr]::Zero -or
-                        $windowHandle -eq $RootglassProcess.MainWindowHandle) { continue }
+                        $windowHandle -eq $RootglassWindowHandle) { continue }
 
                     $candidateControls = $candidate.FindAll(
                         [System.Windows.Automation.TreeScope]::Descendants,
