@@ -1,7 +1,7 @@
 use super::{
-    dsse_pae, hex_sha256, normalize_relative_path, verify_glass_archive, DsseEnvelope,
-    SignatureError, TrustStore, TrustedPublisher, VerificationLimits, DSSE_PAYLOAD_TYPE,
-    PREDICATE_TYPE, STATEMENT_TYPE,
+    dsse_pae, hex_sha256, normalize_relative_path, predicate_type_for_schema, verify_glass_archive,
+    DsseEnvelope, SignatureError, TrustStore, TrustedPublisher, VerificationLimits,
+    DSSE_PAYLOAD_TYPE, STATEMENT_TYPE,
 };
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -221,6 +221,39 @@ fn prepare_signature(
     )?;
     files.sort_by(|left, right| left.name.cmp(&right.name));
 
+    if let Some(catalog) = &glass.manifest.artifact_catalog {
+        for (artifact_id, artifact) in &catalog.artifacts {
+            let file = files
+                .iter()
+                .find(|file| file.name == artifact.storage.path)
+                .ok_or_else(|| SignatureError::ArtifactInventoryMismatch {
+                    artifact_id: artifact_id.clone(),
+                    reason: format!(
+                        "storage path '{}' is not present in the bundle",
+                        artifact.storage.path
+                    ),
+                })?;
+            if file.digest != artifact.sha256 {
+                return Err(SignatureError::ArtifactInventoryMismatch {
+                    artifact_id: artifact_id.clone(),
+                    reason: format!(
+                        "catalog digest {} does not match file digest {}",
+                        artifact.sha256, file.digest
+                    ),
+                });
+            }
+            if file.size != artifact.size_bytes {
+                return Err(SignatureError::ArtifactInventoryMismatch {
+                    artifact_id: artifact_id.clone(),
+                    reason: format!(
+                        "catalog size {} does not match file size {}",
+                        artifact.size_bytes, file.size
+                    ),
+                });
+            }
+        }
+    }
+
     let public_key = signing_key.verifying_key().to_bytes();
     let key_id = format!("ed25519:{}", hex_sha256(&public_key));
     let report = SigningReport {
@@ -238,6 +271,13 @@ fn prepare_signature(
             })
         })
         .collect::<Vec<_>>();
+    let predicate_type =
+        predicate_type_for_schema(glass.manifest.schema_version).ok_or_else(|| {
+            SignatureError::InvalidManifest(format!(
+                "unsupported schema version {}",
+                glass.manifest.schema_version
+            ))
+        })?;
     let statement = json!({
         "_type": STATEMENT_TYPE,
         "predicate": {
@@ -251,7 +291,7 @@ fn prepare_signature(
             },
             "schemaVersion": glass.manifest.schema_version
         },
-        "predicateType": PREDICATE_TYPE,
+        "predicateType": predicate_type,
         "subject": subjects
     });
     let payload = serde_json::to_vec(&statement)?;

@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -6,7 +7,14 @@ use thiserror::Error;
 
 pub const MANIFEST_FILE_NAME: &str = "rootglass.toml";
 pub const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
-pub const SUPPORTED_SCHEMA_VERSION: u32 = 1;
+pub const SUPPORTED_SCHEMA_VERSION: u32 = 2;
+pub const LEGACY_SCHEMA_VERSION: u32 = 1;
+pub const MULTI_ARTIFACT_SCHEMA_VERSION: u32 = 2;
+pub const CATALOG_VERSION: u32 = 1;
+pub const MAX_CATALOG_ARTIFACTS: usize = 256;
+pub const MAX_CATALOG_PROFILES: usize = 64;
+pub const MAX_CATALOG_ARTIFACT_BYTES: u64 = 256 * 1024 * 1024;
+pub const MAX_CATALOG_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
 pub const SUPPORTED_ARCHITECTURE: &str = "aarch64";
 pub const SUPPORTED_RUNTIME_PROFILE: &str = "virt-linux";
 pub const BUILTIN_AARCH64_KERNEL: &str = "builtin:aarch64-linux";
@@ -72,10 +80,15 @@ pub enum ManifestError {
 
     #[error("signature path is required")]
     MissingSignature,
+
+    #[error("invalid artifact catalog: {0}")]
+    InvalidArtifactCatalog(String),
+
+    #[error("schema version {actual} is understood for inspection but is not launchable")]
+    UnsupportedLaunchSchema { actual: u32 },
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Manifest {
     pub schema_version: u32,
     pub name: String,
@@ -88,6 +101,237 @@ pub struct Manifest {
     pub resources: Resources,
     pub display: Display,
     pub network: Network,
+    /// Present only for schema 2. Schema-1 keeps its original fields and wire shape.
+    pub artifact_catalog: Option<ArtifactCatalog>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Schema1Manifest {
+    schema_version: u32,
+    name: String,
+    identifier: String,
+    version: String,
+    description: Option<String>,
+    publisher: Publisher,
+    runtime: Runtime,
+    boot: Boot,
+    resources: Resources,
+    display: Display,
+    network: Network,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Schema2Manifest {
+    schema_version: u32,
+    name: String,
+    identifier: String,
+    version: String,
+    description: Option<String>,
+    publisher: Publisher,
+    artifact_catalog: ArtifactCatalog,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactCatalog {
+    pub catalog_version: u32,
+    pub default_profile: String,
+    pub artifacts: BTreeMap<String, Artifact>,
+    pub profiles: BTreeMap<String, LaunchProfile>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub enum ArtifactKind {
+    LinuxBootDisk,
+    McuFirmware,
+    BackendExecutable,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub enum ArtifactFormat {
+    Raw,
+    Binary,
+    Executable,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Artifact {
+    pub kind: ArtifactKind,
+    pub format: ArtifactFormat,
+    pub size_bytes: u64,
+    pub sha256: String,
+    pub storage: ArtifactStorage,
+    pub target_architecture: Option<TargetArchitecture>,
+    pub target_machine: Option<TargetMachine>,
+    pub host_os: Option<HostOs>,
+    pub backend: Option<BackendMetadata>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactStorage {
+    pub kind: StorageKind,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub enum StorageKind {
+    ZipEntry,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub enum TargetArchitecture {
+    Aarch64,
+    Arm,
+    #[serde(rename = "x86_64")]
+    X86_64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub enum TargetMachine {
+    #[serde(rename = "qemu:virt")]
+    QemuVirt,
+    #[serde(rename = "qemu:mps2-an385")]
+    QemuMps2An385,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub enum HostOs {
+    Linux,
+    Macos,
+    Windows,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct BackendMetadata {
+    pub publisher_identity: String,
+    pub capabilities: BTreeSet<BackendCapability>,
+    pub ipc: BTreeSet<IpcTransport>,
+    pub lifecycle: BackendLifecycle,
+    pub isolation: BackendIsolation,
+    #[serde(default)]
+    pub qom_device_ids: BTreeSet<String>,
+    #[serde(default)]
+    pub virtio_backend_ids: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub enum BackendCapability {
+    QomDeviceV1,
+    VirtioBackendV1,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub enum IpcTransport {
+    UnixDomainSocket,
+    NamedPipe,
+    Stdio,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub enum BackendLifecycle {
+    SpawnPerRun,
+    LongRunning,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub enum BackendIsolation {
+    SeparateProcess,
+    PlatformSandbox,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchProfile {
+    pub required_features: BTreeSet<RequiredFeature>,
+    pub resources: Resources,
+    pub network: Network,
+    pub nodes: Vec<LaunchNode>,
+    pub devices: Vec<TypedDevice>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub enum RequiredFeature {
+    LaunchProfilesV1,
+    LinuxNodeV1,
+    McuNodeV1,
+    TypedDevicesV1,
+    BackendAssetsV1,
+    BackendProcessIsolationV1,
+    ExternalQomBackendV1,
+    ExternalVirtioBackendV1,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchNode {
+    pub id: String,
+    pub startup_order: u16,
+    pub process_group: String,
+    pub architecture: TargetArchitecture,
+    pub machine: TargetMachine,
+    pub boot: BootData,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum BootData {
+    Linux {
+        kernel: String,
+        device_tree: String,
+        rootfs_artifact: String,
+        #[serde(default)]
+        kernel_args: Vec<String>,
+    },
+    Mcu {
+        firmware_artifact: String,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum TypedDevice {
+    VirtioBlkMmio {
+        id: String,
+        node_id: String,
+        artifact_id: String,
+        read_only: bool,
+    },
+    Pl011Uart {
+        id: String,
+        node_id: String,
+    },
+    Mps2Uart {
+        id: String,
+        node_id: String,
+    },
+    ExternalVirtioBackend {
+        id: String,
+        node_id: String,
+        backend_artifact_id: String,
+        backend_id: String,
+    },
+    ExternalQomBackend {
+        id: String,
+        node_id: String,
+        backend_artifact_id: String,
+        qom_device_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -194,6 +438,12 @@ impl Glass {
     pub fn validate_launch_ready(&self) -> Result<(), ManifestError> {
         self.validate_manifest_only()?;
 
+        if self.manifest.schema_version != LEGACY_SCHEMA_VERSION {
+            return Err(ManifestError::UnsupportedLaunchSchema {
+                actual: self.manifest.schema_version,
+            });
+        }
+
         let rootfs_path = self.root.join(&self.manifest.boot.rootfs);
         if !rootfs_path.is_file() {
             return Err(ManifestError::MissingRootfs { path: rootfs_path });
@@ -242,11 +492,32 @@ impl Manifest {
                 "manifest text exceeds the {MAX_MANIFEST_BYTES}-byte limit"
             )));
         }
-        toml::from_str(content)
+        #[derive(Deserialize)]
+        struct VersionProbe {
+            schema_version: u32,
+        }
+
+        let version = toml::from_str::<VersionProbe>(content)?.schema_version;
+        match version {
+            LEGACY_SCHEMA_VERSION => {
+                let manifest: Schema1Manifest = toml::from_str(content)?;
+                Ok(manifest.into())
+            }
+            MULTI_ARTIFACT_SCHEMA_VERSION => {
+                let manifest: Schema2Manifest = toml::from_str(content)?;
+                Ok(manifest.into())
+            }
+            _ => {
+                // Keep the typed unsupported-version diagnostic for v1-shaped manifests. A
+                // future schema with a different shape is rejected by the strict v1 parser.
+                let manifest: Schema1Manifest = toml::from_str(content)?;
+                Ok(manifest.into())
+            }
+        }
     }
 
     pub fn validate_manifest_only(&self) -> Result<(), ManifestError> {
-        if self.schema_version != SUPPORTED_SCHEMA_VERSION {
+        if !is_supported_schema_version(self.schema_version) {
             return Err(ManifestError::UnsupportedSchemaVersion {
                 actual: self.schema_version,
                 supported: SUPPORTED_SCHEMA_VERSION,
@@ -265,6 +536,24 @@ impl Manifest {
             return Err(ManifestError::MissingSignature);
         }
 
+        match self.schema_version {
+            LEGACY_SCHEMA_VERSION => self.validate_schema1_runtime()?,
+            MULTI_ARTIFACT_SCHEMA_VERSION => self
+                .artifact_catalog
+                .as_ref()
+                .ok_or_else(|| {
+                    ManifestError::InvalidArtifactCatalog(
+                        "schema 2 requires an artifact_catalog table".to_string(),
+                    )
+                })?
+                .validate(&self.publisher.signature)?,
+            _ => unreachable!("supported schema versions were checked above"),
+        }
+
+        Ok(())
+    }
+
+    fn validate_schema1_runtime(&self) -> Result<(), ManifestError> {
         if self.runtime.architecture != SUPPORTED_ARCHITECTURE {
             return Err(ManifestError::UnsupportedArchitecture {
                 actual: self.runtime.architecture.clone(),
@@ -297,9 +586,884 @@ impl Manifest {
     }
 }
 
+impl ArtifactCatalog {
+    fn validate(&self, signature_path: &str) -> Result<(), ManifestError> {
+        if self.catalog_version != CATALOG_VERSION {
+            return Err(catalog_error(format!(
+                "unsupported catalog version {}; supported version is {CATALOG_VERSION}",
+                self.catalog_version
+            )));
+        }
+        if self.artifacts.is_empty() || self.artifacts.len() > MAX_CATALOG_ARTIFACTS {
+            return Err(catalog_error(format!(
+                "artifact count must be between 1 and {MAX_CATALOG_ARTIFACTS}"
+            )));
+        }
+        if self.profiles.is_empty() || self.profiles.len() > MAX_CATALOG_PROFILES {
+            return Err(catalog_error(format!(
+                "profile count must be between 1 and {MAX_CATALOG_PROFILES}"
+            )));
+        }
+        if !is_valid_id(&self.default_profile) || !self.profiles.contains_key(&self.default_profile)
+        {
+            return Err(catalog_error(format!(
+                "default profile '{}' is missing or has an invalid ID",
+                self.default_profile
+            )));
+        }
+
+        let mut total_bytes = 0u64;
+        let mut storage_paths = BTreeSet::new();
+        for (id, artifact) in &self.artifacts {
+            if !is_valid_id(id) {
+                return Err(catalog_error(format!(
+                    "artifact ID '{id}' is not valid ASCII"
+                )));
+            }
+            if artifact.size_bytes == 0 || artifact.size_bytes > MAX_CATALOG_ARTIFACT_BYTES {
+                return Err(catalog_error(format!(
+                    "artifact '{id}' size must be 1..={MAX_CATALOG_ARTIFACT_BYTES} bytes"
+                )));
+            }
+            total_bytes = total_bytes
+                .checked_add(artifact.size_bytes)
+                .ok_or_else(|| catalog_error("aggregate artifact size overflowed".to_string()))?;
+            if total_bytes > MAX_CATALOG_TOTAL_BYTES {
+                return Err(catalog_error(format!(
+                    "aggregate artifact size exceeds {MAX_CATALOG_TOTAL_BYTES} bytes"
+                )));
+            }
+            if !is_lower_sha256(&artifact.sha256) {
+                return Err(catalog_error(format!(
+                    "artifact '{id}' must have one lowercase SHA-256 digest"
+                )));
+            }
+            let path = &artifact.storage.path;
+            if !is_safe_storage_path(path) || path == MANIFEST_FILE_NAME || path == signature_path {
+                return Err(catalog_error(format!(
+                    "artifact '{id}' has an unsafe or reserved storage path '{path}'"
+                )));
+            }
+            if !storage_paths.insert(path) {
+                return Err(catalog_error(format!(
+                    "multiple artifacts map to storage path '{path}'"
+                )));
+            }
+            validate_artifact(id, artifact)?;
+        }
+
+        let mut referenced_backends = BTreeSet::new();
+        for (profile_id, profile) in &self.profiles {
+            if !is_valid_id(profile_id) {
+                return Err(catalog_error(format!(
+                    "profile ID '{profile_id}' is not valid ASCII"
+                )));
+            }
+            validate_profile(
+                profile_id,
+                profile,
+                &self.artifacts,
+                &mut referenced_backends,
+            )?;
+        }
+
+        for (id, artifact) in &self.artifacts {
+            if artifact.kind == ArtifactKind::BackendExecutable && !referenced_backends.contains(id)
+            {
+                return Err(catalog_error(format!(
+                    "backend executable artifact '{id}' is not referenced by a typed backend device"
+                )));
+            }
+        }
+
+        Ok(())
+    }
+}
+
+fn validate_artifact(id: &str, artifact: &Artifact) -> Result<(), ManifestError> {
+    let invalid = |reason: &str| catalog_error(format!("artifact '{id}' {reason}"));
+    match &artifact.kind {
+        ArtifactKind::LinuxBootDisk => {
+            if artifact.format != ArtifactFormat::Raw
+                || artifact.target_architecture != Some(TargetArchitecture::Aarch64)
+                || artifact.target_machine != Some(TargetMachine::QemuVirt)
+                || artifact.host_os.is_some()
+                || artifact.backend.is_some()
+            {
+                return Err(invalid(
+                    "must be a raw aarch64 QEMU virt disk with no host-backend metadata",
+                ));
+            }
+        }
+        ArtifactKind::McuFirmware => {
+            if artifact.format != ArtifactFormat::Binary
+                || artifact.target_architecture != Some(TargetArchitecture::Arm)
+                || artifact.target_machine != Some(TargetMachine::QemuMps2An385)
+                || artifact.host_os.is_some()
+                || artifact.backend.is_some()
+            {
+                return Err(invalid(
+                    "must be binary ARM firmware for qemu:mps2-an385 with no host-backend metadata",
+                ));
+            }
+        }
+        ArtifactKind::BackendExecutable => {
+            if artifact.format != ArtifactFormat::Executable
+                || !matches!(
+                    artifact.target_architecture.as_ref(),
+                    Some(TargetArchitecture::Aarch64 | TargetArchitecture::X86_64)
+                )
+                || artifact.target_machine.is_some()
+                || artifact.host_os.is_none()
+            {
+                return Err(invalid(
+                    "must declare executable format, a supported host architecture, and host OS",
+                ));
+            }
+            let backend = artifact
+                .backend
+                .as_ref()
+                .ok_or_else(|| invalid("must declare signed backend policy metadata"))?;
+            if backend.publisher_identity.trim().is_empty()
+                || backend.capabilities.is_empty()
+                || backend.ipc.is_empty()
+                || backend
+                    .qom_device_ids
+                    .iter()
+                    .any(|device_id| !is_valid_id(device_id))
+                || backend
+                    .virtio_backend_ids
+                    .iter()
+                    .any(|backend_id| !is_valid_id(backend_id))
+                || (!backend.qom_device_ids.is_empty()
+                    && !backend
+                        .capabilities
+                        .contains(&BackendCapability::QomDeviceV1))
+                || (!backend.virtio_backend_ids.is_empty()
+                    && !backend
+                        .capabilities
+                        .contains(&BackendCapability::VirtioBackendV1))
+            {
+                return Err(invalid(
+                    "backend policy requires valid publisher identity, capabilities, IPC transports, and declared device IDs",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_profile(
+    profile_id: &str,
+    profile: &LaunchProfile,
+    artifacts: &BTreeMap<String, Artifact>,
+    referenced_backends: &mut BTreeSet<String>,
+) -> Result<(), ManifestError> {
+    let invalid = |reason: String| catalog_error(format!("profile '{profile_id}' {reason}"));
+    if !profile
+        .required_features
+        .contains(&RequiredFeature::LaunchProfilesV1)
+    {
+        return Err(invalid("must require launch-profiles-v1".to_string()));
+    }
+    if profile.resources.memory_mb == 0
+        || profile.resources.memory_mb > 262_144
+        || profile.resources.cpus == 0
+        || profile.resources.cpus > 256
+    {
+        return Err(invalid(
+            "resource limits must specify 1..=262144 MiB and 1..=256 CPUs".to_string(),
+        ));
+    }
+    if !matches!(profile.network.mode.as_str(), "none" | "user") {
+        return Err(invalid(format!(
+            "has unsupported network mode '{}'",
+            profile.network.mode
+        )));
+    }
+    if profile.nodes.is_empty() || profile.nodes.len() > 128 {
+        return Err(invalid("node count must be between 1 and 128".to_string()));
+    }
+    if profile.devices.len() > 256 {
+        return Err(invalid("device count exceeds 256".to_string()));
+    }
+
+    let mut nodes = BTreeMap::new();
+    let mut process_groups = BTreeMap::new();
+    let mut required_root_devices = BTreeSet::new();
+    let mut has_linux = false;
+    let mut has_mcu = false;
+    for node in &profile.nodes {
+        if !is_valid_id(&node.id) || !is_valid_id(&node.process_group) {
+            return Err(invalid(format!(
+                "node '{}' has an invalid node or process-group ID",
+                node.id
+            )));
+        }
+        if nodes.insert(node.id.as_str(), node).is_some() {
+            return Err(invalid(format!("has duplicate node ID '{}'", node.id)));
+        }
+        if let Some((architecture, machine)) = process_groups.get(node.process_group.as_str()) {
+            if *architecture != &node.architecture || *machine != &node.machine {
+                return Err(invalid(format!(
+                    "process group '{}' mixes incompatible architecture or machine targets",
+                    node.process_group
+                )));
+            }
+        } else {
+            process_groups.insert(
+                node.process_group.as_str(),
+                (&node.architecture, &node.machine),
+            );
+        }
+        match &node.boot {
+            BootData::Linux {
+                kernel,
+                device_tree,
+                rootfs_artifact,
+                kernel_args,
+            } => {
+                has_linux = true;
+                if node.architecture != TargetArchitecture::Aarch64
+                    || node.machine != TargetMachine::QemuVirt
+                    || kernel != BUILTIN_AARCH64_KERNEL
+                    || device_tree != BUILTIN_AARCH64_DEVICE_TREE
+                {
+                    return Err(invalid(format!(
+                        "Linux node '{}' must use aarch64, qemu:virt, and the built-in kernel/device tree references",
+                        node.id
+                    )));
+                }
+                if kernel_args.len() > 128
+                    || kernel_args
+                        .iter()
+                        .any(|arg| arg.len() > 4096 || arg.chars().any(char::is_control))
+                {
+                    return Err(invalid(format!(
+                        "Linux node '{}' has invalid or oversized kernel arguments",
+                        node.id
+                    )));
+                }
+                let root = artifacts.get(rootfs_artifact).ok_or_else(|| {
+                    invalid(format!(
+                        "Linux node '{}' references missing rootfs artifact '{rootfs_artifact}'",
+                        node.id
+                    ))
+                })?;
+                if root.kind != ArtifactKind::LinuxBootDisk {
+                    return Err(invalid(format!(
+                        "Linux node '{}' rootfs reference '{rootfs_artifact}' is not a Linux boot disk",
+                        node.id
+                    )));
+                }
+                required_root_devices.insert((node.id.as_str(), rootfs_artifact.as_str()));
+            }
+            BootData::Mcu { firmware_artifact } => {
+                has_mcu = true;
+                if node.architecture != TargetArchitecture::Arm
+                    || node.machine != TargetMachine::QemuMps2An385
+                {
+                    return Err(invalid(format!(
+                        "MCU node '{}' must use ARM and the concrete qemu:mps2-an385 board",
+                        node.id
+                    )));
+                }
+                let firmware = artifacts.get(firmware_artifact).ok_or_else(|| {
+                    invalid(format!(
+                        "MCU node '{}' references missing firmware artifact '{firmware_artifact}'",
+                        node.id
+                    ))
+                })?;
+                if firmware.kind != ArtifactKind::McuFirmware {
+                    return Err(invalid(format!(
+                        "MCU node '{}' firmware reference '{firmware_artifact}' is not MCU firmware",
+                        node.id
+                    )));
+                }
+            }
+        }
+    }
+
+    let mut device_ids = BTreeSet::new();
+    let mut required_features = BTreeSet::from([RequiredFeature::LaunchProfilesV1]);
+    if has_linux {
+        required_features.insert(RequiredFeature::LinuxNodeV1);
+    }
+    if has_mcu {
+        required_features.insert(RequiredFeature::McuNodeV1);
+    }
+    if !profile.devices.is_empty() {
+        required_features.insert(RequiredFeature::TypedDevicesV1);
+    }
+
+    for device in &profile.devices {
+        match device {
+            TypedDevice::VirtioBlkMmio {
+                id,
+                node_id,
+                artifact_id,
+                read_only,
+            } => {
+                validate_device_common(&mut device_ids, id, node_id, &nodes, profile_id)?;
+                let node = nodes[node_id.as_str()];
+                if !matches!(&node.boot, BootData::Linux { .. }) {
+                    return Err(invalid(format!(
+                        "virtio block device '{id}' must attach to a Linux node"
+                    )));
+                }
+                let artifact = artifacts.get(artifact_id).ok_or_else(|| {
+                    invalid(format!(
+                        "device '{id}' references missing artifact '{artifact_id}'"
+                    ))
+                })?;
+                if artifact.kind != ArtifactKind::LinuxBootDisk {
+                    return Err(invalid(format!(
+                        "virtio block device '{id}' must reference a Linux boot disk"
+                    )));
+                }
+                if let BootData::Linux {
+                    rootfs_artifact, ..
+                } = &node.boot
+                {
+                    if artifact_id == rootfs_artifact && !read_only {
+                        return Err(invalid(format!("rootfs device '{id}' must be read-only")));
+                    }
+                    if artifact_id == rootfs_artifact {
+                        required_root_devices.remove(&(node_id.as_str(), artifact_id.as_str()));
+                    }
+                }
+            }
+            TypedDevice::Pl011Uart { id, node_id } => {
+                validate_device_common(&mut device_ids, id, node_id, &nodes, profile_id)?;
+                let node = nodes[node_id.as_str()];
+                if node.machine != TargetMachine::QemuVirt
+                    || !matches!(&node.boot, BootData::Linux { .. })
+                {
+                    return Err(invalid(format!(
+                        "PL011 UART '{id}' must attach to a Linux qemu:virt node"
+                    )));
+                }
+            }
+            TypedDevice::Mps2Uart { id, node_id } => {
+                validate_device_common(&mut device_ids, id, node_id, &nodes, profile_id)?;
+                let node = nodes[node_id.as_str()];
+                if node.machine != TargetMachine::QemuMps2An385
+                    || !matches!(&node.boot, BootData::Mcu { .. })
+                {
+                    return Err(invalid(format!(
+                        "MPS2 UART '{id}' must attach to an MCU qemu:mps2-an385 node"
+                    )));
+                }
+            }
+            TypedDevice::ExternalVirtioBackend {
+                id,
+                node_id,
+                backend_artifact_id,
+                backend_id,
+            } => {
+                validate_device_common(&mut device_ids, id, node_id, &nodes, profile_id)?;
+                let node = nodes[node_id.as_str()];
+                if !matches!(&node.boot, BootData::Linux { .. }) {
+                    return Err(invalid(format!(
+                        "external virtio backend '{id}' must attach to a Linux node"
+                    )));
+                }
+                let backend = artifacts.get(backend_artifact_id).ok_or_else(|| {
+                    invalid(format!(
+                        "device '{id}' references missing backend artifact '{backend_artifact_id}'"
+                    ))
+                })?;
+                if backend.kind != ArtifactKind::BackendExecutable {
+                    return Err(invalid(format!(
+                        "device '{id}' reference '{backend_artifact_id}' is not an approved backend executable"
+                    )));
+                }
+                let metadata = backend
+                    .backend
+                    .as_ref()
+                    .expect("backend kind was validated");
+                if !metadata
+                    .capabilities
+                    .contains(&BackendCapability::VirtioBackendV1)
+                    || !metadata.virtio_backend_ids.contains(backend_id)
+                {
+                    return Err(invalid(format!(
+                        "device '{id}' references undeclared virtio backend ID '{backend_id}'"
+                    )));
+                }
+                referenced_backends.insert(backend_artifact_id.clone());
+                required_features.insert(RequiredFeature::BackendAssetsV1);
+                required_features.insert(RequiredFeature::BackendProcessIsolationV1);
+                required_features.insert(RequiredFeature::ExternalVirtioBackendV1);
+            }
+            TypedDevice::ExternalQomBackend {
+                id,
+                node_id,
+                backend_artifact_id,
+                qom_device_id,
+            } => {
+                validate_device_common(&mut device_ids, id, node_id, &nodes, profile_id)?;
+                let backend = artifacts.get(backend_artifact_id).ok_or_else(|| {
+                    invalid(format!(
+                        "device '{id}' references missing backend artifact '{backend_artifact_id}'"
+                    ))
+                })?;
+                if backend.kind != ArtifactKind::BackendExecutable {
+                    return Err(invalid(format!(
+                        "device '{id}' reference '{backend_artifact_id}' is not an approved backend executable"
+                    )));
+                }
+                let metadata = backend
+                    .backend
+                    .as_ref()
+                    .expect("backend kind was validated");
+                if !metadata
+                    .capabilities
+                    .contains(&BackendCapability::QomDeviceV1)
+                    || !metadata.qom_device_ids.contains(qom_device_id)
+                {
+                    return Err(invalid(format!(
+                        "device '{id}' references undeclared QOM device ID '{qom_device_id}'"
+                    )));
+                }
+                referenced_backends.insert(backend_artifact_id.clone());
+                required_features.insert(RequiredFeature::BackendAssetsV1);
+                required_features.insert(RequiredFeature::BackendProcessIsolationV1);
+                required_features.insert(RequiredFeature::ExternalQomBackendV1);
+            }
+        }
+    }
+
+    if let Some((node_id, artifact_id)) = required_root_devices.into_iter().next() {
+        return Err(invalid(format!(
+            "Linux node '{node_id}' rootfs artifact '{artifact_id}' needs a matching typed read-only block device"
+        )));
+    }
+    if profile
+        .required_features
+        .iter()
+        .any(|feature| !required_features.contains(feature))
+    {
+        return Err(invalid(
+            "declares a required feature that is not supported by this profile".to_string(),
+        ));
+    }
+    for feature in required_features {
+        if !profile.required_features.contains(&feature) {
+            return Err(invalid(format!(
+                "is missing required feature '{}'",
+                required_feature_id(&feature)
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_device_common(
+    ids: &mut BTreeSet<String>,
+    id: &str,
+    node_id: &str,
+    nodes: &BTreeMap<&str, &LaunchNode>,
+    profile_id: &str,
+) -> Result<(), ManifestError> {
+    if !is_valid_id(id) {
+        return Err(catalog_error(format!(
+            "profile '{profile_id}' has invalid device ID '{id}'"
+        )));
+    }
+    if !ids.insert(id.to_string()) {
+        return Err(catalog_error(format!(
+            "profile '{profile_id}' has duplicate device ID '{id}'"
+        )));
+    }
+    if !nodes.contains_key(node_id) {
+        return Err(catalog_error(format!(
+            "profile '{profile_id}' device '{id}' references missing node '{node_id}'"
+        )));
+    }
+    Ok(())
+}
+
+fn required_feature_id(feature: &RequiredFeature) -> &'static str {
+    match feature {
+        RequiredFeature::LaunchProfilesV1 => "launch-profiles-v1",
+        RequiredFeature::LinuxNodeV1 => "linux-node-v1",
+        RequiredFeature::McuNodeV1 => "mcu-node-v1",
+        RequiredFeature::TypedDevicesV1 => "typed-devices-v1",
+        RequiredFeature::BackendAssetsV1 => "backend-assets-v1",
+        RequiredFeature::BackendProcessIsolationV1 => "backend-process-isolation-v1",
+        RequiredFeature::ExternalQomBackendV1 => "external-qom-backend-v1",
+        RequiredFeature::ExternalVirtioBackendV1 => "external-virtio-backend-v1",
+    }
+}
+
+fn is_valid_id(id: &str) -> bool {
+    let bytes = id.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 64
+        && (bytes[0].is_ascii_lowercase() || bytes[0].is_ascii_digit())
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(byte))
+}
+
+fn is_lower_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn is_safe_storage_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.contains('\\')
+        && path
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+}
+
+fn catalog_error(message: String) -> ManifestError {
+    ManifestError::InvalidArtifactCatalog(message)
+}
+
+pub const fn is_supported_schema_version(version: u32) -> bool {
+    matches!(
+        version,
+        LEGACY_SCHEMA_VERSION | MULTI_ARTIFACT_SCHEMA_VERSION
+    )
+}
+
+impl From<Schema1Manifest> for Manifest {
+    fn from(manifest: Schema1Manifest) -> Self {
+        Self {
+            schema_version: manifest.schema_version,
+            name: manifest.name,
+            identifier: manifest.identifier,
+            version: manifest.version,
+            description: manifest.description,
+            publisher: manifest.publisher,
+            runtime: manifest.runtime,
+            boot: manifest.boot,
+            resources: manifest.resources,
+            display: manifest.display,
+            network: manifest.network,
+            artifact_catalog: None,
+        }
+    }
+}
+
+impl From<Schema2Manifest> for Manifest {
+    fn from(manifest: Schema2Manifest) -> Self {
+        // Schema 2 is inspectable and signable here. The existing runtime still uses
+        // the schema-1 single-guest fields; sentinel values make accidental launch
+        // resolution fail before QEMU while later profile execution work is pending.
+        Self {
+            schema_version: manifest.schema_version,
+            name: manifest.name,
+            identifier: manifest.identifier,
+            version: manifest.version,
+            description: manifest.description,
+            publisher: manifest.publisher,
+            runtime: Runtime {
+                architecture: "catalog-v2".to_string(),
+                profile: "catalog-v2".to_string(),
+                requires_hardware_acceleration: false,
+                host_constraints: HostConstraints::default(),
+            },
+            boot: Boot {
+                kernel: "catalog:v2".to_string(),
+                device_tree: "catalog:v2".to_string(),
+                rootfs: String::new(),
+                writable_overlay: None,
+                kernel_args: Vec::new(),
+            },
+            resources: Resources {
+                memory_mb: 0,
+                cpus: 0,
+            },
+            display: Display {
+                mode: "profile-defined".to_string(),
+            },
+            network: Network {
+                mode: "profile-defined".to_string(),
+            },
+            artifact_catalog: Some(manifest.artifact_catalog),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn schema2_manifest() -> String {
+        let mut content = String::from(
+            r#"
+schema_version = 2
+name = "Catalog Example"
+identifier = "io.rootglass.examples.catalog"
+version = "0.2.0"
+
+[publisher]
+name = "Rootglass Examples"
+identity = "rootglass.dev/examples"
+signature = "signatures/glass.dsse.json"
+
+[artifact_catalog]
+catalog_version = 1
+default_profile = "default"
+"#,
+        );
+        for index in 0..5 {
+            content.push_str(&format!(
+                r#"
+[artifact_catalog.artifacts.linux-{index}]
+kind = "linux-boot-disk"
+format = "raw"
+size_bytes = 1
+sha256 = "{}"
+target_architecture = "aarch64"
+target_machine = "qemu:virt"
+
+[artifact_catalog.artifacts.linux-{index}.storage]
+kind = "zip-entry"
+path = "images/linux-{index}.raw"
+"#,
+                "0".repeat(64)
+            ));
+        }
+        for index in 0..5 {
+            content.push_str(&format!(
+                r#"
+[artifact_catalog.artifacts.firmware-{index}]
+kind = "mcu-firmware"
+format = "binary"
+size_bytes = 1
+sha256 = "{}"
+target_architecture = "arm"
+target_machine = "qemu:mps2-an385"
+
+[artifact_catalog.artifacts.firmware-{index}.storage]
+kind = "zip-entry"
+path = "firmware/controller-{index}.bin"
+"#,
+                "1".repeat(64)
+            ));
+        }
+        content.push_str(
+            r#"
+[artifact_catalog.artifacts.device-backend]
+kind = "backend-executable"
+format = "executable"
+size_bytes = 1
+sha256 = "2222222222222222222222222222222222222222222222222222222222222222"
+target_architecture = "x86_64"
+host_os = "linux"
+
+[artifact_catalog.artifacts.device-backend.storage]
+kind = "zip-entry"
+path = "backends/device-backend"
+
+[artifact_catalog.artifacts.device-backend.backend]
+publisher_identity = "rootglass.dev/device-backend"
+capabilities = ["qom-device-v1", "virtio-backend-v1"]
+ipc = ["stdio"]
+lifecycle = "spawn-per-run"
+isolation = "separate-process"
+qom_device_ids = ["sensor-v1"]
+virtio_backend_ids = ["sensor-storage-v1"]
+"#,
+        );
+        content.push_str(
+            r#"
+[artifact_catalog.profiles.default]
+required_features = [
+  "launch-profiles-v1", "linux-node-v1", "mcu-node-v1", "typed-devices-v1",
+  "backend-assets-v1", "backend-process-isolation-v1",
+  "external-qom-backend-v1", "external-virtio-backend-v1"
+]
+
+[artifact_catalog.profiles.default.resources]
+memory_mb = 1024
+cpus = 2
+
+[artifact_catalog.profiles.default.network]
+mode = "none"
+
+[[artifact_catalog.profiles.default.nodes]]
+id = "linux-main"
+startup_order = 0
+process_group = "linux"
+architecture = "aarch64"
+machine = "qemu:virt"
+boot = { kind = "linux", kernel = "builtin:aarch64-linux", device_tree = "builtin:aarch64-virt", rootfs_artifact = "linux-0", kernel_args = [] }
+
+[[artifact_catalog.profiles.default.nodes]]
+id = "controller"
+startup_order = 1
+process_group = "mcu"
+architecture = "arm"
+machine = "qemu:mps2-an385"
+boot = { kind = "mcu", firmware_artifact = "firmware-0" }
+
+[[artifact_catalog.profiles.default.devices]]
+kind = "virtio-blk-mmio"
+id = "root-disk"
+node_id = "linux-main"
+artifact_id = "linux-0"
+read_only = true
+
+[[artifact_catalog.profiles.default.devices]]
+kind = "pl011-uart"
+id = "linux-console"
+node_id = "linux-main"
+
+[[artifact_catalog.profiles.default.devices]]
+kind = "mps2-uart"
+id = "mcu-console"
+node_id = "controller"
+
+[[artifact_catalog.profiles.default.devices]]
+kind = "external-qom-backend"
+id = "sensor-device"
+node_id = "linux-main"
+backend_artifact_id = "device-backend"
+qom_device_id = "sensor-v1"
+
+[[artifact_catalog.profiles.default.devices]]
+kind = "external-virtio-backend"
+id = "sensor-storage"
+node_id = "linux-main"
+backend_artifact_id = "device-backend"
+backend_id = "sensor-storage-v1"
+"#,
+        );
+        content
+    }
+
+    #[test]
+    fn schema2_catalog_supports_five_linux_and_five_mcu_artifacts() {
+        let manifest = Manifest::from_toml_str(&schema2_manifest()).expect("schema 2 parses");
+        manifest
+            .validate_manifest_only()
+            .expect("5+5 catalog validates");
+
+        let catalog = manifest.artifact_catalog.expect("catalog is present");
+        assert_eq!(manifest.schema_version, MULTI_ARTIFACT_SCHEMA_VERSION);
+        assert_eq!(
+            catalog
+                .artifacts
+                .values()
+                .filter(|artifact| artifact.kind == ArtifactKind::LinuxBootDisk)
+                .count(),
+            5
+        );
+        assert_eq!(
+            catalog
+                .artifacts
+                .values()
+                .filter(|artifact| artifact.kind == ArtifactKind::McuFirmware)
+                .count(),
+            5
+        );
+        assert_eq!(catalog.artifacts.len(), 11);
+        assert_eq!(catalog.profiles["default"].nodes.len(), 2);
+        assert!(matches!(
+            &catalog.artifacts["linux-0"].kind,
+            ArtifactKind::LinuxBootDisk
+        ));
+        assert!(matches!(
+            &catalog.artifacts["firmware-4"].kind,
+            ArtifactKind::McuFirmware
+        ));
+        assert!(is_supported_schema_version(LEGACY_SCHEMA_VERSION));
+        assert!(is_supported_schema_version(MULTI_ARTIFACT_SCHEMA_VERSION));
+        assert_eq!(
+            catalog.artifacts["device-backend"]
+                .backend
+                .as_ref()
+                .expect("backend policy exists")
+                .qom_device_ids
+                .iter()
+                .next()
+                .map(String::as_str),
+            Some("sensor-v1")
+        );
+    }
+
+    #[test]
+    fn schema2_manifest_is_not_treated_as_a_schema1_launch_request() {
+        let manifest = Manifest::from_toml_str(&schema2_manifest()).expect("schema 2 parses");
+        let glass = Glass {
+            root: PathBuf::from("."),
+            manifest_path: PathBuf::from("rootglass.toml"),
+            manifest,
+        };
+
+        assert!(matches!(
+            glass.validate_launch_ready(),
+            Err(ManifestError::UnsupportedLaunchSchema { actual: 2 })
+        ));
+    }
+
+    #[test]
+    fn schema2_rejects_duplicate_and_dangling_node_references() {
+        let duplicate =
+            schema2_manifest().replace("id = \"controller\"\n", "id = \"linux-main\"\n");
+        let parsed = Manifest::from_toml_str(&duplicate).expect("duplicate ID syntax parses");
+        assert!(matches!(
+            parsed.validate_manifest_only(),
+            Err(ManifestError::InvalidArtifactCatalog(_))
+        ));
+
+        let dangling = schema2_manifest().replace(
+            "rootfs_artifact = \"linux-0\"",
+            "rootfs_artifact = \"missing\"",
+        );
+        let parsed = Manifest::from_toml_str(&dangling).expect("dangling reference syntax parses");
+        assert!(matches!(
+            parsed.validate_manifest_only(),
+            Err(ManifestError::InvalidArtifactCatalog(_))
+        ));
+
+        let unknown_backend = schema2_manifest().replace(
+            "qom_device_id = \"sensor-v1\"",
+            "qom_device_id = \"not-declared\"",
+        );
+        let parsed =
+            Manifest::from_toml_str(&unknown_backend).expect("backend reference syntax parses");
+        assert!(matches!(
+            parsed.validate_manifest_only(),
+            Err(ManifestError::InvalidArtifactCatalog(_))
+        ));
+
+        let incompatible_process_group =
+            schema2_manifest().replace("process_group = \"mcu\"", "process_group = \"linux\"");
+        let parsed = Manifest::from_toml_str(&incompatible_process_group)
+            .expect("process-group syntax parses");
+        assert!(matches!(
+            parsed.validate_manifest_only(),
+            Err(ManifestError::InvalidArtifactCatalog(_))
+        ));
+    }
+
+    #[test]
+    fn schema2_rejects_unknown_artifact_device_and_required_feature_ids() {
+        for invalid in [
+            schema2_manifest().replace("kind = \"linux-boot-disk\"", "kind = \"unknown-kind\""),
+            schema2_manifest().replace("kind = \"pl011-uart\"", "kind = \"unknown-device\""),
+            schema2_manifest().replace("typed-devices-v1", "unrecognized-feature-v9"),
+            schema2_manifest().replace(
+                "path = \"images/linux-1.raw\"",
+                "path = \"images/linux-0.raw\"",
+            ),
+        ] {
+            if let Ok(manifest) = Manifest::from_toml_str(&invalid) {
+                assert!(manifest.validate_manifest_only().is_err());
+            }
+        }
+    }
 
     #[test]
     fn parses_sample_glass_manifest() {

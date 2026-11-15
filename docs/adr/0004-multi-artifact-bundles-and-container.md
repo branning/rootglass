@@ -1,12 +1,12 @@
 # ADR-0004: Multi-artifact `.glass` bundles and container layout
 
-- Status: Proposed; ZIP-first transport accepted; catalog/security review pending
+- Status: Accepted in PR #146; implementation proceeds through Ergo tasks
 - Date: 2026-11-15
 - Scope: Logical artifacts, launch profiles, and the physical `.glass` container
 - Related: [bundle format](../bundle-format.md), [encryption proposal](../Rootglass-encryption.md), [ADR-0003](0003-encrypted-bundles-and-recipient-keys.md)
 
-This proposal extends the v1 single-rootfs bundle without changing its
-verification or runtime behavior. It recommends retaining ZIP as the first
+This accepted direction extends the v1 single-rootfs bundle without changing
+its verification or runtime behavior. It retains ZIP as the first
 multi-artifact transport while modeling Android-style named logical partitions
 in a signed catalog. It does not adopt Android's `super.img` format, A/B
 partition slots, or OTA update protocol.
@@ -46,7 +46,7 @@ independent of Android tooling.
 | ZIP containing one partitioned payload | Retains a ZIP envelope but adds a Rootglass partition table and one large payload object | A logical partition can map to bounded extents; sparse allocation and range access can be defined independently of ZIP paths. ZIP and inner table both need validation | Two indexes, new parser and signing rules, and little immediate benefit over one ZIP entry per artifact |
 | Dedicated versioned `.glass` partition container | Makes logical partitions and extents native to the file format | Can support aligned extents, sparse allocation, per-artifact verification, and future update strategies | New authoring tools, parser, recovery behavior, signing format, and migration path; highest implementation and audit cost |
 
-## Proposed decision
+## Accepted decisions
 
 1. **Accepted by the maintainer:** keep the serialized `.glass` as ZIP for the
    first multi-artifact format. Store each large Linux image and firmware blob
@@ -80,9 +80,9 @@ independent of Android tooling.
    binding. Do not publish separate incompatible definitions of schema 2.
    ADR-0003 and this ADR use the same version boundary.
 
-This is a format proposal, not approval to execute backend binaries or launch
-arbitrary QEMU configurations. Implementation children remain staged until a
-maintainer reviews the decision and its encryption/signature bindings.
+Acceptance of this format direction does not authorize arbitrary backend
+execution or untyped QEMU configurations. Implementation must follow the
+allowlist, signature, capability, and isolation rules below.
 
 ## Logical model
 
@@ -167,14 +167,12 @@ than silently running arbitrary bundled executables.
 - A migration/authoring tool can create a new schema while preserving original
   artifacts; it never rewrites a signed schema-1 bundle in place.
 
-## Review and implementation gates
+## Qualification gates
 
-Before implementation opens, review the ZIP-first recommendation, schema
-version coordination with ADR-0003, artifact and profile limits, canonical
-encrypted-set digest, MCU machine contract, and host-code policy. The
-implementation must qualify actual five-plus-five catalog capacity and a
-composed profile using representative Linux and MCU assets, while preserving
-the current schema-1 boot evidence.
+Before release, qualify actual five-plus-five catalog capacity and a composed
+profile using representative Linux and MCU assets, while preserving current
+schema-1 boot evidence. Backend binaries require their own signature, policy,
+and isolation evidence before execution is enabled.
 
 References:
 

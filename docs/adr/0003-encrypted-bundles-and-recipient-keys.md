@@ -1,15 +1,16 @@
 # ADR-0003: Encrypted bundles and recipient keys
 
-- Status: Proposed; maintainer security review required
+- Status: Accepted in PR #146; implementation proceeds through Ergo tasks
 - Date: 2026-11-15
 - Source proposal: [Rootglass encryption specification](../Rootglass-encryption.md)
 - Related format decision: [ADR-0004: Multi-artifact bundles and container layout](0004-multi-artifact-bundles-and-container.md)
 - Scope: Encrypted `.glass` bundles, recipient authorization, local key providers,
   encrypted QEMU launch, and per-run state isolation
 
-This ADR records a concrete proposal for review. It does not change the current
-schema-1 bundle contract or authorize implementation. E00 remains open until a
-maintainer approves this ADR; implementation tasks stay staged until then.
+The maintainer accepted this protocol in merged PR #146. It does not change the
+current schema-1 bundle contract. Implementation proceeds through the staged
+Ergo tasks; this ADR does not authorize arbitrary host code or untyped QEMU
+configuration.
 
 ## Context
 
@@ -24,10 +25,10 @@ explicitly.
 
 Maintainer direction now calls for a `.glass` to hold multiple Linux images,
 MCU firmware, typed device declarations, and possibly approved backend assets.
-ADR-0004 proposes ZIP as the first physical container with a signed logical
-artifact catalog. This ADR must not make `rootfs.img`, ZIP paths, or a single
-payload the permanent schema-2 encryption model. The exact manifest-version
-and catalog integration remain review items shared by both ADRs.
+ADR-0004 selects ZIP as the first physical container with a signed logical
+artifact catalog. This ADR does not make `rootfs.img`, ZIP paths, or a single
+payload the permanent schema-2 encryption model. The manifest-version and
+catalog integration follow the accepted shared design in both ADRs.
 
 The encryption proposal also needs to distinguish three separate signing
 questions: `.glass` publisher signatures, code signing for desktop
@@ -60,7 +61,7 @@ optional path to remove because certificate setup is pending.
    permanent API. The initial encrypted Linux profile may contain one LUKS
    disk. Its manifest declaration includes a fixed format ID, hardware-policy
    minimum, and signed concurrency ceiling. The schema/version allocation and
-   catalog shape must be reconciled with ADR-0004 before implementation. The
+   catalog shape follow ADR-0004. The
    manifest accepts no keys, passwords, arbitrary QEMU arguments, or host
    paths.
 4. The publisher statement uses a distinct v2 predicate URI and continues to
@@ -314,12 +315,10 @@ environment variables.
   remains open; Secure Enclave and TPM support remain in scope and require
   provider-specific qualification.
 
-## Maintainer review checklist
+## Decisions accepted in PR #146
 
-Please approve or request changes to these security/product choices before
-implementation tasks are opened:
-
-1. Schema-2 boundary and unchanged schema-1 behavior.
+1. Schema-2 boundary, coordinated catalog/encryption model, and unchanged
+   schema-1 behavior.
 2. LUKS v1 profile, 32-byte random IMK, and prohibition on legacy QEMU AES.
 3. Delegated Ed25519 authority and one separately signed mutable recipient
    envelope.

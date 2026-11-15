@@ -51,6 +51,15 @@ example.glass     # ZIP archive with .glass extension
 
 The DSSE signature file is excluded from the signed file set. In production archive verification, all other files in the ZIP archive must be listed as signed subjects. Directory-form fixture verification may temporarily exclude generated `.img` files so the repository can test manifests and metadata without committing large images.
 
+Schema 1 retains the predicate and subject format below. Schema 2 uses the
+versioned predicate `https://rootglass.dev/predicate/glass/v2`; its signed
+`rootglass.toml` carries the artifact catalog. The verifier checks each catalog
+artifact's storage path, declared size, and SHA-256 against the corresponding
+signed file subject before returning the catalog as verified. Both versions use
+the same bounded ZIP and DSSE envelope rules. Schema-2 signing and verification
+are implemented; guest launch remains schema-1-only until profile execution is
+implemented.
+
 ## Archive path rules
 
 Serialized `.glass` files are ZIP archives with strict path handling:
