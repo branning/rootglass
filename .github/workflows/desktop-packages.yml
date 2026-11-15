@@ -109,7 +109,7 @@ jobs:
               {config: "linux-arm64", runtime: "linux-aarch64", name: "Linux arm64", runner: "ubuntu-24.04-arm", format: "deb", extension: "deb"},
               {config: "macos", name: "macOS arm64", runner: "macos-15", format: "dmg", extension: "dmg"},
               {config: "windows", name: "Windows x64", runner: "windows-2025", format: "nsis", extension: "exe"}
-            ] | map(select(.config == $platform or ($platform == "all" and .config != "linux-arm64"))))}')
+            ] | map(select(.config == $platform or $platform == "all")))}')
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           if [[ -n "$ARTIFACT_RUN_ID" ]]; then
             echo "build_packages=false" >> "$GITHUB_OUTPUT"
@@ -422,16 +422,17 @@ jobs:
             exit 1
           }
 
-          source_jobs_text=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ARTIFACT_RUN_ID/jobs" --paginate --jq '.jobs[] | select(.name == "Materialize pinned guest boot assets" or .name == "Linux x64 package" or .name == "macOS arm64 package" or .name == "Windows x64 package") | [.name, .conclusion] | @tsv')
+          source_jobs_text=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ARTIFACT_RUN_ID/jobs" --paginate --jq '.jobs[] | select(.name == "Materialize pinned guest boot assets" or .name == "Linux x64 package" or .name == "Linux arm64 package" or .name == "macOS arm64 package" or .name == "Windows x64 package") | [.name, .conclusion] | @tsv')
           mapfile -t source_jobs <<< "$source_jobs_text"
-          if [[ "${#source_jobs[@]}" -ne 4 ]]; then
-            printf 'Expected four completed runtime/package jobs in run %s, found %s\n' "$ARTIFACT_RUN_ID" "${#source_jobs[@]}" >&2
+          if [[ "${#source_jobs[@]}" -ne 5 ]]; then
+            printf 'Expected five completed runtime/package jobs in run %s, found %s\n' "$ARTIFACT_RUN_ID" "${#source_jobs[@]}" >&2
             printf '%s\n' "${source_jobs[@]}" >&2
             exit 1
           fi
           for required_job in \
             'Materialize pinned guest boot assets' \
             'Linux x64 package' \
+            'Linux arm64 package' \
             'macOS arm64 package' \
             'Windows x64 package'; do
             if ! printf '%s\n' "${source_jobs[@]}" | grep -Fqx "$required_job"$'\t'success; then

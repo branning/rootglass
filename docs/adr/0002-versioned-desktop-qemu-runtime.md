@@ -22,6 +22,7 @@ are:
 | Host | QEMU source |
 |---|---|
 | Ubuntu 24.04 x86_64 | Ubuntu `qemu-system-arm` package |
+| Ubuntu 24.04 aarch64 | Ubuntu `qemu-system-arm` package |
 | macOS arm64 | Homebrew `qemu` formula |
 | Windows x86_64 | Chocolatey QEMU package, which distributes the Windows QEMU installer |
 
@@ -46,8 +47,9 @@ boot smoke and the v0.0.3 installed macOS smoke exercise this serial guest path.
 ## v0.0.3 preview inventory
 
 The draft [Rootglass v0.0.3 release](https://github.com/branning/rootglass/releases/tag/v0.0.3)
-contains one versioned offline runtime for each current package target. These
-versions and executable hashes come from each archive's `runtime-info.json`;
+contains one versioned offline runtime for each of its three package targets.
+These versions and executable hashes come from each archive's
+`runtime-info.json`;
 `assets.json` records hashes for every bundled file. The release asset digests
 match the accompanying `.sha256` sidecars.
 

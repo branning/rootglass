@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Linux ARM64 packages
+
+- Include Linux aarch64 packages and the bundled `linux-aarch64` QEMU runtime in
+  the default and release build matrix. Ubuntu 24.04.5 ARM64 installed guest
+  operation passed with TCG; Linux KVM acceleration is not claimed.
+
 ## v0.0.6 preview
 
 ### Windows import and guest startup

@@ -1,6 +1,16 @@
 # Desktop package builds
 
-The release package workflow builds Linux x64, macOS arm64, and Windows x64 on hosted runners. Manual builds can also target a Linux ARM64 qualification artifact; its package and installed smoke now pass on Ubuntu 24.04 ARM64, but it remains excluded from `platform=all` and published releases until the maintainer approves support. Manual builds upload review artifacts to Actions for 14 days. To create a release, build from a new draft prerelease's tag with `platform=all` and `release_tag` set to that same tag; the workflow materializes and verifies the example `.glass`, builds the three release installers and matching QEMU runtimes, then attaches the full asset set while the release is still mutable. Publish the draft only after the attachment job succeeds. Pull requests and pushes do not run package builds.
+The package workflow builds Linux x86_64, Linux aarch64, macOS arm64, and
+Windows x64 on hosted runners. Linux ARM64 passed the Ubuntu 24.04.5 installed
+smoke. It is included in `platform=all` and will be attached to new releases
+built after this change; existing published releases remain unchanged. Manual
+builds upload review artifacts to Actions for 14 days. To create a release,
+build from a new draft prerelease's tag with `platform=all` and `release_tag`
+set to that same tag; the workflow materializes and verifies the example
+`.glass`, builds all four installers and matching QEMU runtimes, then attaches
+the full asset set while the release is still mutable. Publish the draft only
+after the attachment job succeeds. Pull requests and pushes do not run package
+builds.
 
 GitHub does not trigger `release.created` for draft releases, and publishing an
 immutable release is too late to add assets. The published `v0.0.1` release
@@ -33,9 +43,9 @@ available on every host.
 ## Manual package builds
 
 In Actions, select **Desktop packages → Run workflow**, choose a branch or tag,
-and select `all` (the default), `linux` (x64), `linux-arm64` (qualification
-artifact), `macos`, or `windows`. A single-platform selection starts only that
-platform's package job and cannot attach a release.
+and select `all` (the default), `linux` (x64), `linux-arm64`, `macos`, or
+`windows`. `all` builds every release target; a single-platform selection
+starts only that platform's package job and cannot attach a release.
 
 For example, build only the Windows app from `main` with GitHub CLI:
 
@@ -55,11 +65,11 @@ gh workflow run desktop-packages.yml --repo branning/rootglass --ref "$release_t
 ```
 
 The job checks that the target is still a mutable prerelease draft, verifies
-the runtime and example checksums, and attaches 14 assets: an installer,
-manifest, QEMU runtime archive, and runtime checksum for each platform, plus
-`rootglass-hello-world-0.1.0.glass` and `SHA256SUMS-example.txt`. On Windows it
-selects the NSIS `*-setup.exe` installer and omits the unpackaged desktop
-executable. Publish the release after the job completes.
+the runtime and example checksums, and attaches 18 assets: an installer,
+manifest, QEMU runtime archive, and runtime checksum for each of four targets,
+plus `rootglass-hello-world-0.1.0.glass` and `SHA256SUMS-example.txt`. On
+Windows it selects the NSIS `*-setup.exe` installer and omits the unpackaged
+desktop executable. Publish the release after the job completes.
 
 To reuse a completed all-platform run from the same tag, set both
 `artifact_run_id` and `release_tag`. The workflow checks that the run's source
@@ -223,8 +233,8 @@ serial logs, and uninstall/data-retention evidence are kept for 14 days.
 The x86_64 cell uses a hosted Ubuntu runner and the aarch64 cell uses a hosted
 Ubuntu ARM64 runner. Both exercise the package's bundled QEMU with TCG while
 offline. Neither cell qualifies KVM hardware acceleration or native interaction
-on a user's desktop. Linux ARM64 is not included in published release artifacts
-pending maintainer approval of that target.
+on a user's desktop. Linux ARM64 is an approved release target and new releases
+from the package matrix will include it.
 
 ### Recorded Ubuntu 24.04 ARM64 installed result
 
@@ -252,9 +262,9 @@ and retention results. PR check run
 also passed, including the hosted ARM64 boot smoke.
 
 This qualifies installation and TCG guest operation on the hosted Ubuntu ARM64
-image. It does not test Linux KVM acceleration or native interaction on a
-user's desktop. Linux ARM64 remains excluded from published release artifacts
-pending maintainer approval.
+image. Linux ARM64 is approved for the release matrix; new releases from it
+will include this target. The smoke does not test Linux KVM acceleration or
+native interaction on a user's desktop.
 
 ## Manual installed Windows package smoke
 
