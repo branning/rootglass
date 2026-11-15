@@ -409,6 +409,9 @@ jobs:
               env PATH="$shim_path" HOME="$TEST_HOME" \
               GDK_BACKEND=x11 WINIT_UNIX_BACKEND=x11 \
               LIBGL_ALWAYS_SOFTWARE="$LIBGL_ALWAYS_SOFTWARE" \
+              ROOTGLASS_DESKTOP_SMOKE_HOME="$TEST_HOME" \
+              ROOTGLASS_DESKTOP_SMOKE_CONFIG_HOME="$TEST_HOME/.config" \
+              ROOTGLASS_DESKTOP_SMOKE_DATA_HOME="$TEST_HOME/.local/share" \
               dbus-run-session -- \
               bash scripts/smoke-rootglass-desktop-xvfb.sh \
                 "$rootglass_binary" "$EVIDENCE_DIR/gui-workflow" "$glass" \

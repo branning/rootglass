@@ -10,6 +10,9 @@ mkdir -p "$artifact_dir"
 artifact_dir="$(cd "$artifact_dir" && pwd)"
 repo_root="$(git rev-parse --show-toplevel)"
 work_dir="$(mktemp -d)"
+desktop_home="${ROOTGLASS_DESKTOP_SMOKE_HOME:-${work_dir}/home}"
+desktop_config_home="${ROOTGLASS_DESKTOP_SMOKE_CONFIG_HOME:-${work_dir}/config}"
+desktop_data_home="${ROOTGLASS_DESKTOP_SMOKE_DATA_HOME:-${work_dir}/data}"
 log_file="${work_dir}/desktop.log"
 app_pid=""
 window_id=""
@@ -73,8 +76,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$artifact_dir" "${work_dir}/home" "${work_dir}/config/rootglass" \
-  "${work_dir}/data" "${work_dir}/runtime"
+mkdir -p "$artifact_dir" "$desktop_home" "${desktop_config_home}/rootglass" \
+  "$desktop_data_home" "${work_dir}/runtime"
 chmod 700 "${work_dir}/runtime"
 ln -s "${repo_root}/runtime-assets" "${work_dir}/runtime-assets"
 
@@ -82,7 +85,7 @@ verified_dir="${work_dir}/verified.glass"
 preflight_failure_dir="${work_dir}/acceleration-required.glass"
 trusted_key="${work_dir}/trusted-seed"
 untrusted_key="${work_dir}/untrusted-seed"
-trust_config="${work_dir}/config/rootglass/trust.json"
+trust_config="${desktop_config_home}/rootglass/trust.json"
 verified_archive="${work_dir}/verified-package.glass"
 untrusted_archive="${work_dir}/untrusted.glass"
 tampered_archive="${work_dir}/tampered.glass"
@@ -183,9 +186,9 @@ PY
 
 export ROOTGLASS_DESKTOP_SMOKE=1
 export ROOTGLASS_DESKTOP_SMOKE_SERIAL_SENTINEL="$sentinel"
-export HOME="${work_dir}/home"
-export XDG_CONFIG_HOME="${work_dir}/config"
-export XDG_DATA_HOME="${work_dir}/data"
+export HOME="$desktop_home"
+export XDG_CONFIG_HOME="$desktop_config_home"
+export XDG_DATA_HOME="$desktop_data_home"
 export XDG_RUNTIME_DIR="${work_dir}/runtime"
 export XDG_CURRENT_DESKTOP=GNOME
 export GDK_BACKEND=x11
