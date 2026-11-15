@@ -70,12 +70,23 @@ function Get-RootglassQemuProcesses([string]$QemuPath) {
     return $processes
 }
 
-function Invoke-QemuStartupProbe([string]$QemuPath, [string]$RuntimeRoot, [string]$EvidenceDirectory, [string]$Msys2Root) {
+function Invoke-QemuStartupProbe([string]$QemuPath, [string]$RuntimeRoot, [string]$EvidenceDirectory, [string]$ExpectedRuntimePlatform, [string]$Msys2Root) {
     $probeRoot = Join-Path $EvidenceDirectory "qemu-startup-probes"
     New-Item -ItemType Directory -Force -Path $probeRoot | Out-Null
     $probeResults = @()
     $dataDirectory = Join-Path $RuntimeRoot "share\qemu"
     $moduleDirectory = Join-Path $RuntimeRoot "lib\qemu"
+    $msysHome = $null
+    if ($ExpectedRuntimePlatform -eq "windows-aarch64" -and -not [string]::IsNullOrWhiteSpace($Msys2Root)) {
+        $bashPath = Join-Path $Msys2Root "usr\bin\bash.exe"
+        if (-not (Test-Path -LiteralPath $bashPath -PathType Leaf)) {
+            throw "MSYS2 bash was not found at $bashPath"
+        }
+        $msysHome = (& $bashPath -lc 'printf "%s\n" "$HOME"' | Select-Object -First 1).Trim()
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($msysHome)) {
+            throw "Could not resolve HOME from the MSYS2 CLANGARM64 login environment"
+        }
+    }
 
     $repositoryRoot = Split-Path -Parent $PSScriptRoot
     $powershellVersionScript = Join-Path $probeRoot "invoke-qemu-version.ps1"
@@ -86,7 +97,12 @@ $versionOutput | Set-Content -LiteralPath $env:ROOTGLASS_QEMU_VERSION_OUTPUT -En
 exit $LASTEXITCODE
 '@ | Set-Content -LiteralPath $powershellVersionScript -Encoding utf8
 
-    foreach ($probeName in @("version-piped", "version-inherited", "version-repository-cwd", "version-powershell", "version-msys2-env", "version-system-path-only", "machine-none", "machine-none-system-path-only", "serial-null", "serial-stdio")) {
+    $probeNames = if ($ExpectedRuntimePlatform -eq "windows-aarch64" -and -not [string]::IsNullOrWhiteSpace($Msys2Root)) {
+        @("version-msys2-env", "machine-none-msys2-env")
+    } else {
+        @("version-piped", "version-inherited", "version-repository-cwd", "version-powershell", "version-msys2-env", "version-system-path-only", "machine-none", "machine-none-system-path-only", "serial-null", "serial-stdio")
+    }
+    foreach ($probeName in $probeNames) {
         $serialBackend = if ($probeName -like "serial-*") { $probeName -replace "^serial-", "" } else { "not applicable" }
         $qmpEnabled = $probeName -notlike "version-*"
         $redirectOutput = $probeName -ne "version-inherited"
@@ -127,7 +143,7 @@ exit $LASTEXITCODE
             $versionOutputPath = Join-Path $probeRoot "version-powershell-native.stdout.txt"
             $startInfo.Environment["ROOTGLASS_QEMU_VERSION_OUTPUT"] = $versionOutputPath
         }
-        if ($probeName -eq "version-msys2-env") {
+        if ($probeName -eq "version-msys2-env" -or $probeName -eq "machine-none-msys2-env") {
             $startInfo.Environment["MSYSTEM"] = "CLANGARM64"
             $startInfo.Environment["MINGW_PREFIX"] = "/clangarm64"
             $startInfo.Environment["MSYSTEM_PREFIX"] = "/clangarm64"
@@ -135,8 +151,14 @@ exit $LASTEXITCODE
             $startInfo.Environment["MSYSTEM_CARCH"] = "aarch64"
             $startInfo.Environment["MSYSTEM_CHOST"] = "aarch64-w64-mingw32"
             $startInfo.Environment["MSYS2_PATH_TYPE"] = "inherit"
-            $startInfo.Environment["CHERE_INVOKING"] = "1"
-            $startInfo.Environment["HOME"] = $env:USERPROFILE
+            [void]$startInfo.Environment.Remove("CHERE_INVOKING")
+            if (-not [string]::IsNullOrWhiteSpace($Msys2Root)) {
+                $startInfo.Environment["HOME"] = $msysHome
+                $startInfo.Environment["PATH"] = "$(Split-Path -Parent $QemuPath);$(Join-Path $Msys2Root 'clangarm64\bin');$(Join-Path $Msys2Root 'usr\bin');$env:PATH"
+            }
+            else {
+                $startInfo.Environment["HOME"] = $env:USERPROFILE
+            }
         }
         $arguments = switch ($probeName) {
             "version-piped" { @("--version") }
@@ -154,6 +176,14 @@ exit $LASTEXITCODE
                 "-S"
             ) }
             "machine-none-system-path-only" { @(
+                "-L", $dataDirectory,
+                "-machine", "none",
+                "-display", "none",
+                "-monitor", "none",
+                "-qmp", "tcp:127.0.0.1:$port,server=on,wait=off",
+                "-S"
+            ) }
+            "machine-none-msys2-env" { @(
                 "-L", $dataDirectory,
                 "-machine", "none",
                 "-display", "none",
@@ -434,7 +464,7 @@ try {
 
     if ($ProbeQemuStartupOnly) {
         Write-ProgressLine "probing installed QEMU startup contexts and serial backends without starting the desktop or guest"
-        $probeResults = Invoke-QemuStartupProbe $qemuExe $versionRoot $EvidenceDirectory $env:MSYS2_ROOT
+        $probeResults = Invoke-QemuStartupProbe $qemuExe $versionRoot $EvidenceDirectory $ExpectedRuntimePlatform $env:MSYS2_ROOT
         foreach ($probeResult in $probeResults) {
             Write-ProgressLine "QEMU probe=$($probeResult.ProbeName): $($probeResult.Status)"
         }

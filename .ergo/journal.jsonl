@@ -495,3 +495,4 @@
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T11:54:20.368003998Z","agent":"codex@worker-1","text":"Added isolated Windows system-PATH QEMU probes; one ARM64 smoke dispatch pending"}
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T12:11:40.216427397Z","agent":"codex@worker-1","text":"Run #43711198056: clean PATH still hangs; ARM64 runtime scan now includes QEMU plugin DLL imports"}
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T12:39:06.306430369Z","agent":"codex@worker-1","text":"Run #43713704289: install/import passed; boot lacked QMP; ARM64 package omitted QEMU plugin DLLs."}
+{"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T13:05:59.065284577Z","agent":"codex@worker-1","text":"Run #43716091206: plugin DLL bundle still lacks QMP; QEMU stays idle with an empty log."}
