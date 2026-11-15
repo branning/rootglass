@@ -53,7 +53,8 @@ file-associations = [
 ]
 
 [package.metadata.packager.deb]
-depends = ["libxcb1", "libxkbcommon0", "libxkbcommon-x11-0"]
+depends = ["libxcb1", "libxkbcommon0", "libxkbcommon-x11-0", "shared-mime-info"]
+files = { "../../packaging/linux/rootglass.xml" = "/usr/share/mime/packages/rootglass.xml" }
 
 [dev-dependencies]
 libc = "0.2"

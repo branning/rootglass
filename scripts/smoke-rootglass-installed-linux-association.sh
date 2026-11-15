@@ -6,7 +6,11 @@ glass_file="$(realpath "${2:?usage: smoke-rootglass-installed-linux-association.
 output_dir="${3:?usage: smoke-rootglass-installed-linux-association.sh ROOTGLASS_BINARY GLASS_FILE OUTPUT_DIR}"
 mkdir -p "$output_dir"
 output_dir="$(cd "$output_dir" && pwd)"
-work_dir="$(mktemp -d)"
+if [[ -n "${ROOTGLASS_DESKTOP_SMOKE_TMPDIR:-}" ]]; then
+  work_dir="$(mktemp -d "${ROOTGLASS_DESKTOP_SMOKE_TMPDIR%/}/rootglass-association.XXXXXX")"
+else
+  work_dir="$(mktemp -d)"
+fi
 event_log="$work_dir/desktop-events.log"
 launch_log="$work_dir/xdg-open.log"
 app_pid=""
@@ -29,8 +33,13 @@ cleanup() {
   fi
   [[ ! -f "$event_log" ]] || cp "$event_log" "$output_dir/desktop-events.log"
   [[ ! -f "$launch_log" ]] || cp "$launch_log" "$output_dir/xdg-open.log"
-  chmod -R u+w "$work_dir" 2>/dev/null || true
-  rm -rf "$work_dir"
+  if [[ "${ROOTGLASS_DESKTOP_SMOKE_DEFER_CLEANUP:-0}" == 1 ]]; then
+    printf '%s\n' "$work_dir" > "$output_dir/cleanup-path.txt"
+    log "deferred temporary portal runtime cleanup until the session bus exits"
+  else
+    chmod -R u+w "$work_dir" 2>/dev/null || true
+    rm -rf "$work_dir"
+  fi
 }
 trap cleanup EXIT
 
@@ -70,10 +79,33 @@ export XDG_DATA_HOME="$work_dir/data"
 export XDG_RUNTIME_DIR="$work_dir/runtime"
 export XDG_CURRENT_DESKTOP=GNOME
 export GDK_BACKEND=x11
+export WINIT_UNIX_BACKEND=x11
 export ROOTGLASS_DESKTOP_SMOKE=1
 export ROOTGLASS_DESKTOP_SMOKE_EVENT_LOG="$event_log"
 
+# xdg-open may ask the desktop portal to start the registered application.
+# The portal launches it with the D-Bus activation environment, so publish the
+# Xvfb, user-home, renderer, and smoke-test settings after creating this
+# isolated session and before asking the OS to open the .glass file.
+dbus-update-activation-environment \
+  DISPLAY XAUTHORITY HOME PATH XDG_CONFIG_HOME XDG_DATA_HOME XDG_RUNTIME_DIR \
+  XDG_CURRENT_DESKTOP GDK_BACKEND WINIT_UNIX_BACKEND LIBGL_ALWAYS_SOFTWARE \
+  ROOTGLASS_DESKTOP_SMOKE ROOTGLASS_DESKTOP_SMOKE_EVENT_LOG
+log "updated the session bus environment for the portal-launched desktop app"
+
 mime_type="application/vnd.rootglass.glass"
+mime_package_file="/usr/share/mime/packages/rootglass.xml"
+[[ -f "$mime_package_file" ]] || {
+  echo "The installed package is missing its shared MIME definition: $mime_package_file" >&2
+  exit 1
+}
+glass_content_type="$(gio info --attributes=standard::content-type -- "$glass_file" \
+  | awk '/standard::content-type:/ { print $2; exit }')"
+[[ "$glass_content_type" == "$mime_type" ]] || {
+  printf 'Expected GIO to identify %s as %s, got %s\n' \
+    "$glass_file" "$mime_type" "${glass_content_type:-<none>}" >&2
+  exit 1
+}
 log "looking for installed .glass desktop handler"
 mapfile -t matching_desktop_files < <(find /usr/share/applications /usr/local/share/applications \
   -type f -name '*.desktop' -exec grep -Fl "$mime_type" {} + 2>/dev/null | sort)

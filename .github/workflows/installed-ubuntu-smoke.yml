@@ -50,15 +50,21 @@ jobs:
           package_sha=$(jq -r '.head_sha' <<< "$run_json")
           if [[ "$package_sha" != "$GITHUB_SHA" ]]; then
             comparison=$(gh api "repos/$GITHUB_REPOSITORY/compare/$package_sha...$GITHUB_SHA")
-            [[ "$(jq -r '.status' <<< "$comparison")" == ahead && \
-               "$(jq -r '.merge_base_commit.sha' <<< "$comparison")" == "$package_sha" ]] || {
-              echo "Package run $PACKAGE_RUN_ID is not an ancestor of $GITHUB_SHA" >&2
+            comparison_status=$(jq -r '.status' <<< "$comparison")
+            if [[ "$comparison_status" == ahead ]]; then
+              [[ "$(jq -r '.merge_base_commit.sha' <<< "$comparison")" == "$package_sha" ]] || {
+                echo "Package run $PACKAGE_RUN_ID is not an ancestor of $GITHUB_SHA" >&2
+                exit 1
+              }
+            elif [[ "$comparison_status" != diverged ]]; then
+              echo "Package run $PACKAGE_RUN_ID cannot be compared safely with $GITHUB_SHA" >&2
               exit 1
-            }
+            fi
             changed_files=$(jq -r '[.files[].filename] | unique | join("\n")' <<< "$comparison")
             while IFS= read -r changed_file; do
+              [[ -n "$changed_file" ]] || continue
               case "$changed_file" in
-                .github/workflows/installed-ubuntu-smoke.yml|scripts/smoke-rootglass-installed-linux-association.sh|.ergo/backlog.jsonl|.ergo/journal.jsonl) ;;
+                .github/workflows/installed-ubuntu-smoke.yml|scripts/smoke-rootglass-installed-linux-association.sh|scripts/smoke-rootglass-desktop-xvfb.sh|scripts/extract-glass-archive.py|scripts/run-offline-network-namespace.sh|.ergo/backlog.jsonl|.ergo/journal.jsonl) ;;
                 *)
                   echo "Package source $package_sha differs from current product code" >&2
                   printf '%s\n' "$changed_files" >&2
@@ -66,7 +72,7 @@ jobs:
                   ;;
               esac
             done <<< "$changed_files"
-            echo "Package source $package_sha matches current product code; only smoke workflow and Ergo metadata changed"
+            echo "Package source $package_sha matches current product code; only smoke workflow/scripts and Ergo metadata changed"
           fi
           jobs_json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PACKAGE_RUN_ID/jobs?per_page=100")
           for required_job in "Materialize pinned guest boot assets" "Linux x64 package"; do
@@ -102,9 +108,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            dbus-x11 desktop-file-utils e2fsprogs imagemagick iptables \
+            dbus-x11 desktop-file-utils e2fsprogs imagemagick iproute2 \
             libxcb1 libxkbcommon0 libxkbcommon-x11-0 \
-            python3 python3-xlib x11-utils xauth xdg-desktop-portal \
+            mesa-utils python3 python3-xlib x11-utils xauth xdg-desktop-portal \
             xdg-desktop-portal-gtk xdg-utils xdotool xvfb
 
       - name: Verify artifact checksums and package metadata
@@ -196,7 +202,7 @@ jobs:
             dpkg-deb -f "$deb" Package Version Architecture
             echo "Depends: $package_depends"
           } | tee "$EVIDENCE_DIR/package.txt"
-          for dependency in libxcb1 libxkbcommon0 libxkbcommon-x11-0; do
+          for dependency in libxcb1 libxkbcommon0 libxkbcommon-x11-0 shared-mime-info; do
             if [[ "$package_depends" != *"$dependency"* ]]; then
               echo "Debian package is missing runtime dependency: $dependency" >&2
               exit 1
@@ -307,6 +313,7 @@ jobs:
           EXAMPLE_DIR: ${{ runner.temp }}/rootglass-example
           TEST_HOME: ${{ runner.temp }}/rootglass-user-home
           EVIDENCE_DIR: ${{ runner.temp }}/rootglass-install-evidence
+          LIBGL_ALWAYS_SOFTWARE: "1"
         run: |
           set -euo pipefail
           progress() {
@@ -315,15 +322,58 @@ jobs:
           rootglass_binary=$(cat "$EVIDENCE_DIR/binary-path.txt")
           glass=$(cat "$EXAMPLE_DIR/glass-path.txt")
           shim_path="$RUNNER_TEMP/rootglass-shims:$PATH"
-          progress "blocking outbound network for association smoke"
-          sudo iptables -I OUTPUT 1 ! -o lo -j REJECT
-          trap 'sudo iptables -D OUTPUT 1 ! -o lo -j REJECT >/dev/null 2>&1 || true' EXIT
           association_log="$EVIDENCE_DIR/association-smoke.log"
-          progress "running offline .glass association check"
+          cleanup_association_portal_runtime() {
+            local cleanup_file="$EVIDENCE_DIR/association/cleanup-path.txt"
+            [[ -f "$cleanup_file" ]] || return 0
+            local cleanup_path
+            cleanup_path=$(cat "$cleanup_file")
+            case "$cleanup_path" in
+              "$RUNNER_TEMP"/rootglass-association.*) ;;
+              *) echo "Refusing to clean unexpected association temp path: $cleanup_path" >&2; return 0 ;;
+            esac
+            if command -v fusermount3 >/dev/null; then
+              fusermount3 -u "$cleanup_path/runtime/doc/by-app" 2>/dev/null || true
+              fusermount3 -u "$cleanup_path/runtime/doc" 2>/dev/null || true
+            fi
+            chmod -R u+w "$cleanup_path" 2>/dev/null || true
+            if rm -rf "$cleanup_path"; then
+              echo "Removed temporary association runtime after D-Bus shutdown"
+            else
+              echo "The desktop portal retained a temporary runtime mount: $cleanup_path" >&2
+            fi
+          }
+          trap cleanup_association_portal_runtime EXIT
+          mkdir -p "$RUNNER_TEMP/rootglass-shims"
+          cat > "$RUNNER_TEMP/rootglass-shims/rootglass" <<EOF
+          #!/usr/bin/env bash
+          {
+            for variable in DISPLAY WAYLAND_DISPLAY XAUTHORITY HOME PATH \
+              XDG_CONFIG_HOME XDG_DATA_HOME XDG_RUNTIME_DIR XDG_CURRENT_DESKTOP \
+              GDK_BACKEND WINIT_UNIX_BACKEND LIBGL_ALWAYS_SOFTWARE \
+              ROOTGLASS_DESKTOP_SMOKE ROOTGLASS_DESKTOP_SMOKE_EVENT_LOG; do
+              printf '%s=%s\\n' "\$variable" "\${!variable-}"
+            done
+            if [[ -n "\${DISPLAY:-}" ]]; then
+              /usr/bin/xdpyinfo -display "\$DISPLAY" | sed -n '1,32p'
+              glxinfo -B
+            fi
+            ldd "$rootglass_binary"
+          } > "$EVIDENCE_DIR/desktop-launch-environment.txt" 2>&1
+          exec "$rootglass_binary" "\$@"
+          EOF
+          chmod 755 "$RUNNER_TEMP/rootglass-shims/rootglass"
+          progress "running .glass association check in an isolated network namespace"
           if timeout --verbose --signal=TERM --kill-after=15s 300s \
-            dbus-run-session -- xvfb-run --auto-servernum \
-              --server-args='-screen 0 1920x1200x24' \
+            scripts/run-offline-network-namespace.sh \
+              xvfb-run --auto-servernum \
+              --server-args='-screen 0 1920x1200x24 +extension GLX +render -noreset' \
               env PATH="$shim_path" HOME="$TEST_HOME" \
+              GDK_BACKEND=x11 WINIT_UNIX_BACKEND=x11 \
+              LIBGL_ALWAYS_SOFTWARE="$LIBGL_ALWAYS_SOFTWARE" \
+              ROOTGLASS_DESKTOP_SMOKE_TMPDIR="$RUNNER_TEMP" \
+              ROOTGLASS_DESKTOP_SMOKE_DEFER_CLEANUP=1 \
+              dbus-run-session -- \
               bash scripts/smoke-rootglass-installed-linux-association.sh \
                 "$rootglass_binary" "$glass" "$EVIDENCE_DIR/association" \
             2>&1 | tee "$association_log"; then
@@ -338,26 +388,35 @@ jobs:
       - name: Run installed GPUI desktop guest workflow offline
         timeout-minutes: 12
         env:
+          EXAMPLE_DIR: ${{ runner.temp }}/rootglass-example
+          TEST_HOME: ${{ runner.temp }}/rootglass-user-home
           EVIDENCE_DIR: ${{ runner.temp }}/rootglass-install-evidence
+          LIBGL_ALWAYS_SOFTWARE: "1"
         run: |
           set -euo pipefail
           progress() {
             printf '%s\n' "$1" | tee -a "$EVIDENCE_DIR/progress.txt"
           }
           rootglass_binary=$(cat "$EVIDENCE_DIR/binary-path.txt")
+          glass=$(cat "$EXAMPLE_DIR/glass-path.txt")
           shim_path="$RUNNER_TEMP/rootglass-shims:$PATH"
-          sudo iptables -I OUTPUT 1 ! -o lo -j REJECT
-          trap 'sudo iptables -D OUTPUT 1 ! -o lo -j REJECT >/dev/null 2>&1 || true' EXIT
           gui_log="$EVIDENCE_DIR/gui-workflow-output.txt"
-          progress "running installed GPUI workflow offline"
+          progress "running installed GPUI workflow in an isolated network namespace"
           if timeout --signal=TERM --kill-after=15s 600s \
-            dbus-run-session -- xvfb-run --auto-servernum \
-              --server-args='-screen 0 1920x1200x24' \
-              env PATH="$shim_path" \
+            scripts/run-offline-network-namespace.sh \
+              xvfb-run --auto-servernum \
+              --server-args='-screen 0 1920x1200x24 +extension GLX +render -noreset' \
+              env PATH="$shim_path" HOME="$TEST_HOME" \
+              GDK_BACKEND=x11 WINIT_UNIX_BACKEND=x11 \
+              LIBGL_ALWAYS_SOFTWARE="$LIBGL_ALWAYS_SOFTWARE" \
+              ROOTGLASS_DESKTOP_SMOKE_HOME="$TEST_HOME" \
+              ROOTGLASS_DESKTOP_SMOKE_CONFIG_HOME="$TEST_HOME/.config" \
+              ROOTGLASS_DESKTOP_SMOKE_DATA_HOME="$TEST_HOME/.local/share" \
+              dbus-run-session -- \
               bash scripts/smoke-rootglass-desktop-xvfb.sh \
-                "$rootglass_binary" "$EVIDENCE_DIR/gui-workflow" \
-            > "$gui_log" 2>&1; then
-            cat "$gui_log"
+                "$rootglass_binary" "$EVIDENCE_DIR/gui-workflow" "$glass" \
+            2>&1 | tee "$gui_log"; then
+            :
           else
             gui_status=$?
             cat "$gui_log"
@@ -378,17 +437,17 @@ jobs:
           }
           rootglass_binary=$(cat "$EVIDENCE_DIR/binary-path.txt")
           shim_path="$RUNNER_TEMP/rootglass-shims:$PATH"
-          sudo iptables -I OUTPUT 1 ! -o lo -j REJECT
-          trap 'sudo iptables -D OUTPUT 1 ! -o lo -j REJECT >/dev/null 2>&1 || true' EXIT
+          glass=$(cat "$EXAMPLE_DIR/glass-path.txt")
 
           work_dir="$RUNNER_TEMP/rootglass-installed-boot"
           mkdir -p "$work_dir"
           mkdir -p "$RUNNER_TEMP/rootglass-qemu-tmp"
-          cp -a examples/hello-world.glass "$work_dir/hello-world.glass"
+          python3 scripts/extract-glass-archive.py "$glass" "$work_dir/hello-world.glass"
           boot_log="$EVIDENCE_DIR/installed-cli-boot-output.txt"
-          progress "running offline installed CLI guest boot"
+          progress "running installed CLI guest boot in an isolated network namespace"
           if timeout --signal=TERM --kill-after=15s 420s \
-            env PATH="$shim_path" \
+            scripts/run-offline-network-namespace.sh \
+              env PATH="$shim_path" \
               HOME="$TEST_HOME" \
               XDG_CONFIG_HOME="$TEST_HOME/.config" \
               TMPDIR="$RUNNER_TEMP/rootglass-qemu-tmp" \
@@ -397,8 +456,8 @@ jobs:
               ROOTGLASS_SMOKE_CWD="$work_dir" \
               ROOTGLASS_SMOKE_LOG="$EVIDENCE_DIR/installed-cli-boot.log" \
               python3 scripts/smoke-boot-example.py \
-            > "$boot_log" 2>&1; then
-            cat "$boot_log"
+            2>&1 | tee "$boot_log"; then
+            :
           else
             boot_status=$?
             cat "$boot_log"
@@ -421,6 +480,7 @@ jobs:
           EVIDENCE_DIR: ${{ runner.temp }}/rootglass-install-evidence
         run: |
           set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
           if [[ ! -f "$PACKAGE_DIR/package-path.txt" ]]; then
             echo "Package install did not reach the data-retention check" >> "$EVIDENCE_DIR/uninstall.txt"
             exit 0
