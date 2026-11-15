@@ -3,10 +3,11 @@
 The package workflow builds Linux x86_64, Linux aarch64, macOS arm64, Windows
 x64, and Windows ARM64 on hosted runners. Linux ARM64 passed the Ubuntu 24.04.5
 installed smoke. The Windows ARM64 package now has a native ARM64 build/runtime
-cell; installed smoke evidence is still pending. Both ARM64 packages are
-included in `platform=all` and will be attached to new releases built after
-this change; existing published releases remain unchanged. Manual
-builds upload review artifacts to Actions for 14 days. To create a release,
+cell. Its Windows 11 ARM64 clean-install smoke passed; the recorded result is
+below. Both ARM64 packages are included in `platform=all` and will be attached to
+new releases built after this change; existing published releases remain
+unchanged. Manual builds upload review artifacts to Actions for 14 days. To
+create a release,
 build from a new draft prerelease's tag with `platform=all` and `release_tag`
 set to that same tag; the workflow materializes and verifies the example
 `.glass`, builds all five installers and matching QEMU runtimes, then attaches
@@ -299,14 +300,41 @@ association events, and uninstall record are retained for 14 days. The Windows
 Server 2025 x64 result is recorded in [run
 43203983228](https://github.com/branning/rootglass/actions/runs/43203983228).
 
+### Recorded Windows 11 ARM64 installed result
+
+The native ARM64 package and offline installed smoke passed on 2026-11-15.
+Package build [run 43723384799](https://github.com/branning/rootglass/actions/runs/43723384799)
+produced the installer and runtime used by installed smoke
+[run 43724549765](https://github.com/branning/rootglass/actions/runs/43724549765).
+The clean hosted image was Microsoft Windows 11 Enterprise 10.0.26200, build
+26200, on the `windows-11-vs2026-arm64` image (`20261112.217.1`), with an ARM64
+runner. The installed Rootglass app and QEMU PE headers were both `0xAA64`; the
+runtime was version 0.0.6 with QEMU 11.1.3. The launch plan truthfully selected
+TCG software emulation.
+
+The installer SHA-256 is
+`770e8cb93c4542c4c4f765d43ffbb6352cf0832fe7a8f934b8e669a8f688d175`; the
+runtime archive SHA-256 is
+`8499d3d222a6354b0b656516736c0a652034124c54d7f7315a60550e9d3c88e8`; and the
+signed `rootglass-hello-world-0.1.0.glass` SHA-256 is
+`c9b90909242eb198a2d729b5c70a9f5f347c51c1b85c634cb8fc7c1c180bd339`.
+The smoke verified runtime asset hashes and the `.glass` signature, imported
+the example through both the GPUI picker and Windows file association, then
+blocked Internet egress for Rootglass and QEMU. The TUI booted the Alpine
+aarch64 guest, accepted serial login and `uname -a`, restarted and accepted
+`id`, stopped without an orphan QEMU process, and uninstalled while preserving
+trust, imported package, registry, and guest state. The run artifact retains
+the TUI screenshot, runtime inventory, serial logs, process monitoring, and
+uninstall evidence for 14 days.
+
 The installed smoke uses short guest commands; it does not qualify arbitrary
 long pasted console lines.
 
 The hosted x64 cell is Windows Server 2025, not Windows 11. The ARM64 cell
-qualifies only the native ARM64 package on Windows 11 ARM64. Windows 11 x64
+qualifies the native ARM64 package on Windows 11 ARM64. Windows 11 x64
 clean-install evidence still requires a configured Windows 11 x64 runner or a
-clean maintainer host. Do not claim full Windows support from these hosted
-cells alone; the platform decision remains subject to maintainer approval.
+clean maintainer host. Do not claim complete Windows qualification from these
+hosted cells alone; the support decision remains subject to maintainer approval.
 
 Rootglass currently selects TCG on Windows and discloses software emulation in
 the launch plan. Do not enable WHPX selection until each packaged QEMU runtime
@@ -317,7 +345,7 @@ QEMU starts.
 
 - App and installer signing, macOS notarization, and release provenance are not configured. No signing credentials are stored in the repository.
 - The published `v0.0.1` release is immutable and has no package or example assets; it cannot be updated in place.
-- CI builds packages but does not install them on a clean OS image or verify the `.glass` association through the OS shell. Manual package builds provide review artifacts but do not count as clean-host qualification.
+- The standard package jobs only build artifacts; the separate installed smoke workflows install the exact package on clean hosted OS images and verify the `.glass` association. Qualification is limited to the hosts and artifact digests recorded above.
 - Linux packaging emits a Debian package. macOS emits a DMG. Windows emits an NSIS installer.
 
 Treat A-09 and A-10 as incomplete until clean-install, file-open, runtime inventory, and signing checks are recorded for each shipping platform. Runtime archives and manifests make the bundle inspectable; they do not substitute for those host checks.
