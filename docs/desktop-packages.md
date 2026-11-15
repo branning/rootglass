@@ -330,11 +330,11 @@ uninstall evidence for 14 days.
 The installed smoke uses short guest commands; it does not qualify arbitrary
 long pasted console lines.
 
-The hosted x64 cell is Windows Server 2025, not Windows 11. The ARM64 cell
-qualifies the native ARM64 package on Windows 11 ARM64. Windows 11 x64
-clean-install evidence still requires a configured Windows 11 x64 runner or a
-clean maintainer host. Do not claim complete Windows qualification from these
-hosted cells alone; the support decision remains subject to maintainer approval.
+Maintainer decision recorded with the merge of PR #141 on 2026-11-15: qualify
+the native package on Windows 11 ARM64. The x64 installed smoke is exact only
+for Windows Server 2025 x64; it is not Windows 11 x64 evidence. Until a clean
+Windows 11 x64 install is recorded, advertise Windows 11 support for ARM64 only
+and keep the Server 2025 x64 result as separate host evidence.
 
 Rootglass currently selects TCG on Windows and discloses software emulation in
 the launch plan. Do not enable WHPX selection until each packaged QEMU runtime
