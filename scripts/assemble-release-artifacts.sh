@@ -30,6 +30,7 @@ echo "Preparing assets for draft release $release_tag (release ID $release_id)"
 
 expected_dirs=(
   rootglass-deb-Linux-X64
+  rootglass-deb-Linux-ARM64
   rootglass-dmg-macOS-ARM64
   rootglass-nsis-Windows-X64
   rootglass-example-glass
@@ -43,9 +44,10 @@ fi
 
 mkdir -p "$ready_root"
 declare -a assets=()
-for platform in linux macos windows; do
+for platform in linux linux-arm64 macos windows; do
   case "$platform" in
     linux) artifact_dir="$artifact_root/rootglass-deb-Linux-X64"; package_glob='*.deb'; runtime_glob='*.tar.gz' ;;
+    linux-arm64) artifact_dir="$artifact_root/rootglass-deb-Linux-ARM64"; package_glob='*.deb'; runtime_glob='*.tar.gz' ;;
     macos) artifact_dir="$artifact_root/rootglass-dmg-macOS-ARM64"; package_glob='*.dmg'; runtime_glob='*.tar.gz' ;;
     windows) artifact_dir="$artifact_root/rootglass-nsis-Windows-X64"; package_glob='*-setup.exe'; runtime_glob='*.zip' ;;
   esac
@@ -88,8 +90,8 @@ cp "${example_glass[0]}" "${example_checksums[0]}" "$ready_root/example/"
 )
 assets+=("$ready_root/example/$(basename "${example_glass[0]}")" "$ready_root/example/SHA256SUMS-example.txt")
 
-if [[ "${#assets[@]}" -ne 14 ]]; then
-  printf 'Expected 14 release assets, found %s\n' "${#assets[@]}" >&2
+if [[ "${#assets[@]}" -ne 18 ]]; then
+  printf 'Expected 18 release assets, found %s\n' "${#assets[@]}" >&2
   printf '%s\n' "${assets[@]}" >&2
   exit 1
 fi
