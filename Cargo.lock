@@ -630,7 +630,10 @@ dependencies = [
 name = "rootglass-manifest"
 version = "0.1.0"
 dependencies = [
+ "base64",
+ "ed25519-dalek",
  "serde",
+ "sha2",
  "thiserror 1.0.69",
  "toml",
 ]
