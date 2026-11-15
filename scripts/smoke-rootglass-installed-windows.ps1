@@ -4,7 +4,8 @@ param(
     [Parameter(Mandatory = $true)][string]$EvidenceDirectory,
     [Parameter(Mandatory = $true)][string]$ChecksumName,
     [Parameter(Mandatory = $true)][ValidateSet("windows-x86_64", "windows-aarch64")][string]$ExpectedRuntimePlatform,
-    [Parameter(Mandatory = $true)][string]$TuiSmokeScript
+    [Parameter(Mandatory = $true)][string]$TuiSmokeScript,
+    [bool]$ProbeQemuStartupOnly = $false
 )
 
 $ErrorActionPreference = "Stop"
@@ -67,6 +68,117 @@ function Get-RootglassQemuProcesses([string]$QemuPath) {
         Where-Object { $_.ExecutablePath -and $_.ExecutablePath -ieq $env:ROOTGLASS_QEMU_PATH })
     Remove-Item Env:\ROOTGLASS_QEMU_PATH -ErrorAction SilentlyContinue
     return $processes
+}
+
+function Invoke-QemuStartupProbe([string]$QemuPath, [string]$RuntimeRoot, [string]$EvidenceDirectory) {
+    $probeRoot = Join-Path $EvidenceDirectory "qemu-startup-probes"
+    New-Item -ItemType Directory -Force -Path $probeRoot | Out-Null
+    $probeResults = @()
+    $dataDirectory = Join-Path $RuntimeRoot "share\qemu"
+    $moduleDirectory = Join-Path $RuntimeRoot "lib\qemu"
+
+    foreach ($serialBackend in @("null", "stdio")) {
+        $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+        $listener.Start()
+        $port = ([Net.IPEndPoint]$listener.LocalEndpoint).Port
+        $listener.Stop()
+
+        $stdoutPath = Join-Path $probeRoot "serial-$serialBackend.stdout.txt"
+        $stderrPath = Join-Path $probeRoot "serial-$serialBackend.stderr.txt"
+        $startInfo = [Diagnostics.ProcessStartInfo]::new()
+        $startInfo.FileName = $QemuPath
+        $startInfo.WorkingDirectory = Split-Path -Parent $QemuPath
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardInput = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $startInfo.Environment["PATH"] = "$(Split-Path -Parent $QemuPath);$env:PATH"
+        if (Test-Path -LiteralPath $moduleDirectory -PathType Container) {
+            $startInfo.Environment["QEMU_MODULE_DIR"] = $moduleDirectory
+        }
+        foreach ($argument in @(
+            "-L", $dataDirectory,
+            "-machine", "virt",
+            "-cpu", "cortex-a57",
+            "-m", "512",
+            "-smp", "1",
+            "-display", "none",
+            "-serial", $serialBackend,
+            "-monitor", "none",
+            "-qmp", "tcp:127.0.0.1:$port,server=on,wait=off",
+            "-S"
+        )) {
+            $startInfo.ArgumentList.Add($argument)
+        }
+
+        $process = [Diagnostics.Process]::new()
+        $process.StartInfo = $startInfo
+        $processStarted = $false
+        $stdoutReader = $null
+        $stderrReader = $null
+        $qmpGreeting = "not received"
+        $qmpCapabilities = "not received"
+        $probeStatus = "no QMP listener within 15 seconds"
+        try {
+            if (-not $process.Start()) { throw "Process.Start returned false" }
+            $processStarted = $true
+            $stdoutReader = $process.StandardOutput.ReadToEndAsync()
+            $stderrReader = $process.StandardError.ReadToEndAsync()
+            $deadline = (Get-Date).AddSeconds(15)
+            while ((Get-Date) -lt $deadline -and -not $process.HasExited) {
+                $qemuListener = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |
+                    Where-Object { $_.OwningProcess -eq $process.Id })
+                if ($qemuListener.Count -gt 0) {
+                    $client = [Net.Sockets.TcpClient]::new()
+                    try {
+                        $client.ReceiveTimeout = 3000
+                        $client.SendTimeout = 3000
+                        $client.Connect([Net.IPAddress]::Loopback, $port)
+                        $stream = $client.GetStream()
+                        $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::ASCII, $false, 1024, $true)
+                        $qmpGreeting = $reader.ReadLine()
+                        $request = [Text.Encoding]::ASCII.GetBytes('{"execute":"qmp_capabilities"}' + "`r`n")
+                        $stream.Write($request, 0, $request.Length)
+                        $qmpCapabilities = $reader.ReadLine()
+                        $probeStatus = "QMP greeting and capabilities exchange passed"
+                    } catch {
+                        $probeStatus = "QMP listener opened, protocol exchange failed: $($_.Exception.Message)"
+                    } finally {
+                        if ($client) { $client.Dispose() }
+                    }
+                    break
+                }
+                Start-Sleep -Milliseconds 250
+            }
+            if ($process.HasExited) {
+                $process.Refresh()
+                $probeStatus = "QEMU exited before QMP opened with code $($process.ExitCode)"
+            }
+        } catch {
+            $probeStatus = "probe could not start QEMU: $($_.Exception.Message)"
+        } finally {
+            if ($processStarted -and -not $process.HasExited) {
+                $process.Kill()
+                $process.WaitForExit()
+            }
+            if ($stdoutReader) { $stdoutReader.GetAwaiter().GetResult() | Set-Content -LiteralPath $stdoutPath -Encoding utf8 }
+            if ($stderrReader) { $stderrReader.GetAwaiter().GetResult() | Set-Content -LiteralPath $stderrPath -Encoding utf8 }
+            $probeResults += [pscustomobject]@{
+                SerialBackend = $serialBackend
+                QmpPort = $port
+                Status = $probeStatus
+                QmpGreeting = $qmpGreeting
+                QmpCapabilities = $qmpCapabilities
+                ExitCode = if ($processStarted -and $process.HasExited) { $process.ExitCode } else { "not started" }
+                StandardOutput = $stdoutPath
+                StandardError = $stderrPath
+            }
+            $process.Dispose()
+        }
+    }
+    $probeResults | Format-List | Out-String | Set-Content -LiteralPath (Join-Path $probeRoot "results.txt") -Encoding utf8
+    return $probeResults
 }
 
 try {
@@ -151,6 +263,21 @@ try {
     }
     $inventory | Set-Content -LiteralPath (Join-Path $EvidenceDirectory "runtime-inventory.txt") -Encoding utf8
     Write-ProgressLine "bundled runtime inventory and QEMU PE architecture verified"
+
+    if ($ProbeQemuStartupOnly) {
+        Write-ProgressLine "probing installed QEMU serial backends without starting the desktop or guest"
+        $probeResults = Invoke-QemuStartupProbe $qemuExe $versionRoot $EvidenceDirectory
+        foreach ($probeResult in $probeResults) {
+            Write-ProgressLine "QEMU serial=$($probeResult.SerialBackend): $($probeResult.Status)"
+        }
+        $probeUninstallers = @(Get-ChildItem -LiteralPath $installRoot -Filter "unins*.exe" -File -Recurse -ErrorAction SilentlyContinue)
+        if ($probeUninstallers.Count -ne 1) {
+            throw "Expected one NSIS uninstaller after QEMU startup probes; found $($probeUninstallers.Count)"
+        }
+        $probeUninstall = Start-Process -FilePath $probeUninstallers[0].FullName -ArgumentList "/S" -Wait -PassThru
+        if ($probeUninstall.ExitCode -ne 0) { throw "NSIS uninstaller exited with $($probeUninstall.ExitCode)" }
+        return
+    }
 
     $trustDirectory = Join-Path $env:APPDATA "Rootglass"
     $trustPath = Join-Path $trustDirectory "trust.json"

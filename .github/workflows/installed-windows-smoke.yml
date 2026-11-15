@@ -16,12 +16,17 @@ on:
           - all
           - windows-x64
           - windows-arm64
+      qemu_probe_only:
+        description: Install the package and compare QEMU serial startup backends without opening the GUI
+        type: boolean
+        required: true
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: installed-windows-smoke-${{ github.workflow }}-${{ github.ref }}-${{ inputs.host }}-${{ inputs.package_run_id }}
+  group: installed-windows-smoke-${{ github.workflow }}-${{ github.ref }}-${{ inputs.host }}-${{ inputs.package_run_id }}-${{ inputs.qemu_probe_only }}
   cancel-in-progress: true
 
 jobs:
@@ -159,6 +164,7 @@ jobs:
           EVIDENCE_DIR: ${{ runner.temp }}/rootglass-windows-evidence
           CHECKSUM_NAME: ${{ matrix.checksum }}
           EXPECTED_RUNTIME_PLATFORM: ${{ matrix.runtime_platform }}
+          QEMU_PROBE_ONLY: ${{ inputs.qemu_probe_only }}
         run: >-
           ./scripts/smoke-rootglass-installed-windows.ps1
           -PackageDirectory "$env:PACKAGE_DIR"
@@ -166,6 +172,7 @@ jobs:
           -EvidenceDirectory "$env:EVIDENCE_DIR"
           -ChecksumName "$env:CHECKSUM_NAME"
           -ExpectedRuntimePlatform "$env:EXPECTED_RUNTIME_PLATFORM"
+          -ProbeQemuStartupOnly ([bool]::Parse($env:QEMU_PROBE_ONLY))
           -TuiSmokeScript "scripts/smoke-rootglass-installed-windows-tui.py"
 
       - name: Record runner information on failure
