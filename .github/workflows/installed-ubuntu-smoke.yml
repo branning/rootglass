@@ -137,6 +137,7 @@ jobs:
           EXPECTED_RUNTIME_PLATFORM: ${{ inputs.architecture == 'aarch64' && 'linux-aarch64' || 'linux-x86_64' }}
           EXPECTED_HOST_MACHINE: ${{ inputs.architecture }}
           EXPECTED_DEB_ARCH: ${{ inputs.architecture == 'aarch64' && 'arm64' || 'amd64' }}
+          EXPECTED_PACKAGE_CHECKSUM: ${{ inputs.architecture == 'aarch64' && 'SHA256SUMS-linux-arm64.txt' || 'SHA256SUMS-linux.txt' }}
         run: |
           set -euo pipefail
           mkdir -p "$EVIDENCE_DIR" "$TEST_HOME/.config/rootglass" "$TEST_HOME/.local/share"
@@ -163,6 +164,7 @@ jobs:
           if timeout --signal=TERM --kill-after=5s 120s \
             python3 - "$PACKAGE_DIR" "$EXAMPLE_DIR" > "$EVIDENCE_DIR/checksums.log" 2>&1 <<'PY'
           import hashlib
+          import os
           import sys
           from pathlib import Path
 
@@ -189,12 +191,17 @@ jobs:
 
           package_dir, example_dir = map(Path, sys.argv[1:])
           print("verifying downloaded package and example checksums", flush=True)
-          package_checks = list(package_dir.rglob("SHA256SUMS-linux.txt"))
+          package_checksum_name = os.environ["EXPECTED_PACKAGE_CHECKSUM"]
+          package_checks = list(package_dir.rglob(package_checksum_name))
           example_checks = list(example_dir.rglob("SHA256SUMS-example.txt"))
           debs = list(package_dir.rglob("*.deb"))
           glasses = list(example_dir.rglob("*.glass"))
           if len(package_checks) != 1 or len(example_checks) != 1:
-              raise SystemExit("expected one package and one example checksum file")
+              raise SystemExit(
+                  f"expected one {package_checksum_name} and one example checksum file; "
+                  f"found package checksums {[str(path) for path in package_checks]}, "
+                  f"example checksums {[str(path) for path in example_checks]}"
+              )
           if len(debs) != 1 or len(glasses) != 1:
               raise SystemExit("expected one Linux .deb and one signed .glass artifact")
           verify(package_checks[0], package_dir)
