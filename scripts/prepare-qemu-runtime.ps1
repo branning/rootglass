@@ -108,6 +108,13 @@ if ($TargetPlatform -eq "windows-aarch64") {
     }
     $visitedRuntimeBinaries = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     $copiedDlls = @{}
+    $sdl3Dll = Join-Path $qemuRoot "bin/SDL3.dll"
+    if (-not (Test-Path -LiteralPath $sdl3Dll -PathType Leaf)) {
+        throw "SDL3.dll was not found under $qemuRoot; native ARM64 QEMU requires its dynamically loaded UI module"
+    }
+    Copy-Item -LiteralPath $sdl3Dll -Destination (Join-Path $binDir "SDL3.dll") -Force
+    $copiedDlls["SDL3.dll"] = $true
+    $pendingRuntimeBinaries.Enqueue($sdl3Dll)
     while ($pendingRuntimeBinaries.Count -gt 0) {
         $currentBinary = $pendingRuntimeBinaries.Dequeue()
         $currentBinaryPath = [IO.Path]::GetFullPath($currentBinary)

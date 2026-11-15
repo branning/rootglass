@@ -272,7 +272,7 @@ exit $LASTEXITCODE
             }
             if ($probeName -eq "machine-none" -or $probeName -like "machine-virt-*") {
                 Start-Sleep -Milliseconds 1000
-                $moduleSnapshot = Join-Path $probeRoot "machine-none.modules.txt"
+                $moduleSnapshot = Join-Path $probeRoot "$probeName.modules.txt"
                 try {
                     @(Get-Process -Id $process.Id -ErrorAction Stop | ForEach-Object {
                         $_.Modules | ForEach-Object { "$($_.ModuleName)`t$($_.FileName)" }
