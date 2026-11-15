@@ -323,6 +323,23 @@ jobs:
           glass=$(cat "$EXAMPLE_DIR/glass-path.txt")
           shim_path="$RUNNER_TEMP/rootglass-shims:$PATH"
           association_log="$EVIDENCE_DIR/association-smoke.log"
+          mkdir -p "$RUNNER_TEMP/rootglass-shims"
+          cat > "$RUNNER_TEMP/rootglass-shims/rootglass" <<EOF
+          #!/usr/bin/env bash
+          {
+            for variable in DISPLAY WAYLAND_DISPLAY XAUTHORITY HOME PATH \
+              XDG_CONFIG_HOME XDG_DATA_HOME XDG_RUNTIME_DIR XDG_CURRENT_DESKTOP \
+              GDK_BACKEND WINIT_UNIX_BACKEND LIBGL_ALWAYS_SOFTWARE \
+              ROOTGLASS_DESKTOP_SMOKE ROOTGLASS_DESKTOP_SMOKE_EVENT_LOG; do
+              printf '%s=%s\\n' "\$variable" "\${!variable-}"
+            done
+            if [[ -n "\${DISPLAY:-}" ]]; then
+              /usr/bin/xdpyinfo -display "\$DISPLAY" | sed -n '1,32p'
+            fi
+          } > "$EVIDENCE_DIR/desktop-launch-environment.txt" 2>&1
+          exec "$rootglass_binary" "\$@"
+          EOF
+          chmod 755 "$RUNNER_TEMP/rootglass-shims/rootglass"
           progress "running .glass association check in an isolated network namespace"
           if timeout --verbose --signal=TERM --kill-after=15s 300s \
             scripts/run-offline-network-namespace.sh \
