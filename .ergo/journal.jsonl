@@ -483,3 +483,4 @@
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T08:39:28.002555707Z","agent":"codex@specialized-images","text":"ARM64 smoke #43694530157 missed QMP after 60s; found verbatim executable path; normalized it for retry."}
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T09:07:18.103441989Z","agent":"codex@specialized-images","text":"ARM64 smoke #43696520178 still missed QMP after 60s; add live QEMU listener/CPU samples before changing runtime again."}
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T09:19:28.911411004Z","agent":"codex@specialized-images","text":"Smoke #43697710086: idle QEMU used 0.06s CPU with no listener; instrument modules and thread wait states."}
+{"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T09:28:58.735716333Z","agent":"codex@specialized-images","text":"Smoke #43698704983 stopped before TUI: WSL shell stole picker foreground; dismiss that ambient window and retry."}

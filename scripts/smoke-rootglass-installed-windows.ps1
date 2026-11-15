@@ -423,13 +423,15 @@ public static class RootglassSmokeWindow {
     function Dismiss-AmbientWindowsShellPrompt([IntPtr]$WindowHandle) {
         if ($WindowHandle -eq [IntPtr]::Zero) { return $false }
         $description = [RootglassSmokeWindow]::DescribeWindow($WindowHandle)
-        if ($description -notmatch "title='(?:Microsoft account|Search)' class='Windows.UI.Core.CoreWindow'") {
+        $accountPrompt = $description -match "title='(?:Microsoft account|Search)' class='Windows.UI.Core.CoreWindow'"
+        $wslShellWindow = $description -match "title='C:\\Windows\\system32\\wsl\.exe' class='CASCADIA_HOSTING_WINDOW_CLASS'"
+        if (-not $accountPrompt -and -not $wslShellWindow) {
             return $false
         }
         if ([RootglassSmokeWindow]::GetForegroundWindow() -ne $WindowHandle) {
             return $false
         }
-        Write-ProgressLine "Windows runner surfaced an ambient account/search prompt; dismissing without credentials"
+        Write-ProgressLine "Windows runner surfaced an ambient account/search/WSL window; dismissing without input"
         $closePosted = [RootglassSmokeWindow]::PostMessage(
             $WindowHandle,
             [uint32]0x0010,
@@ -636,6 +638,13 @@ public static class RootglassSmokeWindow {
         $activeDialogHandle = [RootglassSmokeWindow]::GetForegroundWindow()
         $activeDialogDescription = [RootglassSmokeWindow]::DescribeWindow($activeDialogHandle)
         Write-ProgressLine "UI Automation did not enumerate the picker; foreground window: $activeDialogDescription"
+        if ($activeDialogDescription -match "class='CASCADIA_HOSTING_WINDOW_CLASS'" -and
+            (Dismiss-AmbientWindowsShellPrompt $activeDialogHandle)) {
+            Start-Sleep -Milliseconds 750
+            $activeDialogHandle = [RootglassSmokeWindow]::GetForegroundWindow()
+            $activeDialogDescription = [RootglassSmokeWindow]::DescribeWindow($activeDialogHandle)
+            Write-ProgressLine "foreground window after dismissing WSL: $activeDialogDescription"
+        }
         if ($activeDialogDescription -notmatch "title='(Open|Select|Choose|Pick)(\b[^']*)?'" -and
             $activeDialogDescription -notmatch "class='#32770'") {
             throw "The picker-open event was recorded, but the foreground window is not a native file dialog: $activeDialogDescription. Top-level windows: $($topLevelWindows -join '; ')"
