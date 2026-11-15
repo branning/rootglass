@@ -77,7 +77,16 @@ function Invoke-QemuStartupProbe([string]$QemuPath, [string]$RuntimeRoot, [strin
     $dataDirectory = Join-Path $RuntimeRoot "share\qemu"
     $moduleDirectory = Join-Path $RuntimeRoot "lib\qemu"
 
-    foreach ($probeName in @("version-piped", "version-inherited", "machine-none", "serial-null", "serial-stdio")) {
+    $repositoryRoot = Split-Path -Parent $PSScriptRoot
+    $powershellVersionScript = Join-Path $probeRoot "invoke-qemu-version.ps1"
+    @'
+param([string]$QemuPath)
+$versionOutput = & $QemuPath --version
+$versionOutput | Set-Content -LiteralPath $env:ROOTGLASS_QEMU_VERSION_OUTPUT -Encoding utf8
+exit $LASTEXITCODE
+'@ | Set-Content -LiteralPath $powershellVersionScript -Encoding utf8
+
+    foreach ($probeName in @("version-piped", "version-inherited", "version-repository-cwd", "version-powershell", "machine-none", "serial-null", "serial-stdio")) {
         $serialBackend = if ($probeName -like "serial-*") { $probeName -replace "^serial-", "" } else { "not applicable" }
         $qmpEnabled = $probeName -notlike "version-*"
         $redirectOutput = $probeName -ne "version-inherited"
@@ -92,8 +101,12 @@ function Invoke-QemuStartupProbe([string]$QemuPath, [string]$RuntimeRoot, [strin
         $stdoutPath = Join-Path $probeRoot "$probeName.stdout.txt"
         $stderrPath = Join-Path $probeRoot "$probeName.stderr.txt"
         $startInfo = [Diagnostics.ProcessStartInfo]::new()
-        $startInfo.FileName = $QemuPath
-        $startInfo.WorkingDirectory = Split-Path -Parent $QemuPath
+        $startInfo.FileName = if ($probeName -eq "version-powershell") {
+            Join-Path $PSHOME "pwsh.exe"
+        } else { $QemuPath }
+        $startInfo.WorkingDirectory = if ($probeName -eq "version-repository-cwd") {
+            $repositoryRoot
+        } else { Split-Path -Parent $QemuPath }
         $startInfo.UseShellExecute = $false
         $startInfo.CreateNoWindow = $redirectOutput
         $startInfo.RedirectStandardInput = $redirectOutput
@@ -103,9 +116,15 @@ function Invoke-QemuStartupProbe([string]$QemuPath, [string]$RuntimeRoot, [strin
         if (Test-Path -LiteralPath $moduleDirectory -PathType Container) {
             $startInfo.Environment["QEMU_MODULE_DIR"] = $moduleDirectory
         }
+        if ($probeName -eq "version-powershell") {
+            $versionOutputPath = Join-Path $probeRoot "version-powershell-native.stdout.txt"
+            $startInfo.Environment["ROOTGLASS_QEMU_VERSION_OUTPUT"] = $versionOutputPath
+        }
         $arguments = switch ($probeName) {
             "version-piped" { @("--version") }
             "version-inherited" { @("--version") }
+            "version-repository-cwd" { @("--version") }
+            "version-powershell" { @("-NoLogo", "-NoProfile", "-NonInteractive", "-File", $powershellVersionScript, $QemuPath) }
             "machine-none" { @(
                 "-L", $dataDirectory,
                 "-machine", "none",
@@ -148,6 +167,17 @@ function Invoke-QemuStartupProbe([string]$QemuPath, [string]$RuntimeRoot, [strin
                 $stdoutReader = $process.StandardOutput.ReadToEndAsync()
                 $stderrReader = $process.StandardError.ReadToEndAsync()
             }
+            if ($probeName -eq "machine-none") {
+                Start-Sleep -Milliseconds 1000
+                $moduleSnapshot = Join-Path $probeRoot "machine-none.modules.txt"
+                try {
+                    @(Get-Process -Id $process.Id -ErrorAction Stop | ForEach-Object {
+                        $_.Modules | ForEach-Object { "$($_.ModuleName)`t$($_.FileName)" }
+                    }) | Set-Content -LiteralPath $moduleSnapshot -Encoding utf8
+                } catch {
+                    "module enumeration failed: $($_.Exception.Message)" | Set-Content -LiteralPath $moduleSnapshot -Encoding utf8
+                }
+            }
             if (-not $qmpEnabled) {
                 if ($process.WaitForExit(10000)) {
                     $probeStatus = "QEMU --version exited with code $($process.ExitCode)"
@@ -188,7 +218,7 @@ function Invoke-QemuStartupProbe([string]$QemuPath, [string]$RuntimeRoot, [strin
             $probeStatus = "probe could not start QEMU: $($_.Exception.Message)"
         } finally {
             if ($processStarted -and -not $process.HasExited) {
-                $process.Kill()
+                if ($probeName -eq "version-powershell") { $process.Kill($true) } else { $process.Kill() }
                 $process.WaitForExit()
             }
             if ($stdoutReader) { $stdoutReader.GetAwaiter().GetResult() | Set-Content -LiteralPath $stdoutPath -Encoding utf8 }
@@ -203,6 +233,8 @@ function Invoke-QemuStartupProbe([string]$QemuPath, [string]$RuntimeRoot, [strin
                 ExitCode = if ($processStarted -and $process.HasExited) { $process.ExitCode } else { "not started" }
                 StandardOutput = if ($redirectOutput) { $stdoutPath } else { "inherited to workflow log" }
                 StandardError = if ($redirectOutput) { $stderrPath } else { "inherited to workflow log" }
+                WorkingDirectory = $startInfo.WorkingDirectory
+                Executable = $startInfo.FileName
             }
             $process.Dispose()
         }
