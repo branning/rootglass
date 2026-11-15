@@ -70,8 +70,19 @@ export XDG_DATA_HOME="$work_dir/data"
 export XDG_RUNTIME_DIR="$work_dir/runtime"
 export XDG_CURRENT_DESKTOP=GNOME
 export GDK_BACKEND=x11
+export WINIT_UNIX_BACKEND=x11
 export ROOTGLASS_DESKTOP_SMOKE=1
 export ROOTGLASS_DESKTOP_SMOKE_EVENT_LOG="$event_log"
+
+# xdg-open may ask the desktop portal to start the registered application.
+# The portal launches it with the D-Bus activation environment, so publish the
+# Xvfb, user-home, renderer, and smoke-test settings after creating this
+# isolated session and before asking the OS to open the .glass file.
+dbus-update-activation-environment \
+  DISPLAY XAUTHORITY HOME PATH XDG_CONFIG_HOME XDG_DATA_HOME XDG_RUNTIME_DIR \
+  XDG_CURRENT_DESKTOP GDK_BACKEND WINIT_UNIX_BACKEND LIBGL_ALWAYS_SOFTWARE \
+  ROOTGLASS_DESKTOP_SMOKE ROOTGLASS_DESKTOP_SMOKE_EVENT_LOG
+log "updated the session bus environment for the portal-launched desktop app"
 
 mime_type="application/vnd.rootglass.glass"
 mime_package_file="/usr/share/mime/packages/rootglass.xml"
