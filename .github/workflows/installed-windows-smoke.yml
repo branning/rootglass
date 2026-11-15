@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       package_run_id:
-        description: Successful Windows x64 Desktop packages run for this commit
+        description: Successful package run containing the Windows architecture(s) selected below
         type: string
         required: true
       host:
@@ -16,12 +16,17 @@ on:
           - all
           - windows-x64
           - windows-arm64
+      qemu_probe_only:
+        description: Install the package and compare QEMU serial startup backends without opening the GUI
+        type: boolean
+        required: true
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: installed-windows-smoke-${{ github.workflow }}-${{ github.ref }}-${{ inputs.host }}-${{ inputs.package_run_id }}
+  group: installed-windows-smoke-${{ github.workflow }}-${{ github.ref }}-${{ inputs.host }}-${{ inputs.package_run_id }}-${{ inputs.qemu_probe_only }}
   cancel-in-progress: true
 
 jobs:
@@ -43,8 +48,8 @@ jobs:
           esac
           matrix=$(jq -cn --arg host "$HOST" '
             {include: ([
-              {id: "windows-x64", name: "Windows Server 2025 x64 host", runner: "windows-2025", host_arch: "X64"},
-              {id: "windows-arm64", name: "Windows 11 ARM64 host (x64 app emulation)", runner: "windows-11-arm", host_arch: "ARM64"}
+              {id: "windows-x64", name: "Windows Server 2025 x64 host with x64 package", runner: "windows-2025", host_arch: "X64", package_arch: "X64", package_job: "Windows x64 package", checksum: "SHA256SUMS-windows.txt", runtime_platform: "windows-x86_64"},
+              {id: "windows-arm64", name: "Windows 11 ARM64 host with native ARM64 package", runner: "windows-11-arm", host_arch: "ARM64", package_arch: "ARM64", package_job: "Windows ARM64 package", checksum: "SHA256SUMS-windows-arm64.txt", runtime_platform: "windows-aarch64"}
             ] | map(select($host == "all" or .id == $host)))}')
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
@@ -67,6 +72,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PACKAGE_RUN_ID: ${{ inputs.package_run_id }}
+          PACKAGE_JOB: ${{ matrix.package_job }}
         shell: bash
         run: |
           set -euo pipefail
@@ -110,7 +116,7 @@ jobs:
             echo "Reusing package $package_sha; intervening changes affect only the smoke harness/evidence"
           fi
           jobs_json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PACKAGE_RUN_ID/jobs?per_page=100")
-          for required_job in "Materialize pinned guest boot assets" "Windows x64 package"; do
+          for required_job in "Materialize pinned guest boot assets" "$PACKAGE_JOB"; do
             conclusion=$(jq -r --arg name "$required_job" \
               '[.jobs[] | select(.name == $name) | .conclusion] | first // "missing"' \
               <<< "$jobs_json")
@@ -119,12 +125,12 @@ jobs:
               exit 1
             }
           done
-          echo "Validated Windows x64 package run $PACKAGE_RUN_ID at $package_sha"
+          echo "Validated $PACKAGE_JOB run $PACKAGE_RUN_ID at $package_sha"
 
-      - name: Download Windows x64 installer and runtime
+      - name: Download Windows installer and runtime
         uses: actions/download-artifact@v4
         with:
-          name: rootglass-nsis-Windows-X64
+          name: rootglass-nsis-Windows-${{ matrix.package_arch }}
           path: ${{ runner.temp }}/rootglass-package
           repository: ${{ github.repository }}
           run-id: ${{ inputs.package_run_id }}
@@ -139,13 +145,25 @@ jobs:
           run-id: ${{ inputs.package_run_id }}
           github-token: ${{ github.token }}
 
+      - name: Recreate MSYS2 CLANGARM64 environment for QEMU probe
+        if: inputs.qemu_probe_only && matrix.id == 'windows-arm64'
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: true
+          cache: true
+          install: mingw-w64-clang-aarch64-qemu mingw-w64-clang-aarch64-ntldd
+
       - name: Set up Python
+        if: inputs.qemu_probe_only != true
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           architecture: x64
 
       - name: Install Python TUI harness dependencies
+        if: inputs.qemu_probe_only != true
         shell: pwsh
         run: python -m pip install --disable-pip-version-check pywinpty==2.0.15 pyte==0.8.2 Pillow==11.3.0
 
@@ -156,11 +174,18 @@ jobs:
           PACKAGE_DIR: ${{ runner.temp }}/rootglass-package
           EXAMPLE_DIR: ${{ runner.temp }}/rootglass-example
           EVIDENCE_DIR: ${{ runner.temp }}/rootglass-windows-evidence
+          CHECKSUM_NAME: ${{ matrix.checksum }}
+          EXPECTED_RUNTIME_PLATFORM: ${{ matrix.runtime_platform }}
+          QEMU_PROBE_ONLY: ${{ inputs.qemu_probe_only }}
+          MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}
         run: >-
           ./scripts/smoke-rootglass-installed-windows.ps1
           -PackageDirectory "$env:PACKAGE_DIR"
           -ExampleDirectory "$env:EXAMPLE_DIR"
           -EvidenceDirectory "$env:EVIDENCE_DIR"
+          -ChecksumName "$env:CHECKSUM_NAME"
+          -ExpectedRuntimePlatform "$env:EXPECTED_RUNTIME_PLATFORM"
+          -ProbeQemuStartupOnly ([bool]::Parse($env:QEMU_PROBE_ONLY))
           -TuiSmokeScript "scripts/smoke-rootglass-installed-windows-tui.py"
 
       - name: Record runner information on failure

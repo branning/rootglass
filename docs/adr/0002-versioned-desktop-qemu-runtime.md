@@ -25,6 +25,7 @@ are:
 | Ubuntu 24.04 aarch64 | Ubuntu `qemu-system-arm` package |
 | macOS arm64 | Homebrew `qemu` formula |
 | Windows x86_64 | Chocolatey QEMU package, which distributes the Windows QEMU installer |
+| Windows ARM64 | MSYS2 `CLANGARM64` QEMU package, with its PE DLL dependencies bundled |
 
 The build copies QEMU's shared libraries and data files into the runtime,
 records the exact QEMU version/source, and hashes the executable, libraries,
