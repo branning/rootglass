@@ -313,6 +313,7 @@ jobs:
           EXAMPLE_DIR: ${{ runner.temp }}/rootglass-example
           TEST_HOME: ${{ runner.temp }}/rootglass-user-home
           EVIDENCE_DIR: ${{ runner.temp }}/rootglass-install-evidence
+          LIBGL_ALWAYS_SOFTWARE: "1"
         run: |
           set -euo pipefail
           progress() {
@@ -326,8 +327,9 @@ jobs:
           if timeout --verbose --signal=TERM --kill-after=15s 300s \
             scripts/run-offline-network-namespace.sh \
               xvfb-run --auto-servernum \
-              --server-args='-screen 0 1920x1200x24' \
-              dbus-run-session -- env PATH="$shim_path" HOME="$TEST_HOME" \
+              --server-args='-screen 0 1920x1200x24 +extension GLX +render -noreset' \
+              env PATH="$shim_path" HOME="$TEST_HOME" \
+              dbus-run-session -- \
               bash scripts/smoke-rootglass-installed-linux-association.sh \
                 "$rootglass_binary" "$glass" "$EVIDENCE_DIR/association" \
             2>&1 | tee "$association_log"; then
@@ -342,7 +344,9 @@ jobs:
       - name: Run installed GPUI desktop guest workflow offline
         timeout-minutes: 12
         env:
+          TEST_HOME: ${{ runner.temp }}/rootglass-user-home
           EVIDENCE_DIR: ${{ runner.temp }}/rootglass-install-evidence
+          LIBGL_ALWAYS_SOFTWARE: "1"
         run: |
           set -euo pipefail
           progress() {
@@ -355,8 +359,9 @@ jobs:
           if timeout --signal=TERM --kill-after=15s 600s \
             scripts/run-offline-network-namespace.sh \
               xvfb-run --auto-servernum \
-              --server-args='-screen 0 1920x1200x24' \
-              dbus-run-session -- env PATH="$shim_path" \
+              --server-args='-screen 0 1920x1200x24 +extension GLX +render -noreset' \
+              env PATH="$shim_path" HOME="$TEST_HOME" \
+              dbus-run-session -- \
               bash scripts/smoke-rootglass-desktop-xvfb.sh \
                 "$rootglass_binary" "$EVIDENCE_DIR/gui-workflow" \
             2>&1 | tee "$gui_log"; then
