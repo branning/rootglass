@@ -480,3 +480,4 @@
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T08:02:44.260769033Z","agent":"codex@specialized-images","text":"ARM64 QEMU --version timed out with empty output; removed redundant probe; TUI guest smoke rerun pending."}
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T08:14:12.57418115Z","agent":"codex@specialized-images","text":"ARM64 smoke #43692669683 imported example; QEMU missed 5s QMP startup; ARM64 timeout raised to 60s."}
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T08:17:10.720893195Z","agent":"codex@specialized-images","text":"CI #43693552356 passed all 7 jobs; native Windows ARM64 package #43693563809 in progress."}
+{"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T08:39:28.002555707Z","agent":"codex@specialized-images","text":"ARM64 smoke #43694530157 missed QMP after 60s; found verbatim executable path; normalized it for retry."}

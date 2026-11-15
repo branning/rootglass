@@ -269,15 +269,17 @@ impl QemuLaunchPlan {
     }
 
     pub fn command_line(&self) -> String {
-        let mut parts = vec![shell_quote(&self.binary.path.display().to_string())];
+        let executable = qemu_executable_path(&self.binary.path);
+        let mut parts = vec![shell_quote(&executable.display().to_string())];
         parts.extend(self.args.iter().map(|arg| shell_quote(arg)));
         parts.join(" ")
     }
 
     pub fn command(&self) -> Command {
-        let mut command = Command::new(&self.binary.path);
+        let binary = qemu_executable_path(&self.binary.path);
+        let mut command = Command::new(&binary);
         command.args(&self.args);
-        configure_bundled_runtime(&mut command, &self.binary.path);
+        configure_bundled_runtime(&mut command, &binary);
         command.stdin(Stdio::null());
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());
@@ -285,9 +287,10 @@ impl QemuLaunchPlan {
     }
 
     pub fn interactive_command(&self) -> Command {
-        let mut command = Command::new(&self.binary.path);
+        let binary = qemu_executable_path(&self.binary.path);
+        let mut command = Command::new(&binary);
         command.args(&self.args);
-        configure_bundled_runtime(&mut command, &self.binary.path);
+        configure_bundled_runtime(&mut command, &binary);
         command.stdin(Stdio::inherit());
         command.stdout(Stdio::inherit());
         command.stderr(Stdio::inherit());
@@ -333,6 +336,13 @@ fn qemu_path_argument(path: &Path) -> String {
     } else {
         path.into_owned()
     }
+}
+
+fn qemu_executable_path(path: &Path) -> PathBuf {
+    // QEMU's Windows runtime does not consistently handle the extended-length
+    // `\\?\` prefix in its own executable path. Use the same ordinary path
+    // form for process creation that we already use for QEMU arguments.
+    PathBuf::from(qemu_path_argument(path))
 }
 
 /// Maximum in-memory serial scrollback retained by a supervised run.
@@ -603,9 +613,10 @@ impl QemuProcess {
         drop(listener);
 
         let command_line = plan.command_line();
-        let mut command = Command::new(&plan.binary.path);
+        let binary = qemu_executable_path(&plan.binary.path);
+        let mut command = Command::new(&binary);
         command.args(supervised_args(&plan.args, port));
-        configure_bundled_runtime(&mut command, &plan.binary.path);
+        configure_bundled_runtime(&mut command, &binary);
         command.stdin(Stdio::piped());
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());
