@@ -58,7 +58,7 @@ jobs:
             changed_files=$(jq -r '[.files[].filename] | unique | join("\n")' <<< "$comparison")
             while IFS= read -r changed_file; do
               case "$changed_file" in
-                .github/workflows/installed-ubuntu-smoke.yml|.ergo/backlog.jsonl|.ergo/journal.jsonl) ;;
+                .github/workflows/installed-ubuntu-smoke.yml|scripts/smoke-rootglass-installed-linux-association.sh|.ergo/backlog.jsonl|.ergo/journal.jsonl) ;;
                 *)
                   echo "Package source $package_sha differs from current product code" >&2
                   printf '%s\n' "$changed_files" >&2
@@ -315,18 +315,19 @@ jobs:
           rootglass_binary=$(cat "$EVIDENCE_DIR/binary-path.txt")
           glass=$(cat "$EXAMPLE_DIR/glass-path.txt")
           shim_path="$RUNNER_TEMP/rootglass-shims:$PATH"
+          progress "blocking outbound network for association smoke"
           sudo iptables -I OUTPUT 1 ! -o lo -j REJECT
           trap 'sudo iptables -D OUTPUT 1 ! -o lo -j REJECT >/dev/null 2>&1 || true' EXIT
           association_log="$EVIDENCE_DIR/association-smoke.log"
           progress "running offline .glass association check"
-          if timeout --signal=TERM --kill-after=15s 300s \
+          if timeout --verbose --signal=TERM --kill-after=15s 300s \
             dbus-run-session -- xvfb-run --auto-servernum \
               --server-args='-screen 0 1920x1200x24' \
               env PATH="$shim_path" HOME="$TEST_HOME" \
               bash scripts/smoke-rootglass-installed-linux-association.sh \
                 "$rootglass_binary" "$glass" "$EVIDENCE_DIR/association" \
-            > "$association_log" 2>&1; then
-            cat "$association_log"
+            2>&1 | tee "$association_log"; then
+            :
           else
             association_status=$?
             cat "$association_log"
