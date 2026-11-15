@@ -94,7 +94,7 @@ if ($TargetPlatform -eq "windows-aarch64") {
     # it reports API-set contracts, Azure attestation, and VM trust components
     # as unresolved even though they are optional host imports and must not be
     # bundled with QEMU. Keep failing for unresolved third-party DLLs.
-    $optionalWindowsImportPattern = '(?i)^(api-ms-|ext-ms-|AzureAttestManager\.dll$|HvsiFileTrust\.dll$|wpaxholder\.dll$)'
+    $optionalWindowsImportPattern = '(?i)^(api-ms-|ext-ms-|AzureAttest.*\.dll$|HvsiFileTrust\.dll$|PdmUtilities\.dll$|wpaxholder\.dll$)'
     $unresolvedRuntimeDlls = @()
     foreach ($line in $dependencyOutput) {
         if ($line -match '(?i)^\s*(?<module>[^\s]+\.dll)\s*=>\s*not found\b') {
