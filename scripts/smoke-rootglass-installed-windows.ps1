@@ -98,12 +98,23 @@ exit $LASTEXITCODE
 '@ | Set-Content -LiteralPath $powershellVersionScript -Encoding utf8
 
     $probeNames = if ($ExpectedRuntimePlatform -eq "windows-aarch64" -and -not [string]::IsNullOrWhiteSpace($Msys2Root)) {
-        @("version-msys2-env", "machine-none-msys2-env")
+        @(
+            "version-msys2-env",
+            "machine-none-msys2-env",
+            "machine-virt-bundle-path-msys2-env",
+            "serial-stdio-bundle-path-msys2-env",
+            "machine-virt-msys2-env",
+            "serial-stdio-msys2-env"
+        )
     } else {
         @("version-piped", "version-inherited", "version-repository-cwd", "version-powershell", "version-msys2-env", "version-system-path-only", "machine-none", "machine-none-system-path-only", "serial-null", "serial-stdio")
     }
     foreach ($probeName in $probeNames) {
-        $serialBackend = if ($probeName -like "serial-*") { $probeName -replace "^serial-", "" } else { "not applicable" }
+        $serialBackend = if ($probeName -like "serial-*") {
+            $probeName -replace "^serial-", "" -replace "-bundle-path-msys2-env$", "" -replace "-msys2-env$", ""
+        } elseif ($probeName -like "machine-virt-*") {
+            "null"
+        } else { "not applicable" }
         $qmpEnabled = $probeName -notlike "version-*"
         $redirectOutput = $probeName -ne "version-inherited"
         $port = $null
@@ -143,7 +154,7 @@ exit $LASTEXITCODE
             $versionOutputPath = Join-Path $probeRoot "version-powershell-native.stdout.txt"
             $startInfo.Environment["ROOTGLASS_QEMU_VERSION_OUTPUT"] = $versionOutputPath
         }
-        if ($probeName -eq "version-msys2-env" -or $probeName -eq "machine-none-msys2-env") {
+        if ($probeName -like "*-msys2-env") {
             $startInfo.Environment["MSYSTEM"] = "CLANGARM64"
             $startInfo.Environment["MINGW_PREFIX"] = "/clangarm64"
             $startInfo.Environment["MSYSTEM_PREFIX"] = "/clangarm64"
@@ -154,7 +165,11 @@ exit $LASTEXITCODE
             [void]$startInfo.Environment.Remove("CHERE_INVOKING")
             if (-not [string]::IsNullOrWhiteSpace($Msys2Root)) {
                 $startInfo.Environment["HOME"] = $msysHome
-                $startInfo.Environment["PATH"] = "$(Split-Path -Parent $QemuPath);$(Join-Path $Msys2Root 'clangarm64\bin');$(Join-Path $Msys2Root 'usr\bin');$env:PATH"
+                if ($probeName -like "*-bundle-path-msys2-env") {
+                    $startInfo.Environment["PATH"] = "$(Split-Path -Parent $QemuPath);$env:PATH"
+                } else {
+                    $startInfo.Environment["PATH"] = "$(Split-Path -Parent $QemuPath);$(Join-Path $Msys2Root 'clangarm64\bin');$(Join-Path $Msys2Root 'usr\bin');$env:PATH"
+                }
             }
             else {
                 $startInfo.Environment["HOME"] = $env:USERPROFILE
@@ -187,6 +202,30 @@ exit $LASTEXITCODE
                 "-L", $dataDirectory,
                 "-machine", "none",
                 "-display", "none",
+                "-monitor", "none",
+                "-qmp", "tcp:127.0.0.1:$port,server=on,wait=off",
+                "-S"
+            ) }
+            { $_ -like "machine-virt-*-msys2-env" -or $_ -eq "machine-virt-msys2-env" } { @(
+                "-L", $dataDirectory,
+                "-machine", "virt",
+                "-cpu", "cortex-a57",
+                "-m", "512",
+                "-smp", "1",
+                "-display", "none",
+                "-serial", $serialBackend,
+                "-monitor", "none",
+                "-qmp", "tcp:127.0.0.1:$port,server=on,wait=off",
+                "-S"
+            ) }
+            { $_ -like "serial-*-msys2-env" } { @(
+                "-L", $dataDirectory,
+                "-machine", "virt",
+                "-cpu", "cortex-a57",
+                "-m", "512",
+                "-smp", "1",
+                "-display", "none",
+                "-serial", $serialBackend,
                 "-monitor", "none",
                 "-qmp", "tcp:127.0.0.1:$port,server=on,wait=off",
                 "-S"
