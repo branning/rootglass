@@ -84,60 +84,65 @@ New-Item -ItemType Directory -Force -Path $binDir, $libDir, (Join-Path $runtimeR
 if ($TargetPlatform -eq "windows-aarch64") {
     Copy-Item -LiteralPath $qemuExe.FullName -Destination $binDir -Force
 
-    # MSYS2's QEMU is a native ARM64 build. Copy its transitive PE DLL imports
-    # into the private runtime bin directory so Windows can load it offline.
-    $dependencyOutput = @(& $ntlddExe -R $qemuExe.FullName 2>&1)
-    if ($LASTEXITCODE -ne 0) {
-        throw "Could not inspect the native QEMU DLL dependencies: $($dependencyOutput -join ' ')"
-    }
-    # ntldd -R also descends into Windows-owned system DLLs. On Windows 11 ARM64
-    # it reports API-set contracts, Azure attestation, and VM trust components
-    # as unresolved even though they are optional host imports and must not be
-    # bundled with QEMU. Keep failing for unresolved third-party DLLs.
+    # MSYS2's QEMU is a native ARM64 build. Walk its PE imports recursively,
+    # copying only MSYS2 runtime DLLs. Let Windows resolve OS libraries itself;
+    # asking ntldd -R to recurse through the Windows DLL tree is both noisy and
+    # slow on ARM64 runners.
     $optionalWindowsImportPattern = '(?i)^(api-ms-|ext-ms-|AzureAttest.*\.dll$|HvsiFileTrust\.dll$|PdmUtilities\.dll$|wpaxholder\.dll$)'
-    $unresolvedRuntimeDlls = @()
-    foreach ($line in $dependencyOutput) {
-        if ($line -match '(?i)^\s*(?<module>[^\s]+\.dll)\s*=>\s*not found\b') {
-            $moduleName = $Matches.module
-            if ($moduleName -notmatch $optionalWindowsImportPattern) {
-                $unresolvedRuntimeDlls += $moduleName
-            }
-        }
-    }
-    if ($unresolvedRuntimeDlls.Count -gt 0) {
-        throw "Could not resolve native QEMU runtime DLLs: $($unresolvedRuntimeDlls -join ', ')"
-    }
+    $systemDllPattern = '(?i)\\Windows\\(System32|WinSxS)\\'
+    $env:PATH = "$($qemuRoot)\bin;$Msys2Root\usr\bin;$env:PATH"
+    $pendingRuntimeBinaries = [System.Collections.Generic.Queue[string]]::new()
+    $pendingRuntimeBinaries.Enqueue($qemuExe.FullName)
+    $visitedRuntimeBinaries = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     $copiedDlls = @{}
-    foreach ($line in $dependencyOutput) {
-        if ($line -notmatch "(?i)^\s*(?<module>[^\s]+\.dll)(?:\s*=>\s*(?<resolved>.+?))?(?:\s+\(0x[0-9a-f]+\))?\s*$") {
+    while ($pendingRuntimeBinaries.Count -gt 0) {
+        $currentBinary = $pendingRuntimeBinaries.Dequeue()
+        $currentBinaryPath = [IO.Path]::GetFullPath($currentBinary)
+        if (-not $visitedRuntimeBinaries.Add($currentBinaryPath)) {
             continue
         }
-        $moduleName = [IO.Path]::GetFileName($Matches.module)
-        $resolvedPath = $Matches.resolved
-        $dependency = $null
-        if ($resolvedPath -and (Test-Path -LiteralPath $resolvedPath -PathType Leaf)) {
-            $dependency = Get-Item -LiteralPath $resolvedPath
+        $dependencyOutput = @(& $ntlddExe $currentBinaryPath 2>&1)
+        if ($LASTEXITCODE -ne 0) {
+            throw "Could not inspect QEMU DLL dependencies for $currentBinaryPath`: $($dependencyOutput -join ' ')"
         }
-        else {
-            $candidate = Join-Path $qemuExe.Directory.FullName $moduleName
-            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-                $dependency = Get-Item -LiteralPath $candidate
+        foreach ($line in $dependencyOutput) {
+            if ($line -match '(?i)^\s*(?<module>[^\s]+\.dll)\s*=>\s*not found\b') {
+                $moduleName = [IO.Path]::GetFileName($Matches.module)
+                if ($moduleName -notmatch $optionalWindowsImportPattern) {
+                    throw "Could not resolve native QEMU runtime DLL $moduleName imported by $currentBinaryPath"
+                }
+                continue
             }
-        }
-        if ($dependency) {
+            if ($line -notmatch "(?i)^\s*(?<module>[^\s]+\.dll)(?:\s*=>\s*(?<resolved>.+?))?(?:\s+\(0x[0-9a-f]+\))?\s*$") {
+                continue
+            }
+            $moduleName = [IO.Path]::GetFileName($Matches.module)
+            $resolvedPath = $Matches.resolved
+            if ($moduleName -notmatch '(?i)\.dll$' -or $moduleName -match $optionalWindowsImportPattern -or
+                ($resolvedPath -and $resolvedPath -match $systemDllPattern)) {
+                continue
+            }
+            $dependency = $null
+            if ($resolvedPath -and (Test-Path -LiteralPath $resolvedPath -PathType Leaf)) {
+                $dependency = Get-Item -LiteralPath $resolvedPath
+            }
+            else {
+                $candidate = Join-Path $qemuExe.Directory.FullName $moduleName
+                if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                    $dependency = Get-Item -LiteralPath $candidate
+                }
+            }
+            if (-not $dependency) {
+                throw "QEMU dependency $moduleName was not resolved from the MSYS2 runtime or Windows"
+            }
             if (-not $copiedDlls.ContainsKey($dependency.Name)) {
                 Copy-Item -LiteralPath $dependency.FullName -Destination (Join-Path $binDir $dependency.Name) -Force
                 $copiedDlls[$dependency.Name] = $true
+                $pendingRuntimeBinaries.Enqueue($dependency.FullName)
             }
-            continue
         }
-        if ($moduleName -match $optionalWindowsImportPattern -or
-            ($resolvedPath -and $resolvedPath -match "(?i)\\Windows\\(System32|WinSxS)\\")) {
-            continue
-        }
-        throw "QEMU dependency $moduleName was not resolved from the MSYS2 runtime or Windows"
     }
-    Write-Output "copied $($copiedDlls.Count) native ARM64 QEMU DLL dependencies"
+    Write-Output "copied $($copiedDlls.Count) native ARM64 QEMU DLL dependencies from $($visitedRuntimeBinaries.Count) PE files"
 }
 else {
     Get-ChildItem -Path $qemuExe.Directory.FullName -File | Copy-Item -Destination $binDir -Force
