@@ -70,7 +70,7 @@ function Get-RootglassQemuProcesses([string]$QemuPath) {
     return $processes
 }
 
-function Invoke-QemuStartupProbe([string]$QemuPath, [string]$RuntimeRoot, [string]$EvidenceDirectory) {
+function Invoke-QemuStartupProbe([string]$QemuPath, [string]$RuntimeRoot, [string]$EvidenceDirectory, [string]$Msys2Root) {
     $probeRoot = Join-Path $EvidenceDirectory "qemu-startup-probes"
     New-Item -ItemType Directory -Force -Path $probeRoot | Out-Null
     $probeResults = @()
@@ -239,6 +239,84 @@ exit $LASTEXITCODE
             $process.Dispose()
         }
     }
+
+    if (-not [string]::IsNullOrWhiteSpace($Msys2Root)) {
+        $probeName = "version-msys2-login-shell"
+        $stdoutPath = Join-Path $probeRoot "$probeName.stdout.txt"
+        $stderrPath = Join-Path $probeRoot "$probeName.stderr.txt"
+        $bashPath = Join-Path $Msys2Root "usr\bin\bash.exe"
+        $cygpathPath = Join-Path $Msys2Root "usr\bin\cygpath.exe"
+        $probeStatus = "MSYS2 bash or cygpath was not found"
+        $exitCode = "not started"
+        $process = $null
+        $stdoutReader = $null
+        $stderrReader = $null
+        try {
+            if (-not (Test-Path -LiteralPath $bashPath -PathType Leaf)) { throw "MSYS2 bash was not found at $bashPath" }
+            if (-not (Test-Path -LiteralPath $cygpathPath -PathType Leaf)) { throw "MSYS2 cygpath was not found at $cygpathPath" }
+            $posixQemuPath = (& $cygpathPath -u $QemuPath | Select-Object -First 1).Trim()
+            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($posixQemuPath)) {
+                throw "Could not convert the installed QEMU path to an MSYS2 path"
+            }
+
+            $startInfo = [Diagnostics.ProcessStartInfo]::new()
+            $startInfo.FileName = $bashPath
+            $startInfo.WorkingDirectory = Split-Path -Parent $QemuPath
+            $startInfo.UseShellExecute = $false
+            $startInfo.CreateNoWindow = $true
+            $startInfo.RedirectStandardInput = $true
+            $startInfo.RedirectStandardOutput = $true
+            $startInfo.RedirectStandardError = $true
+            $startInfo.Environment["MSYSTEM"] = "CLANGARM64"
+            $startInfo.Environment["MSYS2_PATH_TYPE"] = "inherit"
+            $startInfo.Environment["CHERE_INVOKING"] = "1"
+            $startInfo.Environment["ROOTGLASS_QEMU_EXE"] = $posixQemuPath
+            $startInfo.Environment["PATH"] = "$(Split-Path -Parent $QemuPath);$(Join-Path $Msys2Root 'clangarm64\bin');$(Join-Path $Msys2Root 'usr\bin');$env:PATH"
+            if (Test-Path -LiteralPath $moduleDirectory -PathType Container) {
+                $startInfo.Environment["QEMU_MODULE_DIR"] = $moduleDirectory
+            }
+            $startInfo.ArgumentList.Add("-lc")
+            $startInfo.ArgumentList.Add('printf "MSYSTEM=%s MINGW_PREFIX=%s MSYS2_PATH_TYPE=%s\\n" "$MSYSTEM" "$MINGW_PREFIX" "$MSYS2_PATH_TYPE"; "$ROOTGLASS_QEMU_EXE" --version')
+
+            $process = [Diagnostics.Process]::new()
+            $process.StartInfo = $startInfo
+            if (-not $process.Start()) { throw "Could not start MSYS2 bash" }
+            $stdoutReader = $process.StandardOutput.ReadToEndAsync()
+            $stderrReader = $process.StandardError.ReadToEndAsync()
+            if ($process.WaitForExit(20000)) {
+                $probeStatus = "MSYS2 shell QEMU --version exited with code $($process.ExitCode)"
+                $exitCode = $process.ExitCode
+            } else {
+                $probeStatus = "MSYS2 shell QEMU --version did not exit within 20 seconds"
+                $process.Kill($true)
+                $process.WaitForExit()
+                $exitCode = $process.ExitCode
+            }
+        } catch {
+            $probeStatus = "MSYS2 shell probe failed: $($_.Exception.Message)"
+        } finally {
+            if ($process -and -not $process.HasExited) {
+                $process.Kill($true)
+                $process.WaitForExit()
+            }
+            if ($stdoutReader) { $stdoutReader.GetAwaiter().GetResult() | Set-Content -LiteralPath $stdoutPath -Encoding utf8 }
+            if ($stderrReader) { $stderrReader.GetAwaiter().GetResult() | Set-Content -LiteralPath $stderrPath -Encoding utf8 }
+            if ($process) { $process.Dispose() }
+        }
+        $probeResults += [pscustomobject]@{
+            ProbeName = $probeName
+            SerialBackend = "MSYS2 login shell"
+            QmpPort = $null
+            Status = $probeStatus
+            QmpGreeting = "not received"
+            QmpCapabilities = "not received"
+            ExitCode = $exitCode
+            StandardOutput = $stdoutPath
+            StandardError = $stderrPath
+            WorkingDirectory = Split-Path -Parent $QemuPath
+            Executable = $bashPath
+        }
+    }
     $probeResults | Format-List | Out-String | Set-Content -LiteralPath (Join-Path $probeRoot "results.txt") -Encoding utf8
     return $probeResults
 }
@@ -327,8 +405,8 @@ try {
     Write-ProgressLine "bundled runtime inventory and QEMU PE architecture verified"
 
     if ($ProbeQemuStartupOnly) {
-        Write-ProgressLine "probing installed QEMU serial backends without starting the desktop or guest"
-        $probeResults = Invoke-QemuStartupProbe $qemuExe $versionRoot $EvidenceDirectory
+        Write-ProgressLine "probing installed QEMU startup contexts and serial backends without starting the desktop or guest"
+        $probeResults = Invoke-QemuStartupProbe $qemuExe $versionRoot $EvidenceDirectory $env:MSYS2_ROOT
         foreach ($probeResult in $probeResults) {
             Write-ProgressLine "QEMU serial=$($probeResult.SerialBackend): $($probeResult.Status)"
         }

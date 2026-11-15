@@ -147,55 +147,13 @@ jobs:
 
       - name: Recreate MSYS2 CLANGARM64 environment for QEMU probe
         if: inputs.qemu_probe_only && matrix.id == 'windows-arm64'
+        id: msys2
         uses: msys2/setup-msys2@v2
         with:
           msystem: CLANGARM64
           update: true
           cache: true
           install: mingw-w64-clang-aarch64-qemu mingw-w64-clang-aarch64-ntldd
-
-      - name: Compare packaged QEMU in the native MSYS2 environment
-        if: inputs.qemu_probe_only && matrix.id == 'windows-arm64'
-        shell: msys2 {0}
-        env:
-          PACKAGE_DIR: ${{ runner.temp }}/rootglass-package
-        run: |
-          set -euo pipefail
-          pwsh_path="$(cygpath -u 'C:\Program Files\PowerShell\7\pwsh.exe')"
-          package_root="$(cygpath -u "$PACKAGE_DIR")"
-          runtime_zip="$(find "$package_root" -maxdepth 1 -type f -name 'rootglass-runtime-windows-aarch64-*.zip' -print -quit)"
-          test -f "$runtime_zip" || { echo "Windows ARM64 QEMU runtime archive not found in $package_root"; exit 1; }
-          extract_root="$(mktemp -d "${TMPDIR:-/tmp}/rootglass-qemu-runtime.XXXXXX")"
-          ROOTGLASS_QEMU_RUNTIME_ZIP="$(cygpath -w "$runtime_zip")" \
-            ROOTGLASS_QEMU_RUNTIME_DESTINATION="$(cygpath -w "$extract_root")" \
-            "$pwsh_path" -NoLogo -NoProfile -NonInteractive -Command \
-              'Expand-Archive -LiteralPath $env:ROOTGLASS_QEMU_RUNTIME_ZIP -DestinationPath $env:ROOTGLASS_QEMU_RUNTIME_DESTINATION -Force'
-          qemu="$(find "$extract_root" -type f -name 'qemu-system-aarch64.exe' -print -quit)"
-          test -f "$qemu" || { echo "QEMU executable not found after extracting $runtime_zip"; exit 1; }
-          source_qemu="${MINGW_PREFIX:-/clangarm64}/bin/qemu-system-aarch64.exe"
-          test -f "$source_qemu" || { echo "MSYS2 CLANGARM64 QEMU not found at $source_qemu"; exit 1; }
-          cd "$(dirname "$qemu")"
-          export PATH="$(dirname "$qemu"):$PATH"
-          printf 'MSYSTEM=%s\nMINGW_PREFIX=%s\nMSYS2_PATH_TYPE=%s\n' "${MSYSTEM:-}" "${MINGW_PREFIX:-}" "${MSYS2_PATH_TYPE:-}"
-          env | sort | grep -E '^(GDK|GTK|GSETTINGS|LANG=|LC_ALL=|MSYSTEM|MSYS2|MINGW|PATH=|XDG_)' | sed -E 's#(/[A-Za-z0-9._-]+){5,}#<path>#g'
-
-          set +e
-          echo '--- MSYS2 QEMU directly in the native MSYS2 shell ---'
-          timeout -k 2s 10s "$source_qemu" --version
-          source_status=$?
-          echo "native-shell MSYS2 QEMU --version status: $source_status"
-
-          echo '--- packaged QEMU directly in the native MSYS2 shell ---'
-          timeout -k 2s 10s "$qemu" --version
-          package_status=$?
-          echo "native-shell packaged QEMU --version status: $package_status"
-
-          echo '--- QEMU through PowerShell inheriting the native MSYS2 environment ---'
-          export ROOTGLASS_QEMU_PROBE_PATH="$(cygpath -w "$qemu")"
-          timeout -k 2s 10s "$pwsh_path" -NoLogo -NoProfile -NonInteractive -Command '& $env:ROOTGLASS_QEMU_PROBE_PATH --version'
-          powershell_status=$?
-          echo "native-shell PowerShell qemu --version status: $powershell_status"
-          exit 0
 
       - name: Set up Python
         if: inputs.qemu_probe_only != true
@@ -219,6 +177,7 @@ jobs:
           CHECKSUM_NAME: ${{ matrix.checksum }}
           EXPECTED_RUNTIME_PLATFORM: ${{ matrix.runtime_platform }}
           QEMU_PROBE_ONLY: ${{ inputs.qemu_probe_only }}
+          MSYS2_ROOT: ${{ steps.msys2.outputs.msys2-location }}
         run: >-
           ./scripts/smoke-rootglass-installed-windows.ps1
           -PackageDirectory "$env:PACKAGE_DIR"
