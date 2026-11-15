@@ -454,3 +454,6 @@
 {"version":1,"task_id":"IEELHO","kind":"claim","at":"2026-11-14T23:56:33.58145582Z","agent":"codex@specialized-images"}
 {"version":1,"task_id":"IEELHO","kind":"result","at":"2026-11-14T23:57:45.5288901Z","agent":"codex@specialized-images","text":"Package install now streams logs under a root-owned timeout; YAML and shell syntax pass."}
 {"version":1,"task_id":"IEELHO","kind":"result","at":"2026-11-15T00:19:53.064367019Z","agent":"codex@specialized-images","text":"Run 43656672186 hung in apt package install; canceled. Smoke now installs the .deb offline with dpkg."}
+{"version":1,"task_id":"IEELHO","kind":"result","at":"2026-11-15T01:57:07.713640776Z","agent":"codex@specialized-images","text":"PR #136 merged as 366c1f4; standard CI 43664626584 passed."}
+{"version":1,"task_id":"IEELHO","kind":"result","at":"2026-11-15T01:57:07.73043204Z","agent":"codex@specialized-images","text":"Run 43664639096 installed the .deb and verified runtime inventory before stalling."}
+{"version":1,"task_id":"IEELHO","kind":"result","at":"2026-11-15T01:57:07.747071971Z","agent":"codex@specialized-images","text":"OS association smoke remains unresolved; streamed logs are needed to locate the hang."}
