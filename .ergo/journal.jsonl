@@ -476,3 +476,4 @@
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T05:55:00.562974248Z","agent":"codex@specialized-images","text":"Added native Windows ARM64 package/runtime and smoke matrix; hosted build and guest boot evidence pending."}
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T06:18:14.941464334Z","agent":"codex@specialized-images","text":"ARM64 package #43683989952 exposed ntldd Windows-system false positives; filtered optional OS imports, retest pending."}
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T06:26:26.945800103Z","agent":"codex@specialized-images","text":"ARM64 package #43684864736 narrowed ntldd false positives to Windows AzureAttest/PdmUtilities; filtered; retest pending."}
+{"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T07:53:39.514259753Z","agent":"codex@specialized-images","text":"ARM64 package #43687296059 passed; smoke #43688885308 hung at QEMU --version; bounded probe added."}

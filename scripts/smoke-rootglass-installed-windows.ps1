@@ -150,8 +150,24 @@ try {
         $inventory += "$($asset.kind) $($asset.path) $actual"
     }
     $inventory | Set-Content -LiteralPath (Join-Path $EvidenceDirectory "runtime-inventory.txt") -Encoding utf8
-    $qemuVersion = (& $qemuExe --version | Select-Object -First 1)
-    if ($LASTEXITCODE -ne 0) { throw "Bundled QEMU could not report its version" }
+    $qemuVersionOutput = Join-Path $EvidenceDirectory "qemu-version.txt"
+    $qemuVersionError = Join-Path $EvidenceDirectory "qemu-version-error.txt"
+    Write-ProgressLine "checking bundled QEMU --version with a 15-second limit"
+    $qemuVersionProcess = Start-Process -FilePath $qemuExe -ArgumentList "--version" `
+        -PassThru -NoNewWindow -RedirectStandardOutput $qemuVersionOutput `
+        -RedirectStandardError $qemuVersionError
+    if (-not $qemuVersionProcess.WaitForExit(15000)) {
+        Stop-Process -Id $qemuVersionProcess.Id -Force -ErrorAction SilentlyContinue
+        throw "Bundled QEMU --version did not exit within 15 seconds. See qemu-version.txt and qemu-version-error.txt."
+    }
+    if ($qemuVersionProcess.ExitCode -ne 0) {
+        $versionErrorText = Get-Content -LiteralPath $qemuVersionError -Raw -ErrorAction SilentlyContinue
+        throw "Bundled QEMU --version exited with $($qemuVersionProcess.ExitCode): $versionErrorText"
+    }
+    $qemuVersionOutputText = Get-Content -LiteralPath $qemuVersionOutput -Raw
+    if ($qemuVersionOutputText -notmatch [regex]::Escape([string]$runtimeInfo.qemu_version)) {
+        throw "Bundled QEMU reported '$qemuVersionOutputText', expected '$($runtimeInfo.qemu_version)'"
+    }
     Write-ProgressLine "bundled runtime inventory and QEMU executable verified"
 
     $trustDirectory = Join-Path $env:APPDATA "Rootglass"
