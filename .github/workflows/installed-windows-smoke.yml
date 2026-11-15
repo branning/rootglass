@@ -159,7 +159,8 @@ jobs:
         shell: msys2 {0}
         run: |
           set -euo pipefail
-          local_appdata="$(pwsh -NoLogo -NoProfile -NonInteractive -Command '[Environment]::GetFolderPath("LocalApplicationData")' | tr -d '\r')"
+          pwsh_path="$(cygpath -u 'C:\Program Files\PowerShell\7\pwsh.exe')"
+          local_appdata="$("$pwsh_path" -NoLogo -NoProfile -NonInteractive -Command '[Environment]::GetFolderPath("LocalApplicationData")' | tr -d '\r')"
           runtime_root="$(cygpath -u "$local_appdata")/Rootglass/rootglass/runtime-assets"
           runtime_dir="$(find "$runtime_root" -mindepth 1 -maxdepth 1 -type d | sort | tail -n 1)"
           qemu="$runtime_dir/bin/qemu-system-aarch64.exe"
@@ -175,7 +176,7 @@ jobs:
 
           echo '--- QEMU through PowerShell inheriting the native MSYS2 environment ---'
           export ROOTGLASS_QEMU_PROBE_PATH="$(cygpath -w "$qemu")"
-          timeout -k 2s 10s pwsh -NoLogo -NoProfile -NonInteractive -Command '& $env:ROOTGLASS_QEMU_PROBE_PATH --version'
+          timeout -k 2s 10s "$pwsh_path" -NoLogo -NoProfile -NonInteractive -Command '& $env:ROOTGLASS_QEMU_PROBE_PATH --version'
           powershell_status=$?
           echo "native-shell PowerShell qemu --version status: $powershell_status"
           exit 0
