@@ -458,3 +458,4 @@
 {"version":1,"task_id":"IEELHO","kind":"result","at":"2026-11-15T01:57:07.73043204Z","agent":"codex@specialized-images","text":"Run 43664639096 installed the .deb and verified runtime inventory before stalling."}
 {"version":1,"task_id":"IEELHO","kind":"result","at":"2026-11-15T01:57:07.747071971Z","agent":"codex@specialized-images","text":"OS association smoke remains unresolved; streamed logs are needed to locate the hang."}
 {"version":1,"task_id":"IEELHO","kind":"result","at":"2026-11-15T02:02:51.886102721Z","agent":"codex@specialized-images","text":"Run 43664639096 was canceled after stalling at OS association; gh did not expose its logs."}
+{"version":1,"task_id":"IEELHO","kind":"result","at":"2026-11-15T03:15:55.084521014Z","agent":"codex@specialized-images","text":"Run 43670972570: association passed; GPUI exposed missing generated disk images; smoke now unpacks the packaged fixture."}

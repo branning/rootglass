@@ -64,7 +64,7 @@ jobs:
             while IFS= read -r changed_file; do
               [[ -n "$changed_file" ]] || continue
               case "$changed_file" in
-                .github/workflows/installed-ubuntu-smoke.yml|scripts/smoke-rootglass-installed-linux-association.sh|scripts/run-offline-network-namespace.sh|.ergo/backlog.jsonl|.ergo/journal.jsonl) ;;
+                .github/workflows/installed-ubuntu-smoke.yml|scripts/smoke-rootglass-installed-linux-association.sh|scripts/smoke-rootglass-desktop-xvfb.sh|scripts/extract-glass-archive.py|scripts/run-offline-network-namespace.sh|.ergo/backlog.jsonl|.ergo/journal.jsonl) ;;
                 *)
                   echo "Package source $package_sha differs from current product code" >&2
                   printf '%s\n' "$changed_files" >&2
@@ -388,6 +388,7 @@ jobs:
       - name: Run installed GPUI desktop guest workflow offline
         timeout-minutes: 12
         env:
+          EXAMPLE_DIR: ${{ runner.temp }}/rootglass-example
           TEST_HOME: ${{ runner.temp }}/rootglass-user-home
           EVIDENCE_DIR: ${{ runner.temp }}/rootglass-install-evidence
           LIBGL_ALWAYS_SOFTWARE: "1"
@@ -397,6 +398,7 @@ jobs:
             printf '%s\n' "$1" | tee -a "$EVIDENCE_DIR/progress.txt"
           }
           rootglass_binary=$(cat "$EVIDENCE_DIR/binary-path.txt")
+          glass=$(cat "$EXAMPLE_DIR/glass-path.txt")
           shim_path="$RUNNER_TEMP/rootglass-shims:$PATH"
           gui_log="$EVIDENCE_DIR/gui-workflow-output.txt"
           progress "running installed GPUI workflow in an isolated network namespace"
@@ -409,7 +411,7 @@ jobs:
               LIBGL_ALWAYS_SOFTWARE="$LIBGL_ALWAYS_SOFTWARE" \
               dbus-run-session -- \
               bash scripts/smoke-rootglass-desktop-xvfb.sh \
-                "$rootglass_binary" "$EVIDENCE_DIR/gui-workflow" \
+                "$rootglass_binary" "$EVIDENCE_DIR/gui-workflow" "$glass" \
             2>&1 | tee "$gui_log"; then
             :
           else
@@ -432,11 +434,12 @@ jobs:
           }
           rootglass_binary=$(cat "$EVIDENCE_DIR/binary-path.txt")
           shim_path="$RUNNER_TEMP/rootglass-shims:$PATH"
+          glass=$(cat "$EXAMPLE_DIR/glass-path.txt")
 
           work_dir="$RUNNER_TEMP/rootglass-installed-boot"
           mkdir -p "$work_dir"
           mkdir -p "$RUNNER_TEMP/rootglass-qemu-tmp"
-          cp -a examples/hello-world.glass "$work_dir/hello-world.glass"
+          python3 scripts/extract-glass-archive.py "$glass" "$work_dir/hello-world.glass"
           boot_log="$EVIDENCE_DIR/installed-cli-boot-output.txt"
           progress "running installed CLI guest boot in an isolated network namespace"
           if timeout --signal=TERM --kill-after=15s 420s \
