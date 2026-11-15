@@ -329,6 +329,7 @@ jobs:
               xvfb-run --auto-servernum \
               --server-args='-screen 0 1920x1200x24 +extension GLX +render -noreset' \
               env PATH="$shim_path" HOME="$TEST_HOME" \
+              LIBGL_ALWAYS_SOFTWARE="$LIBGL_ALWAYS_SOFTWARE" \
               dbus-run-session -- \
               bash scripts/smoke-rootglass-installed-linux-association.sh \
                 "$rootglass_binary" "$glass" "$EVIDENCE_DIR/association" \
@@ -361,6 +362,7 @@ jobs:
               xvfb-run --auto-servernum \
               --server-args='-screen 0 1920x1200x24 +extension GLX +render -noreset' \
               env PATH="$shim_path" HOME="$TEST_HOME" \
+              LIBGL_ALWAYS_SOFTWARE="$LIBGL_ALWAYS_SOFTWARE" \
               dbus-run-session -- \
               bash scripts/smoke-rootglass-desktop-xvfb.sh \
                 "$rootglass_binary" "$EVIDENCE_DIR/gui-workflow" \
