@@ -1,6 +1,6 @@
 # Desktop package builds
 
-The release package workflow builds Linux x64, macOS arm64, and Windows x64 on hosted runners. Manual builds can also target a Linux ARM64 qualification artifact; it is excluded from `platform=all` and published releases until its qualification is complete. Manual builds upload review artifacts to Actions for 14 days. To create a release, build from a new draft prerelease's tag with `platform=all` and `release_tag` set to that same tag; the workflow materializes and verifies the example `.glass`, builds the three release installers and matching QEMU runtimes, then attaches the full asset set while the release is still mutable. Publish the draft only after the attachment job succeeds. Pull requests and pushes do not run package builds.
+The release package workflow builds Linux x64, macOS arm64, and Windows x64 on hosted runners. Manual builds can also target a Linux ARM64 qualification artifact; its package and installed smoke now pass on Ubuntu 24.04 ARM64, but it remains excluded from `platform=all` and published releases until the maintainer approves support. Manual builds upload review artifacts to Actions for 14 days. To create a release, build from a new draft prerelease's tag with `platform=all` and `release_tag` set to that same tag; the workflow materializes and verifies the example `.glass`, builds the three release installers and matching QEMU runtimes, then attaches the full asset set while the release is still mutable. Publish the draft only after the attachment job succeeds. Pull requests and pushes do not run package builds.
 
 GitHub does not trigger `release.created` for draft releases, and publishing an
 immutable release is too late to add assets. The published `v0.0.1` release
@@ -224,8 +224,37 @@ The x86_64 cell uses a hosted Ubuntu runner and the aarch64 cell uses a hosted
 Ubuntu ARM64 runner. Both exercise the package's bundled QEMU with TCG while
 offline. Neither cell qualifies KVM hardware acceleration or native interaction
 on a user's desktop. Linux ARM64 is not included in published release artifacts
-until its package build and installed smoke pass and the maintainer approves
-that target.
+pending maintainer approval of that target.
+
+### Recorded Ubuntu 24.04 ARM64 installed result
+
+Package run [43673101880](https://github.com/branning/rootglass/actions/runs/43673101880)
+built `rootglass_0.0.6_arm64.deb` at `3af9e86`. The installed smoke
+[43674044104](https://github.com/branning/rootglass/actions/runs/43674044104)
+passed on the `ubuntu-24.04-arm` runner (Ubuntu 24.04.5, aarch64; kernel
+`7.0.0-1017-azure`). It verified the `.deb` architecture and SHA-256
+`df8f00fd26f9dfe1e7ce758cf37cc2c722fd554bc74b38ddcbef562d521cc663`, then
+installed the package and verified the `linux-aarch64` runtime inventory. The
+bundled QEMU is 8.2.2 with SHA-256
+`e19e11bd054ccf0f3cfcea8e0acdcc4288de6abd2ed6c30f743092c362eb2673`; the
+runtime archive SHA-256 is
+`cbb9398d21d4244a7a01f3251ffb34c50d76f0d5c7ea686255c3cf6635264fdf`.
+
+With the runner offline and `/dev/kvm` unavailable, the installed GUI and CLI
+booted the signed Alpine example using bundled QEMU TCG. The guest accepted
+serial input, and uninstall preserved the user's trust policy and imported
+library. The example SHA-256 is
+`a0ebccb4efb220c366451def33983f58214682b29367fc9a16c60a4fb857359f`. The
+[smoke evidence artifact](https://github.com/branning/rootglass/actions/runs/43674044104/artifacts/14144659823)
+contains the install inventory, runtime verification, screenshots, guest logs,
+and retention results. PR check run
+[43674042165](https://github.com/branning/rootglass/actions/runs/43674042165)
+also passed, including the hosted ARM64 boot smoke.
+
+This qualifies installation and TCG guest operation on the hosted Ubuntu ARM64
+image. It does not test Linux KVM acceleration or native interaction on a
+user's desktop. Linux ARM64 remains excluded from published release artifacts
+pending maintainer approval.
 
 ## Manual installed Windows package smoke
 
