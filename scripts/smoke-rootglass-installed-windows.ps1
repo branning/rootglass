@@ -86,7 +86,7 @@ $versionOutput | Set-Content -LiteralPath $env:ROOTGLASS_QEMU_VERSION_OUTPUT -En
 exit $LASTEXITCODE
 '@ | Set-Content -LiteralPath $powershellVersionScript -Encoding utf8
 
-    foreach ($probeName in @("version-piped", "version-inherited", "version-repository-cwd", "version-powershell", "version-msys2-env", "machine-none", "serial-null", "serial-stdio")) {
+    foreach ($probeName in @("version-piped", "version-inherited", "version-repository-cwd", "version-powershell", "version-msys2-env", "version-system-path-only", "machine-none", "machine-none-system-path-only", "serial-null", "serial-stdio")) {
         $serialBackend = if ($probeName -like "serial-*") { $probeName -replace "^serial-", "" } else { "not applicable" }
         $qmpEnabled = $probeName -notlike "version-*"
         $redirectOutput = $probeName -ne "version-inherited"
@@ -112,7 +112,14 @@ exit $LASTEXITCODE
         $startInfo.RedirectStandardInput = $redirectOutput
         $startInfo.RedirectStandardOutput = $redirectOutput
         $startInfo.RedirectStandardError = $redirectOutput
-        $startInfo.Environment["PATH"] = "$(Split-Path -Parent $QemuPath);$env:PATH"
+        if ($probeName -like "*-system-path-only") {
+            $startInfo.Environment["PATH"] = "$(Split-Path -Parent $QemuPath);$(Join-Path $env:SystemRoot 'System32');$env:SystemRoot"
+            foreach ($name in @("MSYSTEM", "MINGW_PREFIX", "MINGW_CHOST", "MINGW_PACKAGE_PREFIX", "MSYSTEM_CARCH", "MSYSTEM_CHOST", "MSYSTEM_PREFIX", "MSYSTEM_PATH", "MSYS", "MSYS2_PATH_TYPE", "MSYS2_ARG_CONV_EXCL", "CHERE_INVOKING")) {
+                [void]$startInfo.Environment.Remove($name)
+            }
+        } else {
+            $startInfo.Environment["PATH"] = "$(Split-Path -Parent $QemuPath);$env:PATH"
+        }
         if (Test-Path -LiteralPath $moduleDirectory -PathType Container) {
             $startInfo.Environment["QEMU_MODULE_DIR"] = $moduleDirectory
         }
@@ -137,7 +144,16 @@ exit $LASTEXITCODE
             "version-repository-cwd" { @("--version") }
             "version-powershell" { @("-NoLogo", "-NoProfile", "-NonInteractive", "-File", $powershellVersionScript, $QemuPath) }
             "version-msys2-env" { @("--version") }
+            "version-system-path-only" { @("--version") }
             "machine-none" { @(
+                "-L", $dataDirectory,
+                "-machine", "none",
+                "-display", "none",
+                "-monitor", "none",
+                "-qmp", "tcp:127.0.0.1:$port,server=on,wait=off",
+                "-S"
+            ) }
+            "machine-none-system-path-only" { @(
                 "-L", $dataDirectory,
                 "-machine", "none",
                 "-display", "none",
@@ -420,7 +436,7 @@ try {
         Write-ProgressLine "probing installed QEMU startup contexts and serial backends without starting the desktop or guest"
         $probeResults = Invoke-QemuStartupProbe $qemuExe $versionRoot $EvidenceDirectory $env:MSYS2_ROOT
         foreach ($probeResult in $probeResults) {
-            Write-ProgressLine "QEMU serial=$($probeResult.SerialBackend): $($probeResult.Status)"
+            Write-ProgressLine "QEMU probe=$($probeResult.ProbeName): $($probeResult.Status)"
         }
         $probeUninstallers = @(Get-ChildItem -LiteralPath $installRoot -Filter "unins*.exe" -File -Recurse -ErrorAction SilentlyContinue)
         if ($probeUninstallers.Count -ne 1) {

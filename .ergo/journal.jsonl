@@ -490,3 +490,6 @@
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T10:21:02.848116886Z","agent":"codex@specialized-images","text":"Probe #43702672069: bundled QEMU still hung with the full CLANGARM64 package and its dependencies on PATH."}
 {"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T11:33:47.433991374Z","agent":"codex@specialized-images","text":"Run #437084: direct QEMU times out with prefix env; MSYS2 login shell returns 0; direct QMP unavailable."}
 {"version":1,"task_id":"YFYS3W","kind":"block","at":"2026-11-15T11:33:51.723183377Z","agent":"codex@specialized-images","text":"Windows ARM64 QEMU 11.1.3 starts only in an MSYS2 login shell; direct installed launch hangs before QMP. Need a self-contained runtime or different QEMU build before claiming support."}
+{"version":1,"task_id":"YFYS3W","kind":"open","at":"2026-11-15T11:46:47.938953164Z","text":"User directed continued Windows ARM64 support; investigate a self-contained QEMU launch path"}
+{"version":1,"task_id":"YFYS3W","kind":"claim","at":"2026-11-15T11:46:47.954278617Z","agent":"codex@worker-1"}
+{"version":1,"task_id":"YFYS3W","kind":"result","at":"2026-11-15T11:54:20.368003998Z","agent":"codex@worker-1","text":"Added isolated Windows system-PATH QEMU probes; one ARM64 smoke dispatch pending"}
