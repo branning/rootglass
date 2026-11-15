@@ -1,4 +1,7 @@
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use ed25519_dalek::VerifyingKey;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::Read;
@@ -15,6 +18,8 @@ pub const MAX_CATALOG_ARTIFACTS: usize = 256;
 pub const MAX_CATALOG_PROFILES: usize = 64;
 pub const MAX_CATALOG_ARTIFACT_BYTES: u64 = 256 * 1024 * 1024;
 pub const MAX_CATALOG_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
+pub const MAX_RECIPIENT_AUTHORITIES: usize = 64;
+pub const MAX_CONCURRENT_ENCRYPTED_INSTANCES: u8 = 5;
 pub const SUPPORTED_ARCHITECTURE: &str = "aarch64";
 pub const SUPPORTED_RUNTIME_PROFILE: &str = "virt-linux";
 pub const BUILTIN_AARCH64_KERNEL: &str = "builtin:aarch64-linux";
@@ -140,6 +145,9 @@ pub struct ArtifactCatalog {
     pub default_profile: String,
     pub artifacts: BTreeMap<String, Artifact>,
     pub profiles: BTreeMap<String, LaunchProfile>,
+    /// Present only when one or more catalog artifacts are encrypted.
+    #[serde(default)]
+    pub encryption: Option<EncryptionPolicy>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -170,6 +178,63 @@ pub struct Artifact {
     pub target_machine: Option<TargetMachine>,
     pub host_os: Option<HostOs>,
     pub backend: Option<BackendMetadata>,
+    /// Encryption is attached to the stable artifact ID, never its ZIP path.
+    #[serde(default)]
+    pub encryption: Option<ArtifactEncryption>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct EncryptionPolicy {
+    pub minimum_recipient_hardware: MinimumRecipientHardware,
+    pub max_concurrent_instances: u8,
+    pub recipient_authorities: Vec<RecipientAuthority>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub enum MinimumRecipientHardware {
+    SoftwareAllowed,
+    HardwareBackedRequired,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RecipientAuthority {
+    /// Canonical `ed25519:<sha256>` ID of the raw Ed25519 public key.
+    pub key_id: String,
+    /// Canonical URL-safe base64 without padding of a 32-byte public key.
+    pub public_key_base64url: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactEncryption {
+    pub suite_id: EncryptionSuite,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub enum EncryptionSuite {
+    QemuLuksV1,
+}
+
+impl EncryptionSuite {
+    pub const fn id(&self) -> &'static str {
+        match self {
+            Self::QemuLuksV1 => "qemu-luks-v1",
+        }
+    }
+}
+
+/// The canonical data that E03 will bind into the recipient envelope.
+/// Entries are ordered by UTF-8 artifact ID and contain no physical ZIP path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EncryptedArtifactSetMember {
+    pub id: String,
+    pub ciphertext_sha256: String,
+    pub ciphertext_size: u64,
+    pub suite_id: String,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -270,6 +335,7 @@ pub enum RequiredFeature {
     LaunchProfilesV1,
     LinuxNodeV1,
     McuNodeV1,
+    EncryptedArtifactsV1,
     TypedDevicesV1,
     BackendAssetsV1,
     BackendProcessIsolationV1,
@@ -587,6 +653,26 @@ impl Manifest {
 }
 
 impl ArtifactCatalog {
+    /// Returns the encrypted assets in the exact ID order used by ADR-0004's
+    /// recipient set binding. Physical storage paths are intentionally omitted.
+    pub fn encrypted_artifact_set(&self) -> Vec<EncryptedArtifactSetMember> {
+        let mut encrypted = self
+            .artifacts
+            .iter()
+            .filter_map(|(id, artifact)| {
+                let encryption = artifact.encryption.as_ref()?;
+                Some(EncryptedArtifactSetMember {
+                    id: id.clone(),
+                    ciphertext_sha256: artifact.sha256.clone(),
+                    ciphertext_size: artifact.size_bytes,
+                    suite_id: encryption.suite_id.id().to_string(),
+                })
+            })
+            .collect::<Vec<_>>();
+        encrypted.sort_by(|left, right| left.id.as_bytes().cmp(right.id.as_bytes()));
+        encrypted
+    }
+
     fn validate(&self, signature_path: &str) -> Result<(), ManifestError> {
         if self.catalog_version != CATALOG_VERSION {
             return Err(catalog_error(format!(
@@ -652,6 +738,23 @@ impl ArtifactCatalog {
             validate_artifact(id, artifact)?;
         }
 
+        let encrypted_artifacts = self.encrypted_artifact_set();
+        match (&self.encryption, encrypted_artifacts.is_empty()) {
+            (Some(_), true) => {
+                return Err(catalog_error(
+                    "encryption policy is present but the catalog has no encrypted artifacts"
+                        .to_string(),
+                ));
+            }
+            (None, false) => {
+                return Err(catalog_error(
+                    "encrypted artifacts require an artifact_catalog.encryption policy".to_string(),
+                ));
+            }
+            (Some(policy), false) => policy.validate()?,
+            (None, true) => {}
+        }
+
         let mut referenced_backends = BTreeSet::new();
         for (profile_id, profile) in &self.profiles {
             if !is_valid_id(profile_id) {
@@ -672,6 +775,75 @@ impl ArtifactCatalog {
             {
                 return Err(catalog_error(format!(
                     "backend executable artifact '{id}' is not referenced by a typed backend device"
+                )));
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl EncryptionPolicy {
+    fn validate(&self) -> Result<(), ManifestError> {
+        if !(1..=MAX_CONCURRENT_ENCRYPTED_INSTANCES).contains(&self.max_concurrent_instances) {
+            return Err(catalog_error(format!(
+                "encrypted max_concurrent_instances must be between 1 and {MAX_CONCURRENT_ENCRYPTED_INSTANCES}"
+            )));
+        }
+        if self.recipient_authorities.is_empty()
+            || self.recipient_authorities.len() > MAX_RECIPIENT_AUTHORITIES
+        {
+            return Err(catalog_error(format!(
+                "recipient authority count must be between 1 and {MAX_RECIPIENT_AUTHORITIES}"
+            )));
+        }
+
+        let mut key_ids = BTreeSet::new();
+        for (index, authority) in self.recipient_authorities.iter().enumerate() {
+            if !is_ed25519_key_id(&authority.key_id) {
+                return Err(catalog_error(format!(
+                    "recipient authority {index} key_id must be ed25519 followed by a lowercase SHA-256 fingerprint"
+                )));
+            }
+            if !key_ids.insert(authority.key_id.as_str()) {
+                return Err(catalog_error(format!(
+                    "recipient authority key_id '{}' is duplicated",
+                    authority.key_id
+                )));
+            }
+
+            let public_key = URL_SAFE_NO_PAD
+                .decode(authority.public_key_base64url.as_bytes())
+                .map_err(|error| {
+                    catalog_error(format!(
+                        "recipient authority '{}' has invalid URL-safe base64 public key: {error}",
+                        authority.key_id
+                    ))
+                })?;
+            let public_key: [u8; 32] = public_key.as_slice().try_into().map_err(|_| {
+                catalog_error(format!(
+                    "recipient authority '{}' public key must decode to 32 bytes",
+                    authority.key_id
+                ))
+            })?;
+            if URL_SAFE_NO_PAD.encode(public_key) != authority.public_key_base64url {
+                return Err(catalog_error(format!(
+                    "recipient authority '{}' public key must use canonical URL-safe base64 without padding",
+                    authority.key_id
+                )));
+            }
+            VerifyingKey::from_bytes(&public_key).map_err(|error| {
+                catalog_error(format!(
+                    "recipient authority '{}' is not a valid Ed25519 public key: {error}",
+                    authority.key_id
+                ))
+            })?;
+
+            let expected_key_id = format!("ed25519:{}", lower_hex(&Sha256::digest(public_key)));
+            if authority.key_id != expected_key_id {
+                return Err(catalog_error(format!(
+                    "recipient authority key_id '{}' does not match its public key (expected '{expected_key_id}')",
+                    authority.key_id
                 )));
             }
         }
@@ -750,6 +922,11 @@ fn validate_artifact(id: &str, artifact: &Artifact) -> Result<(), ManifestError>
             }
         }
     }
+    if artifact.encryption.is_some() && artifact.kind != ArtifactKind::LinuxBootDisk {
+        return Err(invalid(
+            "may declare encryption only for a Linux boot disk in this schema version",
+        ));
+    }
     Ok(())
 }
 
@@ -793,6 +970,7 @@ fn validate_profile(
     let mut required_root_devices = BTreeSet::new();
     let mut has_linux = false;
     let mut has_mcu = false;
+    let mut uses_encrypted_artifacts = false;
     for node in &profile.nodes {
         if !is_valid_id(&node.id) || !is_valid_id(&node.process_group) {
             return Err(invalid(format!(
@@ -856,6 +1034,7 @@ fn validate_profile(
                         node.id
                     )));
                 }
+                uses_encrypted_artifacts |= root.encryption.is_some();
                 required_root_devices.insert((node.id.as_str(), rootfs_artifact.as_str()));
             }
             BootData::Mcu { firmware_artifact } => {
@@ -895,6 +1074,9 @@ fn validate_profile(
     if !profile.devices.is_empty() {
         required_features.insert(RequiredFeature::TypedDevicesV1);
     }
+    if uses_encrypted_artifacts {
+        required_features.insert(RequiredFeature::EncryptedArtifactsV1);
+    }
 
     for device in &profile.devices {
         match device {
@@ -920,6 +1102,10 @@ fn validate_profile(
                     return Err(invalid(format!(
                         "virtio block device '{id}' must reference a Linux boot disk"
                     )));
+                }
+                if artifact.encryption.is_some() {
+                    uses_encrypted_artifacts = true;
+                    required_features.insert(RequiredFeature::EncryptedArtifactsV1);
                 }
                 if let BootData::Linux {
                     rootfs_artifact, ..
@@ -1039,6 +1225,16 @@ fn validate_profile(
             "Linux node '{node_id}' rootfs artifact '{artifact_id}' needs a matching typed read-only block device"
         )));
     }
+    if uses_encrypted_artifacts
+        && !profile
+            .required_features
+            .contains(&RequiredFeature::EncryptedArtifactsV1)
+    {
+        return Err(invalid(
+            "uses encrypted artifacts but omits required feature 'encrypted-artifacts-v1'"
+                .to_string(),
+        ));
+    }
     if profile
         .required_features
         .iter()
@@ -1089,6 +1285,7 @@ fn required_feature_id(feature: &RequiredFeature) -> &'static str {
         RequiredFeature::LaunchProfilesV1 => "launch-profiles-v1",
         RequiredFeature::LinuxNodeV1 => "linux-node-v1",
         RequiredFeature::McuNodeV1 => "mcu-node-v1",
+        RequiredFeature::EncryptedArtifactsV1 => "encrypted-artifacts-v1",
         RequiredFeature::TypedDevicesV1 => "typed-devices-v1",
         RequiredFeature::BackendAssetsV1 => "backend-assets-v1",
         RequiredFeature::BackendProcessIsolationV1 => "backend-process-isolation-v1",
@@ -1112,6 +1309,19 @@ fn is_lower_sha256(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn is_ed25519_key_id(value: &str) -> bool {
+    value.strip_prefix("ed25519:").is_some_and(is_lower_sha256)
+}
+
+fn lower_hex(bytes: &[u8]) -> String {
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    encoded
 }
 
 fn is_safe_storage_path(path: &str) -> bool {
@@ -1342,6 +1552,32 @@ backend_id = "sensor-storage-v1"
         content
     }
 
+    fn encrypted_schema2_manifest() -> String {
+        const AUTHORITY_KEY_ID: &str =
+            "ed25519:4a079f6f512c9e1a24f83b08e84fb8508996c91e0d54a19512fabfafc82b62d0";
+        const AUTHORITY_PUBLIC_KEY: &str = "2To2Sg0jWnaNlkRA4GCUa3qbqmZkaw5IMCHh0vRnRpw";
+
+        let mut content = schema2_manifest()
+            .replace(
+                "\"launch-profiles-v1\", \"linux-node-v1\", \"mcu-node-v1\", \"typed-devices-v1\",",
+                "\"launch-profiles-v1\", \"linux-node-v1\", \"mcu-node-v1\", \"encrypted-artifacts-v1\", \"typed-devices-v1\",",
+            )
+            .replace(
+                "default_profile = \"default\"\n",
+                &format!(
+                    "default_profile = \"default\"\n\n[artifact_catalog.encryption]\nminimum_recipient_hardware = \"software-allowed\"\nmax_concurrent_instances = 3\nrecipient_authorities = [{{ key_id = \"{AUTHORITY_KEY_ID}\", public_key_base64url = \"{AUTHORITY_PUBLIC_KEY}\" }}]\n"
+                ),
+            );
+        content = content.replace(
+            "[artifact_catalog.artifacts.linux-0.storage]\n",
+            "[artifact_catalog.artifacts.linux-0.encryption]\nsuite_id = \"qemu-luks-v1\"\n\n[artifact_catalog.artifacts.linux-0.storage]\n",
+        );
+        content.replace(
+            "[artifact_catalog.artifacts.linux-1.storage]\n",
+            "[artifact_catalog.artifacts.linux-1.encryption]\nsuite_id = \"qemu-luks-v1\"\n\n[artifact_catalog.artifacts.linux-1.storage]\n",
+        )
+    }
+
     #[test]
     fn schema2_catalog_supports_five_linux_and_five_mcu_artifacts() {
         let manifest = Manifest::from_toml_str(&schema2_manifest()).expect("schema 2 parses");
@@ -1351,6 +1587,7 @@ backend_id = "sensor-storage-v1"
 
         let catalog = manifest.artifact_catalog.expect("catalog is present");
         assert_eq!(manifest.schema_version, MULTI_ARTIFACT_SCHEMA_VERSION);
+        assert!(catalog.encryption.is_none());
         assert_eq!(
             catalog
                 .artifacts
@@ -1390,6 +1627,179 @@ backend_id = "sensor-storage-v1"
                 .map(String::as_str),
             Some("sensor-v1")
         );
+    }
+
+    #[test]
+    fn schema2_encryption_uses_logical_ids_and_binds_the_complete_encrypted_set() {
+        let manifest = Manifest::from_toml_str(&encrypted_schema2_manifest())
+            .expect("encrypted schema parses");
+        manifest
+            .validate_manifest_only()
+            .expect("approved encrypted catalog validates");
+
+        let catalog = manifest.artifact_catalog.expect("catalog is present");
+        let policy = catalog
+            .encryption
+            .as_ref()
+            .expect("encryption policy is signed");
+        assert_eq!(policy.max_concurrent_instances, 3);
+        assert_eq!(
+            policy.minimum_recipient_hardware,
+            MinimumRecipientHardware::SoftwareAllowed
+        );
+        assert_eq!(policy.recipient_authorities.len(), 1);
+
+        let encrypted_set = catalog.encrypted_artifact_set();
+        assert_eq!(
+            encrypted_set,
+            vec![
+                EncryptedArtifactSetMember {
+                    id: "linux-0".to_string(),
+                    ciphertext_sha256: "0".repeat(64),
+                    ciphertext_size: 1,
+                    suite_id: "qemu-luks-v1".to_string(),
+                },
+                EncryptedArtifactSetMember {
+                    id: "linux-1".to_string(),
+                    ciphertext_sha256: "0".repeat(64),
+                    ciphertext_size: 1,
+                    suite_id: "qemu-luks-v1".to_string(),
+                },
+            ]
+        );
+
+        let hardware_required =
+            encrypted_schema2_manifest().replace("software-allowed", "hardware-backed-required");
+        let hardware_manifest =
+            Manifest::from_toml_str(&hardware_required).expect("hardware policy parses");
+        hardware_manifest
+            .validate_manifest_only()
+            .expect("hardware-backed minimum is an approved policy");
+        assert_eq!(
+            hardware_manifest
+                .artifact_catalog
+                .expect("catalog is present")
+                .encryption
+                .expect("encryption policy is present")
+                .minimum_recipient_hardware,
+            MinimumRecipientHardware::HardwareBackedRequired
+        );
+    }
+
+    #[test]
+    fn schema2_encryption_rejects_incomplete_or_contradictory_policy() {
+        let encrypted_without_policy = encrypted_schema2_manifest().replace(
+            "[artifact_catalog.encryption]\nminimum_recipient_hardware = \"software-allowed\"\nmax_concurrent_instances = 3\nrecipient_authorities = [{ key_id = \"ed25519:4a079f6f512c9e1a24f83b08e84fb8508996c91e0d54a19512fabfafc82b62d0\", public_key_base64url = \"2To2Sg0jWnaNlkRA4GCUa3qbqmZkaw5IMCHh0vRnRpw\" }]\n\n",
+            "",
+        );
+        let parsed = Manifest::from_toml_str(&encrypted_without_policy)
+            .expect("missing policy is a semantic validation error");
+        assert!(matches!(
+            parsed.validate_manifest_only(),
+            Err(ManifestError::InvalidArtifactCatalog(message))
+                if message.contains("require an artifact_catalog.encryption policy")
+        ));
+
+        let policy_without_encrypted_assets = encrypted_schema2_manifest()
+            .replace(
+                "[artifact_catalog.artifacts.linux-0.encryption]\nsuite_id = \"qemu-luks-v1\"\n\n",
+                "",
+            )
+            .replace(
+                "[artifact_catalog.artifacts.linux-1.encryption]\nsuite_id = \"qemu-luks-v1\"\n\n",
+                "",
+            );
+        let parsed = Manifest::from_toml_str(&policy_without_encrypted_assets)
+            .expect("policy without assets is a semantic validation error");
+        assert!(matches!(
+            parsed.validate_manifest_only(),
+            Err(ManifestError::InvalidArtifactCatalog(message))
+                if message.contains("no encrypted artifacts")
+        ));
+
+        for invalid_policy in [
+            encrypted_schema2_manifest().replace(
+                "max_concurrent_instances = 3",
+                "max_concurrent_instances = 0",
+            ),
+            encrypted_schema2_manifest().replace(
+                "max_concurrent_instances = 3",
+                "max_concurrent_instances = 6",
+            ),
+            encrypted_schema2_manifest().replace(
+                "recipient_authorities = [{",
+                "recipient_authorities = []\n# [{",
+            ),
+            encrypted_schema2_manifest().replace(
+                "minimum_recipient_hardware = \"software-allowed\"",
+                "minimum_recipient_hardware = \"unknown\"",
+            ),
+        ] {
+            if let Ok(parsed) = Manifest::from_toml_str(&invalid_policy) {
+                assert!(parsed.validate_manifest_only().is_err());
+            }
+        }
+
+        let missing_encryption_feature = encrypted_schema2_manifest().replace(
+            "\"mcu-node-v1\", \"encrypted-artifacts-v1\",",
+            "\"mcu-node-v1\",",
+        );
+        let parsed = Manifest::from_toml_str(&missing_encryption_feature)
+            .expect("missing feature is a semantic validation error");
+        assert!(matches!(
+            parsed.validate_manifest_only(),
+            Err(ManifestError::InvalidArtifactCatalog(message))
+                if message.contains("omits required feature 'encrypted-artifacts-v1'")
+        ));
+    }
+
+    #[test]
+    fn schema2_encryption_rejects_bad_authorities_suites_and_secret_fields() {
+        let wrong_key_id = encrypted_schema2_manifest().replace(
+            "ed25519:4a079f6f512c9e1a24f83b08e84fb8508996c91e0d54a19512fabfafc82b62d0",
+            &format!("ed25519:{}", "0".repeat(64)),
+        );
+        let invalid_public_key = encrypted_schema2_manifest().replace(
+            "2To2Sg0jWnaNlkRA4GCUa3qbqmZkaw5IMCHh0vRnRpw",
+            "not-a-public-key",
+        );
+        let duplicate_authority = encrypted_schema2_manifest().replace(
+            "recipient_authorities = [{ key_id = \"ed25519:4a079f6f512c9e1a24f83b08e84fb8508996c91e0d54a19512fabfafc82b62d0\", public_key_base64url = \"2To2Sg0jWnaNlkRA4GCUa3qbqmZkaw5IMCHh0vRnRpw\" }]",
+            "recipient_authorities = [{ key_id = \"ed25519:4a079f6f512c9e1a24f83b08e84fb8508996c91e0d54a19512fabfafc82b62d0\", public_key_base64url = \"2To2Sg0jWnaNlkRA4GCUa3qbqmZkaw5IMCHh0vRnRpw\" }, { key_id = \"ed25519:4a079f6f512c9e1a24f83b08e84fb8508996c91e0d54a19512fabfafc82b62d0\", public_key_base64url = \"2To2Sg0jWnaNlkRA4GCUa3qbqmZkaw5IMCHh0vRnRpw\" }]",
+        );
+        let unknown_suite = encrypted_schema2_manifest()
+            .replace("suite_id = \"qemu-luks-v1\"", "suite_id = \"qemu-aes-v1\"");
+        let secret_field = encrypted_schema2_manifest().replace(
+            "max_concurrent_instances = 3",
+            "max_concurrent_instances = 3\nimk = \"never-accept-secret-material\"",
+        );
+
+        for invalid in [wrong_key_id, invalid_public_key, duplicate_authority] {
+            let parsed = Manifest::from_toml_str(&invalid).expect("syntax parses");
+            assert!(parsed.validate_manifest_only().is_err());
+        }
+        assert!(Manifest::from_toml_str(&unknown_suite).is_err());
+        assert!(Manifest::from_toml_str(&secret_field).is_err());
+
+        let encrypted_firmware = encrypted_schema2_manifest().replace(
+            "[artifact_catalog.artifacts.firmware-0.storage]\n",
+            "[artifact_catalog.artifacts.firmware-0.encryption]\nsuite_id = \"qemu-luks-v1\"\n\n[artifact_catalog.artifacts.firmware-0.storage]\n",
+        );
+        let parsed = Manifest::from_toml_str(&encrypted_firmware).expect("syntax parses");
+        assert!(parsed.validate_manifest_only().is_err());
+    }
+
+    #[test]
+    fn schema1_encryption_fields_remain_unknown_and_rejected() {
+        let legacy = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/hello-world.glass/rootglass.toml"
+        ))
+        .expect("legacy signed fixture manifest is available");
+        assert!(Manifest::from_toml_str(&legacy).is_ok());
+
+        let with_encryption = legacy.replace("[publisher]\n", "encryption = {}\n\n[publisher]\n");
+        assert!(Manifest::from_toml_str(&with_encryption).is_err());
     }
 
     #[test]
