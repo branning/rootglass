@@ -945,6 +945,38 @@ fn configure_bundled_runtime(command: &mut Command, binary: &Path) {
     if let Some(binary_dir) = binary.parent() {
         prepend_command_path(command, "PATH", binary_dir);
     }
+
+    #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+    configure_windows_arm64_msys2_environment(command);
+}
+
+#[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+fn configure_windows_arm64_msys2_environment(command: &mut Command) {
+    // QEMU from the MSYS2 CLANGARM64 runtime hangs before QMP startup unless
+    // its child environment matches the one established by the MSYS2 login shell.
+    command
+        .env("MSYSTEM", "CLANGARM64")
+        .env("MINGW_PREFIX", "/clangarm64")
+        .env("MSYSTEM_PREFIX", "/clangarm64")
+        .env("MINGW_CHOST", "aarch64-w64-mingw32")
+        .env("MSYSTEM_CARCH", "aarch64")
+        .env("MSYSTEM_CHOST", "aarch64-w64-mingw32")
+        .env("MSYS2_PATH_TYPE", "inherit")
+        .env_remove("CHERE_INVOKING");
+
+    let username = std::env::var("USERNAME")
+        .ok()
+        .filter(|username| !username.is_empty())
+        .or_else(|| {
+            std::env::var_os("USERPROFILE").and_then(|profile| {
+                Path::new(&profile)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+        });
+    if let Some(username) = username {
+        command.env("HOME", format!("/home/{username}"));
+    }
 }
 
 fn prepend_command_path(command: &mut Command, variable: &str, path: &Path) {
