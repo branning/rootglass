@@ -532,3 +532,15 @@
 {"version":1,"task_id":"5FFC3O","kind":"result","at":"2026-11-15T18:22:05.983761503Z","text":"CLI contract added: public identity, recipient selection, and local instance commands."}
 {"version":1,"task_id":"5FFC3O","kind":"result","at":"2026-11-15T18:23:07.721434699Z","text":"PR #146 opened; awaiting maintainer protocol approval before implementation tasks open."}
 {"version":1,"task_id":"5FFC3O","kind":"result","at":"2026-11-15T20:14:08.508470423Z","text":"Maintainer feedback applied: signing delay is temporary; Secure Enclave remains in scope."}
+{"version":1,"task_id":"6VYQAW","kind":"created","at":"2026-11-15T20:21:58.959705223Z"}
+{"version":1,"task_id":"LQA4Y3","kind":"created","at":"2026-11-15T20:21:58.959810341Z"}
+{"version":1,"task_id":"GBDJUA","kind":"created","at":"2026-11-15T20:21:58.959817522Z"}
+{"version":1,"task_id":"NXQVWE","kind":"created","at":"2026-11-15T20:21:58.959824813Z"}
+{"version":1,"task_id":"XSC3IF","kind":"created","at":"2026-11-15T20:21:58.959831133Z"}
+{"version":1,"task_id":"LYLBFT","kind":"created","at":"2026-11-15T20:21:58.959834548Z"}
+{"version":1,"task_id":"OTPZFR","kind":"created","at":"2026-11-15T20:21:58.959838744Z"}
+{"version":1,"task_id":"LQA4Y3","kind":"open","at":"2026-11-15T20:25:10.065652925Z","text":"Maintainer asked to compare ZIP convenience with Android-style logical partitions before choosing the multi-artifact layout."}
+{"version":1,"task_id":"LQA4Y3","kind":"claim","at":"2026-11-15T20:25:10.086750737Z","agent":"codex@worker-1"}
+{"version":1,"task_id":"LQA4Y3","kind":"result","at":"2026-11-15T20:36:04.46737496Z","agent":"codex@worker-1","text":"Proposal: retain ZIP transport; add a signed logical artifact catalog and profiles independent of paths/offsets."}
+{"version":1,"task_id":"LQA4Y3","kind":"result","at":"2026-11-15T20:36:04.487177886Z","agent":"codex@worker-1","text":"ADR-0004 drafted; maintainer review of container, schema alignment, MCU, and backend boundaries is pending."}
+{"version":1,"task_id":"5FFC3O","kind":"result","at":"2026-11-15T20:36:04.504569909Z","text":"ADR-0003 now binds the complete encrypted asset set and defers shared schema/catalog alignment to ADR-0004."}

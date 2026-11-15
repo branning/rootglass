@@ -3,6 +3,7 @@
 - Status: Proposed; maintainer security review required
 - Date: 2026-11-15
 - Source proposal: [Rootglass encryption specification](../Rootglass-encryption.md)
+- Related format decision: [ADR-0004: Multi-artifact bundles and container layout](0004-multi-artifact-bundles-and-container.md)
 - Scope: Encrypted `.glass` bundles, recipient authorization, local key providers,
   encrypted QEMU launch, and per-run state isolation
 
@@ -20,6 +21,13 @@ content-addressed store. QEMU currently opens an extracted raw rootfs as a
 read-only drive, and the desktop supports one guest at a time. Encryption must
 preserve those schema-1 behaviors while defining any schema-2 behavior
 explicitly.
+
+Maintainer direction now calls for a `.glass` to hold multiple Linux images,
+MCU firmware, typed device declarations, and possibly approved backend assets.
+ADR-0004 proposes ZIP as the first physical container with a signed logical
+artifact catalog. This ADR must not make `rootfs.img`, ZIP paths, or a single
+payload the permanent schema-2 encryption model. The exact manifest-version
+and catalog integration remain review items shared by both ADRs.
 
 The encryption proposal also needs to distinguish three separate signing
 questions: `.glass` publisher signatures, code signing for desktop
@@ -41,23 +49,30 @@ optional path to remove because certificate setup is pending.
    publisher predicate. Schema 1 remains unchanged: the v1 parser continues to
    reject unknown fields, all existing unencrypted signed fixtures retain their
    behavior, and no automatic manifest migration occurs.
-2. A schema-1 manifest containing encryption fields is invalid. Schema 2 is
-   initially reserved for encrypted bundles; unsupported schema versions and
-   unknown v2 fields fail closed.
-3. Schema 2 keeps the existing signed bundle identity and `boot.rootfs` path
-   model. It adds a required encryption declaration with a fixed format ID,
-   immutable rootfs path, hardware-policy minimum, and a signed concurrency
-   ceiling. It does not accept keys, passwords, arbitrary QEMU arguments, or
-   host paths in the manifest.
+2. A schema-1 manifest containing encryption fields is invalid. Schema 2 is the
+   single strict schema for the coordinated artifact catalog, profiles, and
+   optional encryption extension. It may describe unencrypted multi-artifact
+   bundles; each encrypted artifact requires its approved encryption
+   declaration and recipient binding. Unsupported schema versions and unknown
+   v2 fields fail closed.
+3. Schema 2 keeps the existing signed bundle identity but encryption refers to
+   logical artifact IDs rather than making `boot.rootfs` or a ZIP entry path a
+   permanent API. The initial encrypted Linux profile may contain one LUKS
+   disk. Its manifest declaration includes a fixed format ID, hardware-policy
+   minimum, and signed concurrency ceiling. The schema/version allocation and
+   catalog shape must be reconciled with ADR-0004 before implementation. The
+   manifest accepts no keys, passwords, arbitrary QEMU arguments, or host
+   paths.
 4. The publisher statement uses a distinct v2 predicate URI and continues to
    sign the SHA-256 digest of the manifest and every immutable file. The exact
    v2 Rust structs and JSON predicate are specified in E01 after this review.
 
 ### 2. Rootfs encryption
 
-1. The encrypted rootfs is a standalone QEMU LUKS v1 volume (`qemu-luks-v1`),
-   carried as the bytes of `rootfs.img`. Do not accept QEMU's legacy `aes`
-   qcow2 encryption. QEMU documents LUKS v1 as compatible with
+1. The initial encrypted Linux disk is a standalone QEMU LUKS v1 volume
+   (`qemu-luks-v1`). Its logical artifact ID is stable even if the selected
+   container maps it to `rootfs.img` or another physical entry. Do not accept
+   QEMU's legacy `aes` qcow2 encryption. QEMU documents LUKS v1 as compatible with
    `dm-crypt`/`cryptsetup` and accepts a secret object for the LUKS passphrase.
 2. Generate one uniformly random 32-byte Image Master Key (IMK) per encrypted
    bundle. The IMK is the high-entropy LUKS passphrase; the LUKS header's
@@ -77,9 +92,9 @@ optional path to remove because certificate setup is pending.
 ### 3. Publisher and recipient authorization
 
 1. The publisher DSSE signature remains the trust root and covers the v2
-   manifest and encrypted rootfs bytes. The signed v2 manifest contains one or
-   more Ed25519 recipient-authority public keys. Each authority is permitted
-   only to issue recipient envelopes for that bundle version.
+   manifest and every encrypted payload artifact. The signed v2 manifest
+   contains one or more Ed25519 recipient-authority public keys. Each authority
+   is permitted only to issue recipient envelopes for that bundle version.
 2. Encrypted schema-2 archives contain exactly one mutable sidecar at
    `signatures/recipients.dsse.json`. The only publisher-subject exclusions in
    schema 2 are the publisher envelope and this recipient envelope. Every
@@ -90,8 +105,11 @@ optional path to remove because certificate setup is pending.
    signature from an authority listed in the publisher-signed manifest. Its
    payload uses canonical JSON (RFC 8785), rejects duplicate and unknown
    fields, and identifies the format version, bundle identifier and version,
-   manifest SHA-256, encrypted-rootfs SHA-256, encryption suite, and recipient
-   records. The signature is over the exact canonical payload bytes using DSSE
+   manifest SHA-256, encrypted-artifact-set SHA-256, encryption suites, and
+   recipient records. The artifact-set digest follows ADR-0004: a
+   domain-separated canonical list sorted by logical artifact ID and binding
+   each encrypted artifact's ID, ciphertext digest, ciphertext length, and
+   suite. The signature is over the exact canonical payload bytes using DSSE
    pre-authentication encoding; the DSSE `keyid` must match the delegated key.
 4. A recipient record has a unique recipient key ID, an explicit provider and
    wrapping-suite ID, and opaque wrapped IMK bytes. Limit the sidecar to the
@@ -100,12 +118,13 @@ optional path to remove because certificate setup is pending.
    bindings, larger envelopes, and signatures from non-delegated authorities
    fail before any key unwrap.
 5. Recipient personalization can replace only the recipient sidecar. It does
-   not modify the rootfs or publisher signature, and the personalizer must
-   possess the IMK or use a separately approved KMS wrapping operation. An
-   untrusted CDN cannot add recipients. Repacking changes the ZIP bytes and its
-   whole-archive digest; “zero-rehash” means no re-encryption, rootfs rehash,
-   or new publisher signature is needed by the personalizer when recipients
-   change. Rootglass still hashes every signed subject before launch.
+   not modify encrypted payloads or the publisher signature, and the
+   personalizer must possess the IMK or use a separately approved KMS wrapping
+   operation. An untrusted CDN cannot add recipients. Repacking changes the ZIP
+   bytes and its whole-archive digest; “zero-rehash” means no re-encryption,
+   encrypted-payload rehash, or new publisher signature is needed by the
+   personalizer when recipients change. Rootglass still hashes every signed
+   subject before launch.
 
 ### 4. Key wrapping and platform providers
 
@@ -163,23 +182,27 @@ the hardware policy.
 
 ### 5. ZIP authentication and QEMU byte ranges
 
-1. A production encrypted `.glass` is a serialized ZIP archive. Its
-   `rootfs.img` entry must use method 0 (STORED), have the encrypted-entry flag
-   clear, and have general-purpose bit 3 clear (no trailing data descriptor).
+1. The first proposed encrypted `.glass` uses the ZIP container recommended by
+   ADR-0004. Each encrypted disk asset that QEMU reads by byte range must use
+   method 0 (STORED), have the encrypted-entry flag clear, and have
+   general-purpose bit 3 clear (no trailing data descriptor). The initial
+   logical rootfs may map to `rootfs.img`; the signed catalog owns that map.
    Local-header and central-directory names, CRC, sizes, method, and flags must
    agree. Reject duplicate paths, overlap, truncation, ZIP64 until separately
-   qualified, and any archive layout whose rootfs extent cannot be proven
-   unambiguously.
+   qualified, and any archive layout whose encrypted asset extents cannot be
+   proven unambiguously.
 2. Before unwrapping the IMK, validate archive bounds and paths, verify the
    trusted publisher DSSE signature, hash the manifest and every publisher
-   subject (including the complete encrypted rootfs extent), verify the
+   subject (including every complete encrypted asset extent), verify the
    recipient-envelope DSSE signature against a delegated authority, and match
-   all envelope bindings to the signed manifest and rootfs digest. CRC is an
-   additional ZIP integrity check, not a substitute for SHA-256 or signatures.
+   all envelope bindings to the signed manifest and encrypted-artifact-set
+   digest. CRC is an additional ZIP integrity check, not a substitute for
+   SHA-256 or signatures.
 3. The intended optimized path stores a fully verified encrypted archive as an
-   immutable content-addressed object and records the validated rootfs byte
-   extent. QEMU opens that archive read-only through a file node, a raw node
-   with the validated `offset` and `size`, and then the LUKS block driver.
+   immutable content-addressed object and records validated byte extents for
+   encrypted disk assets. QEMU opens the archive read-only through a file node,
+   a raw node with the validated `offset` and `size`, and then the LUKS block
+   driver.
    E02/E09 must prove this chain on every packaged QEMU version before use. If a
    platform cannot safely open the bounded extent, it must use a separately
    verified immutable extracted image or fail closed; it must not pass the
@@ -304,8 +327,9 @@ implementation tasks are opened:
 5. Use the file-based login Keychain for current portable-provider development;
    leave the final distribution-signing, entitlement, and Keychain backend
    decisions open for signed-app qualification. Keep Secure Enclave in scope.
-6. STORED, no-data-descriptor ZIP rootfs and the archive-backed byte-range QEMU
-   path, with current size limits retained until separately qualified.
+6. ZIP-first STORED, no-data-descriptor encrypted disk assets and the
+   archive-backed byte-range QEMU path, with current size limits retained
+   until separately qualified.
 7. Ephemeral-only state and default-one/max-five instance policy.
 8. Private QMP endpoints and the stated host/guest threat boundary.
 9. The public-only identity, recipient-inspection, and local instance CLI

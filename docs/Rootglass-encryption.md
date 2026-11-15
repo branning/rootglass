@@ -3,8 +3,9 @@
 **Status: proposal for maintainer security review.** No encrypted-bundle format
 or runtime behavior is approved or implemented yet. The current schema-1 bundle
 contract remains unchanged. See [ADR-0003](adr/0003-encrypted-bundles-and-recipient-keys.md)
-for the security decisions requiring review; if this overview and the ADR differ,
-the ADR is authoritative during review.
+for the security decisions requiring review and [ADR-0004](adr/0004-multi-artifact-bundles-and-container.md)
+for the proposed multi-artifact catalog and container direction. The exact
+manifest schema/version boundary must be reconciled before implementation.
 
 ## Goal
 
@@ -22,45 +23,53 @@ qualification.
 - Encrypted bundles use a new strict manifest and publisher-predicate schema
   version. Schema-1 bundles and their signatures retain their current behavior;
   schema-1 encryption fields and unsupported versions fail closed.
-- The publisher signs the encrypted manifest and complete LUKS rootfs image.
-  The signed manifest delegates recipient management to explicit Ed25519
+- The publisher signs the encrypted manifest and every encrypted payload
+  artifact. The first encrypted implementation may contain one Linux LUKS disk;
+  its logical artifact ID is independent of its ZIP entry path. The signed
+  manifest delegates recipient management to explicit Ed25519
   recipient-authority keys.
 - An encrypted archive contains one separately signed
   `signatures/recipients.dsse.json` sidecar. The recipient-authority signature
-  binds the bundle identity/version, manifest digest, encrypted-rootfs digest,
-  suite identifiers, recipient identities, and wrapped keys. This sidecar is
+  binds the bundle identity/version, manifest digest, encrypted-artifact-set
+  digest, suite identifiers, recipient identities, and wrapped keys. The set
+  digest covers every encrypted artifact's logical ID, ciphertext digest,
+  length, and suite in canonical ID order. This sidecar is
   the only additional file excluded from the publisher's signed subject list.
 - Replacing the recipient sidecar does not modify or require re-encryption of
-  the rootfs or a new publisher signature. The personalizer must have the image
+  encrypted payload assets or a new publisher signature. The personalizer must have the image
   key or an independently approved wrapping service; the CDN is not trusted to
   add recipients. Rootglass still hashes every publisher-signed subject before
   any key unwrap or launch.
 
 ## Proposed rootfs and ZIP profile
 
-The rootfs is a standalone QEMU LUKS v1 volume identified by the suite
-`qemu-luks-v1`. It uses AES-256-XTS, `plain64` IV generation, SHA-256 for the
-LUKS keyslot PBKDF2 KDF, and a 2-second keyslot iteration time. A uniformly
-random 32-byte Image Master Key (IMK) is the LUKS passphrase. Human passwords,
-legacy QEMU `aes` encryption, and implicit algorithm fallback are not allowed.
-Packaged QEMU versions must be qualified against the exact LUKS profile.
+The initial encrypted Linux disk is a standalone QEMU LUKS v1 volume identified
+by the suite `qemu-luks-v1`. It uses AES-256-XTS, `plain64` IV generation,
+SHA-256 for the LUKS keyslot PBKDF2 KDF, and a 2-second keyslot iteration time.
+A uniformly random 32-byte Image Master Key (IMK) is the LUKS passphrase.
+Human passwords, legacy QEMU `aes` encryption, and implicit algorithm fallback
+are not allowed. Packaged QEMU versions must be qualified against the exact
+LUKS profile. This first disk does not constrain a future bundle to one asset.
 
-In production ZIP archives, `rootfs.img` is STORED without ZIP encryption or a
-trailing data descriptor. The local header and central-directory name, CRC,
-sizes, method, and flags must agree. Duplicate, overlapping, truncated, or
-ambiguous extents fail validation. The verifier validates archive paths and
-bounds, publisher trust and signature, every signed subject digest, and the
-delegated recipient signature and its bindings before unwrapping the IMK.
-CRC-32 is an additional archive check and does not replace cryptographic
-verification.
+For the first encrypted ZIP profile, the logical Linux disk maps to a STORED
+entry without ZIP encryption or a trailing data descriptor. The signed catalog
+owns its entry mapping; runtime code addresses the disk by logical ID. The
+local header and central-directory name, CRC, sizes, method, and flags must
+agree. Duplicate, overlapping, truncated, or ambiguous extents fail
+validation. The verifier validates archive paths and bounds, publisher trust
+and signature, every signed subject digest, and the delegated recipient
+signature and its complete encrypted-artifact-set binding before unwrapping the
+IMK. CRC-32 is an additional archive check and does not replace cryptographic
+verification. ADR-0004 recommends ZIP as the first container while leaving the
+logical artifact reader independent of ZIP.
 
 The intended efficient path retains a verified archive as an immutable,
-content-addressed object and opens only the bounded `rootfs.img` byte extent
-through a QEMU file node, a raw node with the validated `offset` and `size`,
-and a LUKS block driver. Every packaged QEMU version must prove that chain
-works with the rootfs opened read-only. If a host cannot safely open a bounded
-extent, it must use a separately verified immutable extracted image or fail
-closed; it must never pass the complete ZIP as a raw disk.
+content-addressed object and opens only the bounded disk-asset extent through a
+QEMU file node, a raw node with the validated `offset` and `size`, and a LUKS
+block driver. Every packaged QEMU version must prove that chain works with the
+asset opened read-only. If a host cannot safely open a bounded extent, it must
+use a separately verified immutable extracted image or fail closed; it must
+never pass the complete ZIP as a raw disk.
 
 Until the archive verifier and resource policy are updated and qualified, the
 current 256 MiB per-member and 512 MiB expanded-size limits remain in effect.
@@ -163,9 +172,11 @@ host.
 ## Review gate
 
 Before encrypted implementation work is opened, a maintainer must approve
-[ADR-0003](adr/0003-encrypted-bundles-and-recipient-keys.md), including its
-schema-version boundary, LUKS profile, delegated recipient authority and
+[ADR-0003](adr/0003-encrypted-bundles-and-recipient-keys.md) and reconcile it
+with [ADR-0004](adr/0004-multi-artifact-bundles-and-container.md). Review the
+shared manifest-version boundary, logical artifact catalog and encrypted-set
+binding together with the LUKS profile, delegated recipient authority and
 wrapping suites, login-Keychain behavior, ZIP extent rules, instance/state
-policy, QMP transport, and threat boundary. After approval, the implementation
-tasks will update the current app and bundle contracts without weakening
-schema-1 verification.
+policy, QMP transport, and threat boundary. Implementation must preserve
+schema-1 verification and must not make ZIP paths or `rootfs.img` the permanent
+logical API.

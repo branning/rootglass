@@ -497,7 +497,7 @@ Use the defaults below for remaining implementation unless an ADR changes them.
 | Embedded terminal | Use libghostty; prove the external API/ABI and platform package before shipping | S16.6 prototype and maintainer platform review; see [tui-architecture.md](tui-architecture.md) |
 | Guest UI | Serial console first; no embedded web UI | S09; web-forward after v1 |
 | Execution | One world at a time per desktop process | S04; multiworld after v1 |
-| Bundle contents | One read-only rootfs, optional state template; canonical ZIP | S01/S05 |
+| Bundle contents | Schema 1: one read-only rootfs and optional state template in ZIP. Follow-on proposal: signed artifact catalog and launch profiles, with ZIP behind logical IDs. | S01/S05; [ADR-0004](adr/0004-multi-artifact-bundles-and-container.md); Ergo 6VYQAW |
 | State behavior | Prefer OverlayFS upper/work on local state disk; signed root immutable | S06 |
 | Publisher trust | Explicit offline trusted keys, default deny unknown | S07 / issue #18 |
 | QEMU distribution | Bundle a versioned, verified runtime per desktop target; PATH is development-only | ADR-0002; S14 clean-host evidence remains |

@@ -78,6 +78,37 @@ MVP constraints:
 - Only one writable overlay may be loaded at a time with the rootfs.
 - Multiple read-only overlay packs may be useful later, but are not part of the MVP.
 
+## Proposed multi-artifact direction
+
+These are follow-on design constraints, not changes to the schema-1 MVP above.
+See [ADR-0004](adr/0004-multi-artifact-bundles-and-container.md) for the
+maintainer-review proposal.
+
+- A future `.glass` can carry at least five Linux boot images and five MCU
+  firmware assets in one signed bundle. Profiles select named assets and may
+  compose several Linux and MCU nodes into one run.
+- Runtime profiles refer to stable logical artifact IDs, not archive paths or
+  byte offsets. Each signed artifact declares its kind, format, target
+  architecture or board, size, and digest.
+- New schema manifests use versioned required-feature IDs for artifact
+  catalogs, composed profiles, MCU nodes, typed devices, and any host backend
+  support. These are typed capabilities rather than a free-form flags bag;
+  unsupported required features fail closed.
+- Keep ZIP as the proposed first outer transport for convenience, with each
+  directly accessed large image stored as a separately verifiable entry. The
+  logical artifact reader must not depend on ZIP so a partitioned container
+  can be considered later if sparse extents, updates, or measured size limits
+  justify it.
+- An Android-style partition catalog is a useful model for logical names and
+  extent maps. Android `super.img`, A/B slots, and OTA semantics are not part of
+  the proposal.
+- MCU profiles name a concrete QEMU board/machine and firmware loading
+  contract. QOM and virtio devices use typed, allowlisted properties. External
+  backend binaries are host code and require a separate trust, capability, and
+  isolation policy.
+- Preserve schema-1 manifests and signatures unchanged. Coordinate the
+  manifest version boundary with the encryption proposal before implementation.
+
 ## Draft manifest
 
 ```toml
