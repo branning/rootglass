@@ -524,3 +524,25 @@
 {"version":1,"task_id":"X3CEZS","kind":"result","at":"2026-11-15T17:00:59.6232699Z","agent":"codex@worker-1","text":"Static workflow and script checks passed; PR CI and protected platform signing/notarization remain."}
 {"version":1,"task_id":"X3CEZS","kind":"result","at":"2026-11-15T17:13:46.731579648Z","agent":"codex@worker-1","text":"Merged PR #144 at f0edd371; all CI including embedded TUI guest boot passed."}
 {"version":1,"task_id":"X3CEZS","kind":"block","at":"2026-11-15T17:13:46.748007726Z","agent":"codex@worker-1","text":"S15.1 implementation is merged, but release acceptance needs protected signing environments and a signed platform release run. GitHub currently reports no repository environments. Configure rootglass-macos-signing and rootglass-windows-signing with the documented approval rules, v* tag restrictions, and certificate secrets in docs/desktop-packages.md; run signing/notarization, verify release provenance and installer signatures, and review signing identities/licenses."}
+{"version":1,"task_id":"5FFC3O","kind":"open","at":"2026-11-15T17:57:19.391179342Z","text":"Maintainer authorized the encryption workstream to proceed independently of deferred desktop application signing."}
+{"version":1,"task_id":"5FFC3O","kind":"claim","at":"2026-11-15T17:57:19.429859864Z","agent":"codex@worker-1"}
+{"version":1,"task_id":"5FFC3O","kind":"result","at":"2026-11-15T18:19:12.526458239Z","agent":"codex@worker-1","text":"Checks: git diff --check and local Markdown-link checks passed."}
+{"version":1,"task_id":"5FFC3O","kind":"result","at":"2026-11-15T18:19:12.704948166Z","agent":"codex@worker-1","text":"Protocol draft: ADR-0003 reconciles schema, wrapping, ZIP/QEMU, keychain, state and threat model."}
+{"version":1,"task_id":"5FFC3O","kind":"block","at":"2026-11-15T18:19:12.877358952Z","agent":"codex@worker-1","text":"Await maintainer approval of ADR-0003; implementation children remain staged until approval."}
+{"version":1,"task_id":"5FFC3O","kind":"result","at":"2026-11-15T18:22:05.983761503Z","text":"CLI contract added: public identity, recipient selection, and local instance commands."}
+{"version":1,"task_id":"5FFC3O","kind":"result","at":"2026-11-15T18:23:07.721434699Z","text":"PR #146 opened; awaiting maintainer protocol approval before implementation tasks open."}
+{"version":1,"task_id":"5FFC3O","kind":"result","at":"2026-11-15T20:14:08.508470423Z","text":"Maintainer feedback applied: signing delay is temporary; Secure Enclave remains in scope."}
+{"version":1,"task_id":"6VYQAW","kind":"created","at":"2026-11-15T20:21:58.959705223Z"}
+{"version":1,"task_id":"LQA4Y3","kind":"created","at":"2026-11-15T20:21:58.959810341Z"}
+{"version":1,"task_id":"GBDJUA","kind":"created","at":"2026-11-15T20:21:58.959817522Z"}
+{"version":1,"task_id":"NXQVWE","kind":"created","at":"2026-11-15T20:21:58.959824813Z"}
+{"version":1,"task_id":"XSC3IF","kind":"created","at":"2026-11-15T20:21:58.959831133Z"}
+{"version":1,"task_id":"LYLBFT","kind":"created","at":"2026-11-15T20:21:58.959834548Z"}
+{"version":1,"task_id":"OTPZFR","kind":"created","at":"2026-11-15T20:21:58.959838744Z"}
+{"version":1,"task_id":"LQA4Y3","kind":"open","at":"2026-11-15T20:25:10.065652925Z","text":"Maintainer asked to compare ZIP convenience with Android-style logical partitions before choosing the multi-artifact layout."}
+{"version":1,"task_id":"LQA4Y3","kind":"claim","at":"2026-11-15T20:25:10.086750737Z","agent":"codex@worker-1"}
+{"version":1,"task_id":"LQA4Y3","kind":"result","at":"2026-11-15T20:36:04.46737496Z","agent":"codex@worker-1","text":"Proposal: retain ZIP transport; add a signed logical artifact catalog and profiles independent of paths/offsets."}
+{"version":1,"task_id":"LQA4Y3","kind":"result","at":"2026-11-15T20:36:04.487177886Z","agent":"codex@worker-1","text":"ADR-0004 drafted; maintainer review of container, schema alignment, MCU, and backend boundaries is pending."}
+{"version":1,"task_id":"5FFC3O","kind":"result","at":"2026-11-15T20:36:04.504569909Z","text":"ADR-0003 now binds the complete encrypted asset set and defers shared schema/catalog alignment to ADR-0004."}
+{"version":1,"task_id":"LQA4Y3","kind":"result","at":"2026-11-15T22:32:30.650783963Z","agent":"codex@worker-1","text":"Maintainer accepted ZIP-first transport; ordinary ZIP tools can package and inspect existing partitioned disk images."}
+{"version":1,"task_id":"LQA4Y3","kind":"result","at":"2026-11-15T22:32:30.669918333Z","agent":"codex@worker-1","text":"Remaining catalog/schema/encryption/backend decisions need review; E00 and implementation tasks stay blocked/staged."}

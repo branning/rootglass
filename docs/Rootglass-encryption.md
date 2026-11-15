@@ -1,55 +1,182 @@
-# Technical Specification: Rootglass (.glass) Encrypted Bundle Extension & Multi-Instance Runtime
+# Rootglass encrypted bundles and multi-instance runtime
 
+**Status: proposal for maintainer security review.** No encrypted-bundle format
+or runtime behavior is approved or implemented yet. The current schema-1 bundle
+contract remains unchanged. See [ADR-0003](adr/0003-encrypted-bundles-and-recipient-keys.md)
+for the security decisions requiring review and [ADR-0004](adr/0004-multi-artifact-bundles-and-container.md)
+for the proposed multi-artifact catalog and container direction. The exact
+manifest schema/version boundary must be reconciled before implementation.
 
-1. Objective & Scope
+## Goal
 
-Extend the Rootglass .glass bundle specification (schema_version = 1) and runtime (rootglass-core, rootglass-gui in GPUI, and rootglass-cli) to support per-user/per-node encryption, end-to-end DSSE/Ed25519 integrity, and concurrent multi-instance execution (2–5 simultaneous instances) across macOS, Windows, and Linux without altering Rootglass's core archive or storage principles.
+Add encrypted `.glass` distributions with recipient-specific key wrapping and
+isolated concurrent guest runs while preserving existing unencrypted bundles,
+offline verification, publisher trust, and immutable root filesystems.
+Development can proceed with providers available to current local builds while
+code-signing credentials are being arranged. That does not decide how the
+released app will be signed or which entitlements it will use. Secure Enclave
+and TPM providers remain in scope and require hardware and platform
+qualification.
 
-Core Design Alignment with bundle-format.md
+## Proposed bundle and trust model
 
-• Preserves .glass Archive Rules: Retains the standard ZIP archive structure and development .glass/ directory layout (rootglass.toml, rootfs.img, optional state.img, metadata/, signatures/).
-• Zero-Rehash CDN Distribution: rootfs.img is encrypted once at build time as a LUKS-encrypted qcow2 (or raw LUKS) image and signed inside signatures/glass.dsse.json. Per-user/server recipient keys are added via an unsigned/separately-signed recipient envelope (signatures/recipients.json or signatures/recipients.dsse.json), matching how signatures/glass.dsse.json is excluded from base content hashing.
-• Zero-Copy ZIP Mounting: Store rootfs.img inside the .glass ZIP archive using ZIP method 0 (STORED / uncompressed) so QEMU can mount the encrypted rootfs.img directly at its exact byte offset inside the .glass file via QEMU's raw block driver (offset + size) without extracting gigabytes to disk.
-• Concurrent Multi-Instance Overlays: Leverages Rootglass's existing storage rule ("The local Rootglass application may create and track multiple writable overlay partitions for a glass; only one writable overlay may be loaded at a time with the rootfs") to spawn 2–5 isolated instances simultaneously, each paired with its own ephemeral LUKS-encrypted state-<instance>.qcow2 overlay.
+- Encrypted bundles use a new strict manifest and publisher-predicate schema
+  version. Schema-1 bundles and their signatures retain their current behavior;
+  schema-1 encryption fields and unsupported versions fail closed.
+- The publisher signs the encrypted manifest and every encrypted payload
+  artifact. The first encrypted implementation may contain one Linux LUKS disk;
+  its logical artifact ID is independent of its ZIP entry path. The signed
+  manifest delegates recipient management to explicit Ed25519
+  recipient-authority keys.
+- An encrypted archive contains one separately signed
+  `signatures/recipients.dsse.json` sidecar. The recipient-authority signature
+  binds the bundle identity/version, manifest digest, encrypted-artifact-set
+  digest, suite identifiers, recipient identities, and wrapped keys. The set
+  digest covers every encrypted artifact's logical ID, ciphertext digest,
+  length, and suite in canonical ID order. This sidecar is
+  the only additional file excluded from the publisher's signed subject list.
+- Replacing the recipient sidecar does not modify or require re-encryption of
+  encrypted payload assets or a new publisher signature. The personalizer must have the image
+  key or an independently approved wrapping service; the CDN is not trusted to
+  add recipients. Rootglass still hashes every publisher-signed subject before
+  any key unwrap or launch.
 
-2. .glass Bundle Extensions
+## Proposed rootfs and ZIP profile
 
+The initial encrypted Linux disk is a standalone QEMU LUKS v1 volume identified
+by the suite `qemu-luks-v1`. It uses AES-256-XTS, `plain64` IV generation,
+SHA-256 for the LUKS keyslot PBKDF2 KDF, and a 2-second keyslot iteration time.
+A uniformly random 32-byte Image Master Key (IMK) is the LUKS passphrase.
+Human passwords, legacy QEMU `aes` encryption, and implicit algorithm fallback
+are not allowed. Packaged QEMU versions must be qualified against the exact
+LUKS profile. This first disk does not constrain a future bundle to one asset.
 
-A–C. Archive Structure, Manifest, and ZIP Rules
+For the first encrypted ZIP profile, the logical Linux disk maps to a STORED
+entry without ZIP encryption or a trailing data descriptor. The signed catalog
+owns its entry mapping; runtime code addresses the disk by logical ID. The
+local header and central-directory name, CRC, sizes, method, and flags must
+agree. Duplicate, overlapping, truncated, or ambiguous extents fail
+validation. The verifier validates archive paths and bounds, publisher trust
+and signature, every signed subject digest, and the delegated recipient
+signature and its complete encrypted-artifact-set binding before unwrapping the
+IMK. CRC-32 is an additional archive check and does not replace cryptographic
+verification. ADR-0004 recommends ZIP as the first container while leaving the
+logical artifact reader independent of ZIP.
 
-The .glass directory structure and ZIP layout incorporate an encrypted rootfs.img (stored uncompressed via ZIP method 0) alongside manifest extensions in rootglass.toml under the [encryption] table (supporting parameters like format = "luks-qcow2" and max_concurrent_instances = 5). Both signatures/glass.dsse.json and signatures/recipients.dsse.json are excluded from the base DSSE subject digest list to allow on-the-fly recipient injection. The full specification details are available in the source documentation.
+The intended efficient path retains a verified archive as an immutable,
+content-addressed object and opens only the bounded disk-asset extent through a
+QEMU file node, a raw node with the validated `offset` and `size`, and a LUKS
+block driver. Every packaged QEMU version must prove that chain works with the
+asset opened read-only. If a host cannot safely open a bounded extent, it must
+use a separately verified immutable extracted image or fail closed; it must
+never pass the complete ZIP as a raw disk.
 
-3. Recipient Key Envelope (signatures/recipients.dsse.json)
+Until the archive verifier and resource policy are updated and qualified, the
+current 256 MiB per-member and 512 MiB expanded-size limits remain in effect.
+Gigabyte-scale bundles require explicit larger limits, streaming verification,
+disk-space preflight, and ZIP64 support. Directory-form `.glass` bundles remain
+development/test inputs and do not use ZIP extents.
 
-To avoid sharing static passwords while keeping rootfs.img immutable on CDNs, envelope encryption is utilized via a DSSE/Ed25519 envelope. This includes provider types (AgeX25519, AppleSecureEnclaveP256, Tpm20RsaOaep), recipient entries containing wrapped Image Master Keys (IMKs), and a server/portal sealing flow that binds the rootfs_sha256 digest without requiring base re-hashing. For complete schema definitions, consult the reference material.
+## Proposed key-wrapping providers
 
-4. Device Identity & Key Providers (rootglass-core)
+Each recipient record names a versioned algorithm suite. Unknown suites and
+providers fail closed; there is no downgrade fallback.
 
-A unified DeviceIdentityProvider trait is implemented across targets to handle public keys, fingerprints, and IMK unwrapping. Supported providers include:
-• Desktop Portable Provider (AgeKeyringProvider): Backed by macOS Keychain and Windows Credential Manager via the keyring crate.
-• Server / Enterprise Node-Locked Providers: Utilizes hardware-backed mechanisms including Apple Secure Enclave (SecKeyCreateRandomKey), Windows CNG TPM 2.0 (NCryptCreatePersistedKey), and Linux tss-esapi, enforcing hardware constraints when require_hardware_backed = true.
+| Suite | Intended provider | Hardware-backed? |
+|---|---|---|
+| `age-v1-x25519` | Portable Age identity | No |
+| `hpke-v1-p256-hkdf-sha256-aes128gcm` | Apple Secure Enclave P-256 key agreement | Yes, only after device qualification |
+| `rsa-oaep-v1-sha256` | Windows CNG TPM 2.0 or Linux TPM 2.0, RSA key at least 3072 bits | Yes, only after device qualification |
 
-5. Pre-Boot Validation & Integrity Pipeline
+Recipient IDs are algorithm-prefixed SHA-256 fingerprints of canonical public
+keys. The software provider stores the Age private identity in the user's OS
+credential store: the macOS file-based login Keychain, Windows Credential
+Manager, or Linux Secret Service. It exposes only public identities and
+fingerprints. It does not qualify as hardware-backed.
 
-Pre-launch validation enforces archive paths, schema versions, hardware acceleration availability, ZIP STORED compliance for rootfs.img, and cryptographic verification of both publisher (glass.dsse.json) and recipient (recipients.dsse.json) DSSE signatures before unwrapping the IMK.
+### macOS keychain development path and signing qualification
 
-6. Multi-Instance QEMU Execution (2–5 Concurrent Instances)
+For the current portable-provider development slice, use the classic
+file-based login Keychain through the Rust `keyring` crate's macOS `keychain`
+backend. This local development path does not require a Developer ID
+distribution certificate. Keychain ACLs can still prompt or deny access;
+unsigned builds lack a stable code-signing designated requirement, so rebuilt
+binaries may need authorization again. Rootglass surfaces those errors and
+never silently replaces a stored identity. Recheck access prompts and ACL
+stability with the signed distribution app after certificate setup.
 
-To support 2–5 simultaneous instances of a single .glass bundle:
-• Ephemeral Overlays: Each active instance slot (1..=max_concurrent_instances) generates a random overlay key and initializes an isolated LUKS-encrypted inst-<N>.qcow2 overlay file.
-• Paused Spawn & QMP Secret Injection: QEMU is launched in paused mode (-S) across host platforms (macOS hvf, Windows whpx, Linux kvm), injecting the IMK and overlay secret via QMP objects (object-add, blockdev-add), attaching unique MAC addresses and serial consoles, and zeroizing secrets from memory.
-• Cleanup: Child processes are managed via OS-level job objects or process groups with automatic overlay deletion upon termination.
+This current development path does not rule out the Protected/Data Protection
+Keychain, keychain access groups, signing entitlements, or a different
+production provider backend. Secure Enclave remains an in-scope hardware
+provider; implement and test it where current development signing permits. If
+an entitlement or certificate is required but not yet available, keep that
+qualification pending until setup rather than removing the provider or making
+a permanent product decision.
 
-7. GPUI Desktop Shell (rootglass-gui) Deliverables
+## Proposed instances, overlays, and QEMU secrets
 
-• Identity & Device Key Bar: Displays local age1 public keys or TPM status with one-click copying and URI scheme integration.
-• Bundle Verification Inspector: Renders publisher credentials, signature verification badges, and encryption diagnostics.
-• Multi-Instance Workspace Manager: Provides tabbed/paned execution for up to max_concurrent_instances with live serial console streams and lifecycle controls.
+- Schema 1 remains limited to one guest. Encrypted schema 2 defaults to one
+  instance and may declare a signed maximum from 1 to 5. Local preferences may
+  lower this limit but never raise it.
+- Each run has its own run ID, exclusive slot lock, serial stream, QMP session,
+  and ephemeral writable QCOW2 overlay. The encrypted rootfs is shared
+  read-only; every overlay receives a distinct random key.
+- The initial encrypted implementation supports ephemeral state only. On
+  shutdown or exit, Rootglass reaps QEMU, clears its host key buffer, and removes
+  the overlay. Startup handles orphaned session files after confirming that no
+  corresponding QEMU process is alive. Persistent encrypted state, recovery,
+  and export require separate design and review. File deletion is best effort,
+  not secure erasure.
+- QEMU starts paused. Rootglass provides secret objects through QMP over a
+  private Unix socket with owner-only permissions or a Windows named pipe with
+  a current-user-only ACL. QMP is not exposed on unauthenticated loopback TCP.
+  Secrets never appear in arguments, environment variables, persistent files,
+  logs, diagnostics, or telemetry. Rust buffers are zeroized best-effort;
+  QEMU necessarily holds decryption material in memory while the VM runs.
 
-8. Acceptance Criteria
+## Proposed headless CLI contract
 
-1. Standard .glass Compatibility: Unencrypted bundles continue to validate and boot identically to the base specification.
-2. Zero-Rehash Personalization: Injecting signatures/recipients.dsse.json succeeds without modifying rootfs.img or breaking publisher signatures.
-3. ZIP Compression Guard: Compressed rootfs.img entries (DEFLATE) fail pre-boot validation with a STORED (method 0) requirement.
-4. Concurrent Instance Isolation: Running up to 5 simultaneous instances isolates guest writes into distinct overlay files while leaving the archive checksum untouched.
-5. Hardware Lock Enforcement: Enabling require_hardware_backed blocks software age keys across supported builds.
+Keep `rootglass validate`, `plan`, and foreground `boot`. Add public identity
+management, verified recipient inspection, and local instance management:
+
+```text
+rootglass identity list
+rootglass identity create --provider <provider> [--label LABEL]
+rootglass identity delete <recipient-id> --confirm
+rootglass recipients list <bundle.glass>
+rootglass boot <bundle.glass> [--recipient <recipient-id>]
+rootglass instances list
+rootglass instances stop <run-id>
+```
+
+Identity and recipient inspection show only public keys, fingerprints,
+provider capability, and signature status. Key creation stores private
+material directly in the OS provider; deletion requires confirmation. Instance
+commands operate on Rootglass-owned local sessions. `boot --recipient` selects
+a public recipient ID when multiple local keys can open the bundle. No command
+accepts a private key, IMK, password, or raw QEMU option. CLI validation,
+provider, hardware-policy, capacity, launch, and cleanup failures return a
+nonzero exit status. The TUI and CLI call the shared application service rather
+than each other.
+
+## Threat boundary
+
+Encryption protects the rootfs at rest and limits decryption to an authorized
+recipient identity/provider. It does not protect plaintext during execution
+from Rootglass, QEMU, the host kernel, a host administrator, or guest code after
+the disk is attached. Bundle identity, publisher, version, paths, ciphertext
+size, and recipient IDs/count remain visible. Rootglass does not promise secure
+physical deletion or protection against a same-user attacker controlling the
+host.
+
+## Review gate
+
+Before encrypted implementation work is opened, a maintainer must approve
+[ADR-0003](adr/0003-encrypted-bundles-and-recipient-keys.md) and reconcile it
+with [ADR-0004](adr/0004-multi-artifact-bundles-and-container.md). Review the
+shared manifest-version boundary, logical artifact catalog and encrypted-set
+binding together with the LUKS profile, delegated recipient authority and
+wrapping suites, login-Keychain behavior, ZIP extent rules, instance/state
+policy, QMP transport, and threat boundary. Implementation must preserve
+schema-1 verification and must not make ZIP paths or `rootfs.img` the permanent
+logical API.
