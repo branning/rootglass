@@ -50,13 +50,19 @@ jobs:
           package_sha=$(jq -r '.head_sha' <<< "$run_json")
           if [[ "$package_sha" != "$GITHUB_SHA" ]]; then
             comparison=$(gh api "repos/$GITHUB_REPOSITORY/compare/$package_sha...$GITHUB_SHA")
-            [[ "$(jq -r '.status' <<< "$comparison")" == ahead && \
-               "$(jq -r '.merge_base_commit.sha' <<< "$comparison")" == "$package_sha" ]] || {
-              echo "Package run $PACKAGE_RUN_ID is not an ancestor of $GITHUB_SHA" >&2
+            comparison_status=$(jq -r '.status' <<< "$comparison")
+            if [[ "$comparison_status" == ahead ]]; then
+              [[ "$(jq -r '.merge_base_commit.sha' <<< "$comparison")" == "$package_sha" ]] || {
+                echo "Package run $PACKAGE_RUN_ID is not an ancestor of $GITHUB_SHA" >&2
+                exit 1
+              }
+            elif [[ "$comparison_status" != diverged ]]; then
+              echo "Package run $PACKAGE_RUN_ID cannot be compared safely with $GITHUB_SHA" >&2
               exit 1
-            }
+            fi
             changed_files=$(jq -r '[.files[].filename] | unique | join("\n")' <<< "$comparison")
             while IFS= read -r changed_file; do
+              [[ -n "$changed_file" ]] || continue
               case "$changed_file" in
                 .github/workflows/installed-ubuntu-smoke.yml|scripts/smoke-rootglass-installed-linux-association.sh|scripts/run-offline-network-namespace.sh|.ergo/backlog.jsonl|.ergo/journal.jsonl) ;;
                 *)
@@ -417,6 +423,7 @@ jobs:
           EVIDENCE_DIR: ${{ runner.temp }}/rootglass-install-evidence
         run: |
           set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
           if [[ ! -f "$PACKAGE_DIR/package-path.txt" ]]; then
             echo "Package install did not reach the data-retention check" >> "$EVIDENCE_DIR/uninstall.txt"
             exit 0
