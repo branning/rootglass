@@ -6,7 +6,11 @@ glass_file="$(realpath "${2:?usage: smoke-rootglass-installed-linux-association.
 output_dir="${3:?usage: smoke-rootglass-installed-linux-association.sh ROOTGLASS_BINARY GLASS_FILE OUTPUT_DIR}"
 mkdir -p "$output_dir"
 output_dir="$(cd "$output_dir" && pwd)"
-work_dir="$(mktemp -d)"
+if [[ -n "${ROOTGLASS_DESKTOP_SMOKE_TMPDIR:-}" ]]; then
+  work_dir="$(mktemp -d "${ROOTGLASS_DESKTOP_SMOKE_TMPDIR%/}/rootglass-association.XXXXXX")"
+else
+  work_dir="$(mktemp -d)"
+fi
 event_log="$work_dir/desktop-events.log"
 launch_log="$work_dir/xdg-open.log"
 app_pid=""
@@ -29,8 +33,13 @@ cleanup() {
   fi
   [[ ! -f "$event_log" ]] || cp "$event_log" "$output_dir/desktop-events.log"
   [[ ! -f "$launch_log" ]] || cp "$launch_log" "$output_dir/xdg-open.log"
-  chmod -R u+w "$work_dir" 2>/dev/null || true
-  rm -rf "$work_dir"
+  if [[ "${ROOTGLASS_DESKTOP_SMOKE_DEFER_CLEANUP:-0}" == 1 ]]; then
+    printf '%s\n' "$work_dir" > "$output_dir/cleanup-path.txt"
+    log "deferred temporary portal runtime cleanup until the session bus exits"
+  else
+    chmod -R u+w "$work_dir" 2>/dev/null || true
+    rm -rf "$work_dir"
+  fi
 }
 trap cleanup EXIT
 
