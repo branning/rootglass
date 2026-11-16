@@ -563,3 +563,6 @@
 {"version":1,"task_id":"UU7PF2","kind":"open","at":"2026-11-15T23:38:14.10023896Z","text":"E00 protocol, ADR-0004 container decision, signed catalog, and E01 encryption metadata are complete; starting safe encrypted artifact range support."}
 {"version":1,"task_id":"UU7PF2","kind":"claim","at":"2026-11-15T23:38:14.27886573Z","agent":"codex@worker-1"}
 {"version":1,"task_id":"UU7PF2","kind":"result","at":"2026-11-16T00:13:12.544869158Z","agent":"codex@worker-1","text":"Signature (23) and app (36) tests passed; clippy awaits PR CI because cargo is unavailable here."}
+{"version":1,"task_id":"UU7PF2","kind":"result","at":"2026-11-16T00:17:15.863045297Z","agent":"codex@worker-1","text":"PR #149 merged as 4aea74b; CI 754 passed."}
+{"version":1,"task_id":"UU7PF2","kind":"result","at":"2026-11-16T00:17:18.662959894Z","agent":"codex@worker-1","text":"Passed: fmt, clippy, tests, CLI, x64/arm64 boot smoke, and Linux desktop compile."}
+{"version":1,"task_id":"UU7PF2","kind":"done","at":"2026-11-16T00:17:21.430128218Z","agent":"codex@worker-1","text":"Merged PR #149 (4aea74b); CI 754 and E02 acceptance passed."}
