@@ -1,3 +1,4 @@
+pub mod identity;
 pub mod runtime_assets;
 pub mod runtime_profile;
 pub mod storage;
