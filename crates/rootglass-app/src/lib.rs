@@ -851,6 +851,60 @@ impl AppService {
         self.start_with_readiness(source, RunOptions::default(), false)
     }
 
+    /// Start an encrypted rootfs after callers have derived `launch` from the
+    /// publisher-verified schema-2 profile and completed recipient preflight.
+    /// Encrypted runs remain single-instance and overlay-free until E10.
+    pub fn start_prepared_encrypted(
+        &mut self,
+        launch: &LaunchRequest,
+        prepared: PreparedEncryptedArtifact,
+    ) -> Result<RunId, AppError> {
+        if self.active.is_some() {
+            return Err(AppError {
+                phase: LifecycleState::Starting,
+                summary: "Another glass is already running.".to_string(),
+                detail: "Stop the active run before starting another.".to_string(),
+            });
+        }
+        let plan = QemuLaunchPlan::for_encrypted_launch_request(launch).map_err(|error| {
+            AppError {
+                phase: LifecycleState::Starting,
+                summary: "The encrypted launch configuration is invalid.".to_string(),
+                detail: error.to_string(),
+            }
+        })?;
+        let (_, artifact_reader, image_master_key) = prepared.into_parts();
+        let artifact_length = artifact_reader.len();
+        let process = plan
+            .spawn_encrypted_supervised(artifact_reader, artifact_length, image_master_key)
+            .map_err(|error| AppError {
+                phase: LifecycleState::Starting,
+                summary: "The encrypted guest could not be started.".to_string(),
+                detail: error.to_string(),
+            })?;
+        let id = RunId(self.next_run_id);
+        self.next_run_id = self.next_run_id.wrapping_add(1).max(1);
+        self.pending.push_back(RuntimeEvent::StateChanged {
+            run: id.clone(),
+            state: LifecycleState::Booting,
+        });
+        self.active = Some(ActiveRun {
+            id: id.clone(),
+            process,
+            state: LifecycleState::Booting,
+            login_seen: false,
+            // Schema-2 profiles do not yet declare readiness evidence. E11/E12
+            // will connect profile-specific readiness without guessing from
+            // generic serial output.
+            require_login_prompt: false,
+            login_marker_tail: Vec::new(),
+            diagnostic_tail: Vec::new(),
+            ready_deadline: Instant::now() + GUEST_READY_TIMEOUT,
+            _state_lock: None,
+        });
+        Ok(id)
+    }
+
     fn start_with_readiness(
         &mut self,
         source: &Path,
