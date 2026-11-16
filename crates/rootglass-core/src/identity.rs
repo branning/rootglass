@@ -20,6 +20,8 @@ pub struct RecipientIdentity {
     pub wrapping_suite_id: RecipientWrappingSuite,
     /// Canonical public key encoding, never the private identity.
     pub public_key: String,
+    /// Optional user-supplied display label. Never used as identity material.
+    pub label: Option<String>,
 }
 
 /// Operations and security properties truthfully provided by an identity backend.
@@ -74,6 +76,8 @@ pub enum IdentityProviderError {
     IdentityLimitReached,
     #[error("the requested identity is not a valid Age identity")]
     InvalidIdentity,
+    #[error("identity labels must be 1 to 64 printable characters")]
+    InvalidLabel,
 }
 
 /// A 32-byte image master key kept in zeroizing memory and redacted in logs.
@@ -104,6 +108,18 @@ pub trait RecipientIdentityProvider: Send + Sync {
     fn list_identities(&self) -> Result<Vec<RecipientIdentity>, IdentityProviderError>;
 
     fn create_identity(&self) -> Result<RecipientIdentity, IdentityProviderError>;
+
+    /// Create an identity with an optional local display label. Backends that
+    /// do not support labels fail closed instead of silently discarding them.
+    fn create_identity_with_label(
+        &self,
+        label: Option<&str>,
+    ) -> Result<RecipientIdentity, IdentityProviderError> {
+        if label.is_some() {
+            return Err(IdentityProviderError::InvalidLabel);
+        }
+        self.create_identity()
+    }
 
     /// Delete a local identity by its public recipient ID. User-facing callers
     /// are responsible for obtaining confirmation before invoking this method.

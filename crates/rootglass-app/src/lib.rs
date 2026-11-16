@@ -17,6 +17,7 @@ use rootglass_manifest::MinimumRecipientHardware;
 use rootglass_qemu::{QemuLaunchPlan, QemuProcess, SerialChunk};
 use rootglass_signature::trust_config::{load_trust_store, LoadedTrustStore, TrustConfigError};
 use rootglass_signature::{SignatureError, TrustStore, VerifiedArtifactReader};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -101,6 +102,16 @@ pub struct EncryptedArtifactPreflightInfo {
     pub max_concurrent_instances: u8,
     pub minimum_recipient_hardware: MinimumRecipientHardware,
     pub provider: ProviderCapabilities,
+}
+
+/// Public recipient claims from a publisher-verified archive. Wrapped image
+/// keys and other envelope payload bytes are deliberately excluded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedRecipientInfo {
+    pub recipient_id: String,
+    pub provider_id: String,
+    pub wrapping_suite_id: String,
+    pub minimum_recipient_hardware: MinimumRecipientHardware,
 }
 
 /// A fully verified encrypted artifact with its IMK unwrapped as the final preflight step.
@@ -307,6 +318,81 @@ impl PackageLibrary {
             &crate::import::ImportLimits::default(),
         )
         .map_err(|error| import_app_error("The encrypted artifact could not be opened.", error))
+    }
+
+    /// Verify the installed archive and recipient authority before returning
+    /// public recipient IDs. The encrypted wrapped key bytes are never exposed.
+    pub fn inspect_encrypted_recipients(
+        &self,
+        installed: &registry::InstalledGlass,
+    ) -> Result<Vec<VerifiedRecipientInfo>, AppError> {
+        if self.revoked_key_ids.contains(&installed.key_id) {
+            return Err(revoked_key_app_error(&installed.key_id));
+        }
+        self.validate_installed_package_path(installed)?;
+        let verified = import::open_installed_verified_archive(
+            installed,
+            &self.trust_store,
+            &import::ImportLimits::default(),
+        )
+        .map_err(|error| {
+            import_app_error(
+                "The encrypted glass could not be verified for recipient inspection.",
+                error,
+            )
+        })?;
+        let envelope = verified.verify_recipient_envelope().map_err(|error| {
+            import_app_error("The recipient authorization could not be verified.", error)
+        })?;
+        Ok(envelope
+            .payload()
+            .recipients
+            .iter()
+            .map(|recipient| VerifiedRecipientInfo {
+                recipient_id: recipient.recipient_id.clone(),
+                provider_id: recipient.provider_id.id().to_string(),
+                wrapping_suite_id: recipient.wrapping_suite_id.id().to_string(),
+                minimum_recipient_hardware: envelope.minimum_recipient_hardware().clone(),
+            })
+            .collect())
+    }
+
+    /// Verify a signed encrypted archive and return public recipient metadata
+    /// without adding the archive to the installed package library.
+    pub fn inspect_encrypted_archive_recipients(
+        &self,
+        source: impl AsRef<Path>,
+    ) -> Result<Vec<VerifiedRecipientInfo>, AppError> {
+        let (report, envelope) = import::open_archive_verified_recipient_envelope(
+            source,
+            &self.trust_store,
+            &import::ImportLimits::default(),
+        )
+        .map_err(|error| match &error {
+            import::ImportError::Signature(SignatureError::UnknownKey(key_id))
+                if self.revoked_key_ids.contains(key_id) =>
+            {
+                revoked_key_app_error(key_id)
+            }
+            _ => import_app_error(
+                "The encrypted glass could not be verified for recipient inspection.",
+                error,
+            ),
+        })?;
+        if self.revoked_key_ids.contains(&report.key_id) {
+            return Err(revoked_key_app_error(&report.key_id));
+        }
+        Ok(envelope
+            .payload()
+            .recipients
+            .iter()
+            .map(|recipient| VerifiedRecipientInfo {
+                recipient_id: recipient.recipient_id.clone(),
+                provider_id: recipient.provider_id.id().to_string(),
+                wrapping_suite_id: recipient.wrapping_suite_id.id().to_string(),
+                minimum_recipient_hardware: envelope.minimum_recipient_hardware().clone(),
+            })
+            .collect())
     }
 
     /// Verify an installed encrypted artifact and unwrap its selected recipient key only after
@@ -994,6 +1080,44 @@ impl AppService {
         Ok(id)
     }
 
+    /// Import a trusted encrypted ZIP archive, select one eligible local
+    /// recipient, prepare its signed default profile, and start it headlessly.
+    pub fn start_encrypted_archive(
+        &mut self,
+        source: impl AsRef<Path>,
+        recipient_id: Option<&str>,
+        provider: &dyn RecipientIdentityProvider,
+    ) -> Result<RunId, AppError> {
+        let installed = self.import_archive(source)?;
+        let library = self.package_library();
+        let (launch, prepared) =
+            self.prepare_encrypted_boot(&library, &installed, recipient_id, provider)?;
+        self.start_prepared_encrypted(&launch, prepared)
+    }
+
+    /// List encrypted instances owned by live Rootglass processes for this user.
+    pub fn list_encrypted_instances(
+        &self,
+    ) -> Result<Vec<encrypted_sessions::EncryptedInstanceInfo>, AppError> {
+        let root = self.state_root.join("encrypted-sessions");
+        encrypted_sessions::EncryptedSessionStore::recover_all(&root)
+            .map_err(encrypted_session_app_error)?;
+        encrypted_sessions::EncryptedSessionStore::list_all(&root)
+            .map_err(encrypted_session_app_error)
+    }
+
+    /// Request a different Rootglass process to stop its encrypted QEMU run.
+    /// This uses the private session mailbox serviced by the owner process.
+    pub fn request_stop_encrypted_instance(
+        &self,
+        run_id: &str,
+        timeout: Duration,
+    ) -> Result<(), AppError> {
+        let root = self.state_root.join("encrypted-sessions");
+        encrypted_sessions::EncryptedSessionStore::request_stop(&root, run_id, timeout)
+            .map_err(encrypted_session_app_error)
+    }
+
     fn start_with_readiness(
         &mut self,
         source: &Path,
@@ -1079,6 +1203,18 @@ impl AppService {
     }
 
     pub fn poll_event(&mut self, timeout: Duration) -> Result<Option<RuntimeEvent>, AppError> {
+        if let Some((run, artifact_root, nonce)) = self.take_remote_stop_request()? {
+            let stopped = self
+                .stop_with_timeouts(&run, Duration::from_secs(5), Duration::from_secs(2))
+                .map(|_| ());
+            encrypted_sessions::EncryptedSessionStore::write_stop_response(
+                &artifact_root,
+                &nonce,
+                stopped.is_ok(),
+            )
+            .map_err(encrypted_session_app_error)?;
+            stopped?;
+        }
         if let Some(event) = self.pending.pop_front() {
             return Ok(Some(event));
         }
@@ -1307,6 +1443,198 @@ impl AppService {
         } else {
             self.encrypted_runs.remove(run);
         }
+    }
+
+    fn prepare_encrypted_boot(
+        &mut self,
+        library: &PackageLibrary,
+        installed: &registry::InstalledGlass,
+        requested_recipient: Option<&str>,
+        provider: &dyn RecipientIdentityProvider,
+    ) -> Result<(LaunchRequest, PreparedEncryptedArtifact), AppError> {
+        if library.revoked_key_ids.contains(&installed.key_id) {
+            return Err(revoked_key_app_error(&installed.key_id));
+        }
+        library.validate_installed_package_path(installed)?;
+        let verified = import::open_installed_verified_archive(
+            installed,
+            &library.trust_store,
+            &import::ImportLimits::default(),
+        )
+        .map_err(|error| {
+            import_app_error(
+                "The encrypted glass could not be verified for launch.",
+                error,
+            )
+        })?;
+        let report = verified.report().clone();
+        let catalog = report.artifact_catalog.as_ref().ok_or_else(|| AppError {
+            phase: LifecycleState::Verifying,
+            summary: "The glass does not contain an encrypted launch profile.".to_string(),
+            detail: "Encrypted boot requires a publisher-verified schema-2 artifact catalog."
+                .to_string(),
+        })?;
+        let profile = catalog
+            .profiles
+            .get(&catalog.default_profile)
+            .ok_or_else(|| AppError {
+                phase: LifecycleState::Verifying,
+                summary: "The signed default launch profile is missing.".to_string(),
+                detail: "Repair the bundle manifest and publish a new signed archive.".to_string(),
+            })?;
+        let artifact_id = profile
+            .nodes
+            .iter()
+            .find_map(|node| match &node.boot {
+                rootglass_manifest::BootData::Linux {
+                    rootfs_artifact, ..
+                } => Some(rootfs_artifact.as_str()),
+                rootglass_manifest::BootData::Mcu { .. } => None,
+            })
+            .ok_or_else(|| AppError {
+                phase: LifecycleState::Verifying,
+                summary: "The default profile has no Linux root disk.".to_string(),
+                detail: "Encrypted boot currently requires one encrypted Linux root disk."
+                    .to_string(),
+            })?
+            .to_string();
+
+        let glass =
+            rootglass_manifest::Glass::load(&installed.package_path).map_err(|error| AppError {
+                phase: LifecycleState::Verifying,
+                summary: "The installed manifest could not be loaded.".to_string(),
+                detail: error.to_string(),
+            })?;
+        let manifest_bytes = fs::read(&glass.manifest_path).map_err(|error| AppError {
+            phase: LifecycleState::Verifying,
+            summary: "The installed manifest could not be verified.".to_string(),
+            detail: error.to_string(),
+        })?;
+        let manifest_digest = format!("{:x}", Sha256::digest(&manifest_bytes));
+        if report.manifest_sha256.as_deref() != Some(manifest_digest.as_str())
+            || report.glass_identifier != glass.manifest.identifier
+            || report.glass_version != glass.manifest.version
+        {
+            return Err(AppError {
+                phase: LifecycleState::Verifying,
+                summary: "The installed manifest does not match the verified archive.".to_string(),
+                detail: "Re-import the archive before starting its encrypted guest.".to_string(),
+            });
+        }
+        let launch = self
+            .runtime
+            .prepare_encrypted_launch(&glass, report.clone())
+            .map_err(|error| {
+                let user_error = error.to_user_facing(LifecycleState::Validating);
+                AppError {
+                    phase: user_error.stage,
+                    summary: user_error.summary,
+                    detail: user_error.detail,
+                }
+            })?;
+
+        let envelope = verified.verify_recipient_envelope().map_err(|error| {
+            import_app_error("The recipient authorization could not be verified.", error)
+        })?;
+        let capabilities = provider.capabilities();
+        if !capabilities.can_unwrap {
+            return Err(identity_provider_app_error(
+                IdentityProviderError::UnsupportedRecipient,
+            ));
+        }
+        if !capabilities.satisfies(envelope.minimum_recipient_hardware()) {
+            return Err(identity_provider_app_error(
+                IdentityProviderError::HardwarePolicyUnsatisfied,
+            ));
+        }
+        let identities = provider
+            .list_identities()
+            .map_err(identity_provider_app_error)?;
+        let recipient_id = match requested_recipient {
+            Some(recipient_id) => recipient_id.to_string(),
+            None => {
+                let candidates = envelope
+                    .payload()
+                    .recipients
+                    .iter()
+                    .filter(|recipient| {
+                        recipient.provider_id == capabilities.provider_id
+                            && recipient.wrapping_suite_id == capabilities.wrapping_suite_id
+                            && identities.iter().any(|identity| {
+                                identity.recipient_id == recipient.recipient_id
+                                    && identity.provider_id == capabilities.provider_id
+                                    && identity.wrapping_suite_id == capabilities.wrapping_suite_id
+                            })
+                    })
+                    .map(|recipient| recipient.recipient_id.as_str())
+                    .collect::<Vec<_>>();
+                match candidates.as_slice() {
+                    [recipient_id] => (*recipient_id).to_string(),
+                    [] if identities.is_empty() => {
+                        return Err(identity_provider_app_error(
+                            IdentityProviderError::IdentityNotFound,
+                        ));
+                    }
+                    [] => {
+                        return Err(AppError {
+                            phase: LifecycleState::Verifying,
+                            summary: "No local identity can open this glass.".to_string(),
+                            detail: "Create or import an identity matching a recipient in the verified archive.".to_string(),
+                        });
+                    }
+                    _ => {
+                        return Err(AppError {
+                            phase: LifecycleState::Verifying,
+                            summary: "More than one local identity can open this glass."
+                                .to_string(),
+                            detail:
+                                "Pass `--recipient <recipient-id>` to select the intended identity."
+                                    .to_string(),
+                        });
+                    }
+                }
+            }
+        };
+
+        let prepared = library.preflight_encrypted_artifact(
+            installed,
+            &artifact_id,
+            &recipient_id,
+            provider,
+        )?;
+        Ok((launch, prepared))
+    }
+
+    fn take_remote_stop_request(&mut self) -> Result<Option<(RunId, PathBuf, String)>, AppError> {
+        if let Some(active) = self.active.as_ref() {
+            if let Some(session) = active._encrypted_session.as_ref() {
+                if let Some(nonce) = session
+                    .take_stop_request()
+                    .map_err(encrypted_session_app_error)?
+                {
+                    return Ok(Some((
+                        active.id.clone(),
+                        session.artifact_root().to_path_buf(),
+                        nonce,
+                    )));
+                }
+            }
+        }
+        for active in self.encrypted_runs.values() {
+            if let Some(session) = active._encrypted_session.as_ref() {
+                if let Some(nonce) = session
+                    .take_stop_request()
+                    .map_err(encrypted_session_app_error)?
+                {
+                    return Ok(Some((
+                        active.id.clone(),
+                        session.artifact_root().to_path_buf(),
+                        nonce,
+                    )));
+                }
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -2136,6 +2464,7 @@ node_id = "linux"
                 provider_id: rootglass_signature::RecipientProvider::AgeX25519,
                 wrapping_suite_id: rootglass_signature::RecipientWrappingSuite::AgeV1X25519,
                 public_key,
+                label: None,
             },
         )
     }
@@ -2480,8 +2809,34 @@ node_id = "linux"
             personalize_encrypted_fixture(&root, &base_archive, "software-allowed");
         let library_root = root.join("library");
         let service = AppService::with_trust_store(trust).with_library_root(&library_root);
+        let archive_recipients = service
+            .package_library()
+            .inspect_encrypted_archive_recipients(&archive)
+            .expect("verified archive exposes recipients without installation");
+        assert!(
+            !library_root.exists(),
+            "inspection does not install the archive"
+        );
+        assert_eq!(archive_recipients.len(), 1);
+        assert!(!format!("{archive_recipients:?}").contains("wrapped_imk"));
+
         let installed = service.import_archive(&archive).unwrap();
         let provider = TestRecipientProvider::age(identity.clone());
+
+        let recipients = service
+            .package_library()
+            .inspect_encrypted_recipients(&installed)
+            .expect("verified archive exposes public recipient metadata");
+        assert_eq!(recipients.len(), 1);
+        assert_eq!(recipients[0].recipient_id, identity.recipient_id);
+        assert_eq!(recipients[0].provider_id, "age-x25519");
+        assert_eq!(recipients[0].wrapping_suite_id, "age-v1-x25519");
+        assert!(!format!("{recipients:?}").contains("wrapped_imk"));
+        assert_eq!(
+            import::inspect_archive_schema_version(&archive, &import::ImportLimits::default())
+                .unwrap(),
+            rootglass_manifest::MULTI_ARTIFACT_SCHEMA_VERSION
+        );
 
         let mut prepared = service
             .package_library()

@@ -39,6 +39,17 @@ pub enum RecipientProvider {
     LinuxTpmRsa3072,
 }
 
+impl RecipientProvider {
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::AgeX25519 => "age-x25519",
+            Self::AppleSecureEnclaveP256 => "apple-secure-enclave-p256",
+            Self::WindowsTpmRsa3072 => "windows-tpm-rsa3072",
+            Self::LinuxTpmRsa3072 => "linux-tpm-rsa3072",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RecipientWrappingSuite {
     #[serde(rename = "age-v1-x25519")]

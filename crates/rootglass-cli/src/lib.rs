@@ -1,4 +1,6 @@
+use rootglass_app::identity::AgeIdentityProvider;
 use rootglass_app::{AppService, GlassSummary, RuntimeEvent};
+use rootglass_core::identity::RecipientIdentityProvider;
 use rootglass_manifest::Glass;
 use rootglass_signature::{
     load_signing_key, package_glass_directory, package_glass_directory_at, sign_glass_directory,
@@ -24,6 +26,13 @@ const DEFAULT_HEADLESS_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(60);
 const HEADLESS_QMP_QUIT_TIMEOUT: Duration = Duration::from_secs(2);
 const HEADLESS_RUN_USAGE: &str =
     "usage: rootglass run --headless <path-to.glass> [--trust <file>] [--shutdown-timeout <seconds>]";
+const BOOT_USAGE: &str = "usage: rootglass boot <path-to.glass> [--recipient <recipient-id>]";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BootOptions {
+    glass_path: PathBuf,
+    recipient_id: Option<String>,
+}
 
 pub fn run_with_frontends(
     args: Vec<String>,
@@ -65,9 +74,32 @@ fn run_with_frontends_and_headless(
             print_launch_plan(glass_root).map(|()| 0)
         }
         "boot" => {
-            let glass_root = required_path_arg(&args, "boot")?;
-            boot_glass(glass_root).map(|()| 0)
+            let options = parse_boot_args(&args)?;
+            if options.glass_path.is_file() {
+                let schema = rootglass_app::import::inspect_archive_schema_version(
+                    &options.glass_path,
+                    &rootglass_app::import::ImportLimits::default(),
+                )
+                .map_err(|error| error.to_string())?;
+                if schema == rootglass_manifest::MULTI_ARTIFACT_SCHEMA_VERSION {
+                    run_encrypted_boot(options)
+                } else if options.recipient_id.is_some() {
+                    Err("--recipient is available only for an encrypted schema-2 archive".into())
+                } else {
+                    boot_glass(options.glass_path).map(|()| 0)
+                }
+            } else {
+                if options.recipient_id.is_some() {
+                    return Err(
+                        "--recipient is available only when booting a .glass archive".into(),
+                    );
+                }
+                boot_glass(options.glass_path).map(|()| 0)
+            }
         }
+        "identity" => identity_command(&args).map(|()| 0),
+        "recipients" => recipients_command(&args).map(|()| 0),
+        "instances" => instances_command(&args).map(|()| 0),
         "run" => {
             let options = parse_headless_run_args(&args)?;
             run_headless(options)
@@ -158,6 +190,46 @@ fn parse_headless_run_args(args: &[String]) -> Result<HeadlessRunOptions, String
         glass_path,
         trust_path,
         shutdown_timeout: shutdown_timeout.unwrap_or(DEFAULT_HEADLESS_SHUTDOWN_TIMEOUT),
+    })
+}
+
+fn parse_boot_args(args: &[String]) -> Result<BootOptions, String> {
+    if args.first().map(String::as_str) != Some("boot") {
+        return Err(BOOT_USAGE.to_string());
+    }
+    let mut glass_path = None;
+    let mut recipient_id = None;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--recipient" => {
+                if recipient_id.is_some() {
+                    return Err("--recipient may be specified only once".to_string());
+                }
+                let Some(value) = args.get(index + 1) else {
+                    return Err("--recipient requires a public recipient ID".to_string());
+                };
+                if value.is_empty() || value.starts_with('-') {
+                    return Err("--recipient requires a public recipient ID".to_string());
+                }
+                recipient_id = Some(value.clone());
+                index += 2;
+            }
+            option if option.starts_with('-') => {
+                return Err(format!("unexpected boot option '{option}'"));
+            }
+            path => {
+                if glass_path.is_some() {
+                    return Err(BOOT_USAGE.to_string());
+                }
+                glass_path = Some(PathBuf::from(path));
+                index += 1;
+            }
+        }
+    }
+    Ok(BootOptions {
+        glass_path: glass_path.ok_or_else(|| BOOT_USAGE.to_string())?,
+        recipient_id,
     })
 }
 
@@ -311,6 +383,234 @@ fn boot_glass(glass_path: PathBuf) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+fn identity_command(args: &[String]) -> Result<(), String> {
+    let provider = AgeIdentityProvider::system().map_err(|error| error.to_string())?;
+    let capabilities = provider.capabilities();
+    match args.get(1).map(String::as_str) {
+        Some("list") if args.len() == 2 => {
+            println!(
+                "provider: {} (hardware-backed: {}, create: {}, unwrap: {})",
+                capabilities.provider_id.id(),
+                capabilities.hardware_backed,
+                capabilities.can_create,
+                capabilities.can_unwrap
+            );
+            for identity in provider
+                .list_identities()
+                .map_err(|error| error.to_string())?
+            {
+                let label = identity
+                    .label
+                    .as_deref()
+                    .map(|label| format!(" ({label})"))
+                    .unwrap_or_default();
+                println!(
+                    "{}{} provider={} suite={}",
+                    identity.recipient_id,
+                    label,
+                    identity.provider_id.id(),
+                    identity.wrapping_suite_id.id()
+                );
+            }
+            Ok(())
+        }
+        Some("create") => {
+            let mut requested_provider = None;
+            let mut label = None;
+            let mut index = 2;
+            while index < args.len() {
+                match args[index].as_str() {
+                    "--provider" => {
+                        if requested_provider.is_some() {
+                            return Err("--provider may be specified only once".to_string());
+                        }
+                        let Some(value) = args.get(index + 1) else {
+                            return Err("--provider requires a provider ID".to_string());
+                        };
+                        requested_provider = Some(value.as_str());
+                        index += 2;
+                    }
+                    "--label" => {
+                        if label.is_some() {
+                            return Err("--label may be specified only once".to_string());
+                        }
+                        let Some(value) = args.get(index + 1) else {
+                            return Err("--label requires a display label".to_string());
+                        };
+                        label = Some(value.clone());
+                        index += 2;
+                    }
+                    option => return Err(format!("unexpected identity create option '{option}'")),
+                }
+            }
+            let requested_provider = requested_provider
+                .ok_or_else(|| "identity create requires --provider <provider-id>".to_string())?;
+            if requested_provider != "age-x25519" {
+                return Err(format!(
+                    "identity provider '{requested_provider}' is not available in this build; supported provider: age-x25519"
+                ));
+            }
+            let identity = provider
+                .create_identity_with_label(label.as_deref())
+                .map_err(|error| error.to_string())?;
+            println!("created public recipient ID: {}", identity.recipient_id);
+            if let Some(label) = identity.label {
+                println!("label: {label}");
+            }
+            println!("private identity stored in the operating-system credential store");
+            Ok(())
+        }
+        Some("delete") if args.len() == 4 && args[3] == "--confirm" => {
+            provider
+                .delete_identity(&args[2])
+                .map_err(|error| error.to_string())?;
+            println!("deleted identity {}", args[2]);
+            Ok(())
+        }
+        Some("delete") => Err("usage: rootglass identity delete <recipient-id> --confirm".into()),
+        _ => Err(
+            "usage: rootglass identity list | create --provider <provider-id> [--label LABEL] | delete <recipient-id> --confirm".into(),
+        ),
+    }
+}
+
+fn recipients_command(args: &[String]) -> Result<(), String> {
+    if args.len() != 3 || args.get(1).map(String::as_str) != Some("list") {
+        return Err("usage: rootglass recipients list <bundle.glass>".to_string());
+    }
+    let service = encryption_service()?;
+    let recipients = service
+        .package_library()
+        .inspect_encrypted_archive_recipients(&args[2])
+        .map_err(|error| error.to_string())?;
+    println!("verified recipient envelope in {}", args[2]);
+    for recipient in recipients {
+        println!(
+            "{} provider={} suite={} minimum-hardware={}",
+            recipient.recipient_id,
+            recipient.provider_id,
+            recipient.wrapping_suite_id,
+            minimum_hardware_label(&recipient.minimum_recipient_hardware)
+        );
+    }
+    Ok(())
+}
+
+fn instances_command(args: &[String]) -> Result<(), String> {
+    match args.get(1).map(String::as_str) {
+        Some("list") if args.len() == 2 => {
+            let service = AppService::new();
+            let instances = service
+                .list_encrypted_instances()
+                .map_err(|error| error.to_string())?;
+            if instances.is_empty() {
+                println!("no encrypted instances are running");
+            }
+            for instance in instances {
+                println!(
+                    "{} qemu-pid={}",
+                    instance.run_id,
+                    instance
+                        .qemu_pid
+                        .map(|pid| pid.to_string())
+                        .unwrap_or_else(|| "starting".to_string())
+                );
+            }
+            Ok(())
+        }
+        Some("stop") if args.len() == 3 => {
+            AppService::new()
+                .request_stop_encrypted_instance(&args[2], Duration::from_secs(75))
+                .map_err(|error| error.to_string())?;
+            println!("stopped encrypted instance {}", args[2]);
+            Ok(())
+        }
+        _ => Err("usage: rootglass instances list | stop <run-id>".to_string()),
+    }
+}
+
+fn run_encrypted_boot(options: BootOptions) -> Result<i32, String> {
+    let mut service = encryption_service()?;
+    let provider = AgeIdentityProvider::system().map_err(|error| error.to_string())?;
+    let signals = ShutdownSignals::install()?;
+    let run = service
+        .start_encrypted_archive(
+            &options.glass_path,
+            options.recipient_id.as_deref(),
+            &provider,
+        )
+        .map_err(|error| error.to_string())?;
+    eprintln!("encrypted guest started; use Ctrl-C for graceful shutdown");
+    run_headless_session(
+        &mut service,
+        &run,
+        DEFAULT_HEADLESS_SHUTDOWN_TIMEOUT,
+        &signals,
+    )
+}
+
+fn encryption_service() -> Result<AppService, String> {
+    let path = local_trust_config_path()?;
+    AppService::from_trust_config(&path)
+        .map(AppService::with_packaged_runtime_assets)
+        .map_err(|error| {
+            format!(
+                "failed to load local publisher trust configuration at {}: {error}",
+                path.display()
+            )
+        })
+}
+
+fn local_trust_config_path() -> Result<PathBuf, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let root = std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .ok_or_else(|| {
+                "APPDATA is not set; cannot locate Rootglass trust configuration.".to_string()
+            })?;
+        return Ok(root.join("Rootglass").join("trust.json"));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| {
+            "HOME is not set; cannot locate Rootglass trust configuration.".to_string()
+        })?;
+        return Ok(home
+            .join("Library")
+            .join("Application Support")
+            .join("Rootglass")
+            .join("trust.json"));
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Some(config_home) = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from) {
+            if config_home.is_absolute() {
+                return Ok(config_home.join("rootglass").join("trust.json"));
+            }
+        }
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or_else(|| "Neither absolute XDG_CONFIG_HOME nor HOME is set; cannot locate Rootglass trust configuration.".to_string())?;
+        Ok(home.join(".config").join("rootglass").join("trust.json"))
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", unix)))]
+    {
+        Err("This platform has no configured Rootglass trust configuration directory.".into())
+    }
+}
+
+fn minimum_hardware_label(
+    requirement: &rootglass_manifest::MinimumRecipientHardware,
+) -> &'static str {
+    match requirement {
+        rootglass_manifest::MinimumRecipientHardware::SoftwareAllowed => "software-allowed",
+        rootglass_manifest::MinimumRecipientHardware::HardwareBackedRequired => {
+            "hardware-backed-required"
+        }
+    }
+}
+
 fn run_headless_glass(options: HeadlessRunOptions) -> Result<i32, String> {
     let mut service = headless_service(options.trust_path)?;
     let glass_root = resolve_glass_root(&service, options.glass_path)?;
@@ -435,6 +735,10 @@ fn run_headless_session(
             }) => {
                 return Err(format!("{summary}\n{detail}"));
             }
+            Some(RuntimeEvent::StateChanged {
+                state: rootglass_core::LifecycleState::Stopped,
+                ..
+            }) => return Ok(0),
             Some(RuntimeEvent::StateChanged { .. } | RuntimeEvent::GuestReady { .. }) | None => {}
         }
     }
@@ -490,7 +794,13 @@ fn print_usage() {
     eprintln!("  rootglass tui [path-to.glass]");
     eprintln!("  rootglass validate <path-to.glass>");
     eprintln!("  rootglass plan <path-to.glass>");
-    eprintln!("  rootglass boot <path-to.glass>");
+    eprintln!("  {BOOT_USAGE}");
+    eprintln!("  rootglass identity list");
+    eprintln!("  rootglass identity create --provider <provider-id> [--label LABEL]");
+    eprintln!("  rootglass identity delete <recipient-id> --confirm");
+    eprintln!("  rootglass recipients list <bundle.glass>");
+    eprintln!("  rootglass instances list");
+    eprintln!("  rootglass instances stop <run-id>");
     eprintln!("  {HEADLESS_RUN_USAGE}");
     eprintln!("  rootglass sign <glass-directory> --key <secret-file> [--created-at <RFC3339>]");
     eprintln!("  rootglass package <glass-directory> <output.glass> --key <secret-file> [--created-at <RFC3339>]");
@@ -513,6 +823,52 @@ mod tests {
         )
         .expect("TUI command dispatch succeeds");
         assert_eq!(received, Some(PathBuf::from("example.glass")));
+    }
+
+    #[test]
+    fn encrypted_boot_arguments_accept_only_one_public_recipient_selector() {
+        let options = parse_boot_args(&[
+            "boot".to_string(),
+            "private.glass".to_string(),
+            "--recipient".to_string(),
+            "age-v1-x25519:fingerprint".to_string(),
+        ])
+        .expect("encrypted boot arguments parse");
+        assert_eq!(options.glass_path, PathBuf::from("private.glass"));
+        assert_eq!(
+            options.recipient_id.as_deref(),
+            Some("age-v1-x25519:fingerprint")
+        );
+
+        for args in [
+            vec!["boot".to_string()],
+            vec![
+                "boot".to_string(),
+                "image.glass".to_string(),
+                "second.glass".to_string(),
+            ],
+            vec![
+                "boot".to_string(),
+                "image.glass".to_string(),
+                "--recipient".to_string(),
+            ],
+            vec![
+                "boot".to_string(),
+                "image.glass".to_string(),
+                "--recipient".to_string(),
+                "id".to_string(),
+                "--recipient".to_string(),
+                "other".to_string(),
+            ],
+            vec![
+                "boot".to_string(),
+                "image.glass".to_string(),
+                "--password".to_string(),
+                "secret".to_string(),
+            ],
+        ] {
+            assert!(parse_boot_args(&args).is_err(), "accepted {args:?}");
+        }
     }
 
     #[test]
