@@ -866,13 +866,12 @@ impl AppService {
                 detail: "Stop the active run before starting another.".to_string(),
             });
         }
-        let plan = QemuLaunchPlan::for_encrypted_launch_request(launch).map_err(|error| {
-            AppError {
+        let plan =
+            QemuLaunchPlan::for_encrypted_launch_request(launch).map_err(|error| AppError {
                 phase: LifecycleState::Starting,
                 summary: "The encrypted launch configuration is invalid.".to_string(),
                 detail: error.to_string(),
-            }
-        })?;
+            })?;
         let (_, artifact_reader, image_master_key) = prepared.into_parts();
         let artifact_length = artifact_reader.len();
         let process = plan

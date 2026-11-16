@@ -186,9 +186,7 @@ impl QemuLaunchPlan {
     /// Build the paused portion of an encrypted launch. The rootfs is attached
     /// later through QMP after Rootglass has installed the zeroizing secret
     /// object. Encrypted runs do not yet support writable overlays.
-    pub fn for_encrypted_launch_request(
-        request: &LaunchRequest,
-    ) -> Result<Self, QemuError> {
+    pub fn for_encrypted_launch_request(request: &LaunchRequest) -> Result<Self, QemuError> {
         if request.writable_overlay.is_some() {
             return Err(QemuError::EncryptedSetup {
                 stage: "validating encrypted launch options",
@@ -218,9 +216,10 @@ impl QemuLaunchPlan {
                     removed_rootfs = true;
                 }
                 "-device"
-                    if plan.args.get(index + 1).is_some_and(|value| {
-                        value == "virtio-blk-device,drive=rootfs"
-                    }) =>
+                    if plan
+                        .args
+                        .get(index + 1)
+                        .is_some_and(|value| value == "virtio-blk-device,drive=rootfs") =>
                 {
                     index = (index + 2).min(plan.args.len());
                 }
@@ -938,8 +937,7 @@ struct EncryptedTempDir {
 
 impl EncryptedTempDir {
     fn create_in(parent: &Path) -> Result<Self, QemuError> {
-        static NEXT_ID: std::sync::atomic::AtomicU64 =
-            std::sync::atomic::AtomicU64::new(0);
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         for _ in 0..100 {
             let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let path = parent.join(format!("rootglass-qmp-{}-{id}", std::process::id()));
@@ -998,10 +996,8 @@ fn materialize_encrypted_image<R: Read>(
         stage: "creating private encrypted image",
     })?;
     let mut limited = artifact.take(artifact_length);
-    let copied = std::io::copy(&mut limited, &mut file).map_err(|_| {
-        QemuError::EncryptedSetup {
-            stage: "copying verified encrypted extent",
-        }
+    let copied = std::io::copy(&mut limited, &mut file).map_err(|_| QemuError::EncryptedSetup {
+        stage: "copying verified encrypted extent",
     })?;
     if copied != artifact_length {
         return Err(QemuError::EncryptedSetup {
@@ -1064,11 +1060,7 @@ impl PrivateQmpEndpoint {
         format!("unix:{},server=off,wait=off", self.socket_path.display())
     }
 
-    fn connect(
-        self,
-        child: &mut Child,
-        timeout: Duration,
-    ) -> Result<PrivateQmpClient, QemuError> {
+    fn connect(self, child: &mut Child, timeout: Duration) -> Result<PrivateQmpClient, QemuError> {
         let deadline = Instant::now() + timeout;
         let stream = loop {
             match self.listener.accept() {
@@ -1275,7 +1267,10 @@ impl PrivateQmpEndpoint {
         static NEXT_PIPE_ID: AtomicU64 = AtomicU64::new(0);
         let id = NEXT_PIPE_ID.fetch_add(1, Ordering::Relaxed);
         let name = format!(r"\\.\pipe\rootglass-qmp-{}-{id}", std::process::id());
-        let wide_name = name.encode_utf16().chain(std::iter::once(0)).collect::<Vec<_>>();
+        let wide_name = name
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
         let sddl = "D:P(A;;GA;;;OW)"
             .encode_utf16()
             .chain(std::iter::once(0))
@@ -1436,9 +1431,7 @@ impl QemuProcess {
         Self::spawn_with_connector(
             plan,
             supervised_args(&plan.args, port),
-            move |_| {
-                QmpClient::connect(port, QMP_STARTUP_TIMEOUT).map(QmpControl::Tcp)
-            },
+            move |_| QmpClient::connect(port, QMP_STARTUP_TIMEOUT).map(QmpControl::Tcp),
             None,
         )
     }
@@ -1762,10 +1755,7 @@ impl Drop for QemuProcess {
 }
 
 fn supervised_args(args: &[String], qmp_port: u16) -> Vec<String> {
-    supervised_args_with_qmp(
-        args,
-        format!("tcp:127.0.0.1:{qmp_port},server=on,wait=off"),
-    )
+    supervised_args_with_qmp(args, format!("tcp:127.0.0.1:{qmp_port},server=on,wait=off"))
 }
 
 fn supervised_args_with_qmp(args: &[String], endpoint: String) -> Vec<String> {
@@ -2225,8 +2215,10 @@ with client:
             std::sync::atomic::AtomicU64::new(0);
         let root = loop {
             let id = NEXT_PRIVATE_QEMU_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let candidate = std::env::temp_dir()
-                .join(format!("rootglass-private-qemu-{}-{id}", std::process::id()));
+            let candidate = std::env::temp_dir().join(format!(
+                "rootglass-private-qemu-{}-{id}",
+                std::process::id()
+            ));
             match fs::create_dir(&candidate) {
                 Ok(()) => break candidate,
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -2327,13 +2319,11 @@ with client:
             !PathBuf::from(format!("/proc/{pid}")).exists(),
             "encrypted setup must terminate and reap fake QEMU"
         );
-        assert!(fs::read_dir(&fake.root)
+        assert!(fs::read_dir(&fake.root).unwrap().all(|entry| !entry
             .unwrap()
-            .all(|entry| !entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .starts_with("rootglass-qmp-")));
+            .file_name()
+            .to_string_lossy()
+            .starts_with("rootglass-qmp-")));
     }
 
     #[test]
@@ -2365,7 +2355,10 @@ with client:
             0o700
         );
         assert!(!session_dir.join("q").exists());
-        assert_eq!(fs::metadata(&image).unwrap().permissions().mode() & 0o777, 0o400);
+        assert_eq!(
+            fs::metadata(&image).unwrap().permissions().mode() & 0o777,
+            0o400
+        );
         assert_eq!(
             fs::read_to_string(&fake.trace)
                 .unwrap()
@@ -2463,13 +2456,11 @@ with client:
 
         assert!(error.to_string().contains("encrypted QEMU setup failed"));
         assert!(!fake.pid_file.exists());
-        assert!(fs::read_dir(&fake.root)
+        assert!(fs::read_dir(&fake.root).unwrap().all(|entry| !entry
             .unwrap()
-            .all(|entry| !entry
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .starts_with("rootglass-qmp-")));
+            .file_name()
+            .to_string_lossy()
+            .starts_with("rootglass-qmp-")));
     }
 
     fn fake_qemu_exit(code: i32) -> FakeQemu {
