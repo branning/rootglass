@@ -12,8 +12,16 @@ use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use zip::{CompressionMethod, HasZipMetadata, ZipArchive};
 
+mod recipient;
 mod signing;
 pub mod trust_config;
+pub use recipient::{
+    encrypted_artifact_set_digest, personalize_glass_archive_at, recipient_id_for_public_key,
+    sign_recipient_envelope, verify_recipient_envelope, verify_recipient_envelope_bytes,
+    RecipientEnvelopePayload, RecipientProvider, RecipientRecord, RecipientWrappingSuite,
+    VerifiedRecipientEnvelope, MAX_RECIPIENTS, RECIPIENT_ENVELOPE_PATH,
+    RECIPIENT_ENVELOPE_PAYLOAD_TYPE,
+};
 pub use signing::{
     load_signing_key, package_glass_directory, package_glass_directory_at, sign_glass_directory,
     sign_glass_directory_at, SigningReport,
@@ -218,6 +226,12 @@ pub enum SignatureError {
 
     #[error("artifact '{0}' is not declared as encrypted")]
     ArtifactNotEncrypted(String),
+
+    #[error("encrypted bundle is missing its recipient envelope")]
+    MissingRecipientEnvelope,
+
+    #[error("invalid recipient envelope: {0}")]
+    InvalidRecipientEnvelope(String),
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -337,12 +351,26 @@ pub struct VerificationReport {
     pub publisher_name: String,
     pub publisher_identity: String,
     pub key_id: String,
+    pub glass_identifier: String,
+    pub glass_version: String,
+    /// SHA-256 of the exact publisher-signed manifest bytes, when present.
+    pub manifest_sha256: Option<String>,
     pub subject_count: usize,
     pub schema_version: u32,
     /// Present only after schema-2 storage paths, sizes and digests match signed subjects.
     pub artifact_catalog: Option<rootglass_manifest::ArtifactCatalog>,
     /// Normalized member paths from the verified statement, in statement order.
     pub signed_paths: Vec<String>,
+    verified_context: VerifiedContext,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VerifiedContext {
+    schema_version: u32,
+    glass_identifier: String,
+    glass_version: String,
+    manifest_sha256: Option<String>,
+    artifact_catalog: Option<rootglass_manifest::ArtifactCatalog>,
 }
 
 /// An archive that has passed publisher verification and encrypted-entry layout checks.
@@ -351,11 +379,43 @@ pub struct VerifiedArchive {
     report: VerificationReport,
     source: Arc<Mutex<File>>,
     encrypted_artifacts: BTreeMap<String, VerifiedArtifactRange>,
+    limits: VerificationLimits,
 }
 
 impl VerifiedArchive {
     pub fn report(&self) -> &VerificationReport {
         &self.report
+    }
+
+    /// Verify the separately signed recipient sidecar against this archive's publisher report.
+    pub fn verify_recipient_envelope(&self) -> Result<VerifiedRecipientEnvelope, SignatureError> {
+        let source = self.source.lock().map_err(|_| {
+            SignatureError::InvalidRecipientEnvelope("archive reader lock was poisoned".to_string())
+        })?;
+        let mut archive = ZipArchive::new(source.try_clone().map_err(zip_io_error)?)?;
+        let entry = match archive.by_name(RECIPIENT_ENVELOPE_PATH) {
+            Ok(entry) => entry,
+            Err(zip::result::ZipError::FileNotFound) => {
+                return Err(SignatureError::MissingRecipientEnvelope)
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let envelope_limit = self
+            .limits
+            .max_signature_bytes
+            .min(self.limits.max_member_bytes)
+            .min(MAX_SIGNATURE_ENVELOPE_BYTES);
+        if entry.size() > envelope_limit {
+            return Err(SignatureError::SignatureEnvelopeTooLarge {
+                limit: envelope_limit,
+            });
+        }
+        let mut bytes = Vec::new();
+        entry
+            .take(envelope_limit.saturating_add(1))
+            .read_to_end(&mut bytes)
+            .map_err(zip_io_error)?;
+        verify_recipient_envelope_bytes(&bytes, &self.report, &self.limits)
     }
 
     /// Open one signed encrypted disk as a bounded read-only stream.
@@ -394,11 +454,40 @@ impl VerifiedArchive {
 pub struct VerifiedDirectory {
     report: VerificationReport,
     root: PathBuf,
+    limits: VerificationLimits,
 }
 
 impl VerifiedDirectory {
     pub fn report(&self) -> &VerificationReport {
         &self.report
+    }
+
+    /// Verify the separately signed recipient sidecar from a development directory.
+    pub fn verify_recipient_envelope(&self) -> Result<VerifiedRecipientEnvelope, SignatureError> {
+        let relative = PathBuf::from(RECIPIENT_ENVELOPE_PATH);
+        ensure_no_symlink_components(&self.root, &relative, true)?;
+        let path = self.root.join(relative);
+        let envelope_limit = self
+            .limits
+            .max_signature_bytes
+            .min(self.limits.max_member_bytes)
+            .min(MAX_SIGNATURE_ENVELOPE_BYTES);
+        match fs::symlink_metadata(&path) {
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Err(SignatureError::MissingRecipientEnvelope)
+            }
+            Err(source) => return Err(SignatureError::ReadEnvelope { path, source }),
+        }
+        let bytes = read_bounded_file(
+            &path,
+            envelope_limit,
+            true,
+            SignatureError::SignatureEnvelopeTooLarge {
+                limit: envelope_limit,
+            },
+        )?;
+        verify_recipient_envelope_bytes(&bytes, &self.report, &self.limits)
     }
 
     /// Open one signed encrypted disk after checking its path, size, and digest again.
@@ -627,6 +716,7 @@ pub fn open_verified_glass_archive_with_limits(
         report,
         source: Arc::new(Mutex::new(source)),
         encrypted_artifacts,
+        limits: limits.clone(),
     })
 }
 
@@ -701,6 +791,7 @@ pub fn open_verified_glass_directory_with_limits(
     Ok(VerifiedDirectory {
         report,
         root: glass_root.to_path_buf(),
+        limits: limits.clone(),
     })
 }
 
@@ -810,6 +901,25 @@ fn verify_glass_archive_reader_with_artifacts<R: Read + Seek>(
         limits: limits.clone(),
     };
     let report = verify_envelope_with_files(&file_set, &envelope, trust_store)?;
+    let recipient_envelope_limit = limits
+        .max_signature_bytes
+        .min(limits.max_member_bytes)
+        .min(MAX_SIGNATURE_ENVELOPE_BYTES);
+    if report.schema_version == rootglass_manifest::MULTI_ARTIFACT_SCHEMA_VERSION
+        && report
+            .artifact_catalog
+            .as_ref()
+            .is_some_and(|catalog| catalog.encryption.is_some())
+        && layouts.iter().any(|layout| {
+            layout.path == RECIPIENT_ENVELOPE_PATH
+                && !layout.is_dir
+                && layout.size > recipient_envelope_limit
+        })
+    {
+        return Err(SignatureError::SignatureEnvelopeTooLarge {
+            limit: recipient_envelope_limit,
+        });
+    }
     let mut reader = archive.into_inner();
     let ranges = verified_encrypted_artifact_ranges(
         &mut reader,
@@ -986,15 +1096,35 @@ fn verify_envelope_with_files(
 
     let statement: Statement = serde_json::from_slice(&payload)?;
     let (signed_paths, artifact_catalog) = verify_statement(file_set, &statement, trusted)?;
+    let manifest_sha256 = statement.subject.iter().find_map(|subject| {
+        let normalized = normalize_relative_path(Path::new(&subject.name)).ok()?;
+        (path_to_string(&normalized) == rootglass_manifest::MANIFEST_FILE_NAME)
+            .then(|| subject.digest.get("sha256").cloned())
+            .flatten()
+    });
 
+    let glass_identifier = statement.predicate.glass_identifier;
+    let glass_version = statement.predicate.glass_version;
+    let schema_version = statement.predicate.schema_version;
+    let verified_context = VerifiedContext {
+        schema_version,
+        glass_identifier: glass_identifier.clone(),
+        glass_version: glass_version.clone(),
+        manifest_sha256: manifest_sha256.clone(),
+        artifact_catalog: artifact_catalog.clone(),
+    };
     Ok(VerificationReport {
         publisher_name: statement.predicate.publisher.name,
         publisher_identity: statement.predicate.publisher.identity,
         key_id: dsse_signature.keyid.clone(),
+        glass_identifier,
+        glass_version,
+        manifest_sha256,
         subject_count: statement.subject.len(),
-        schema_version: statement.predicate.schema_version,
+        schema_version,
         artifact_catalog,
         signed_paths,
+        verified_context,
     })
 }
 
@@ -1074,7 +1204,10 @@ fn verify_statement(
 
     let candidates = file_set.candidate_files()?;
     for file in &candidates {
-        if !expected_subjects.contains(file) {
+        let is_schema2_recipient_sidecar = statement.predicate.schema_version
+            == rootglass_manifest::MULTI_ARTIFACT_SCHEMA_VERSION
+            && file == RECIPIENT_ENVELOPE_PATH;
+        if !is_schema2_recipient_sidecar && !expected_subjects.contains(file) {
             return Err(SignatureError::UnsignedFile(file.clone()));
         }
     }
@@ -1126,6 +1259,21 @@ fn verify_statement(
                 "schema-2 manifest is missing its artifact catalog".to_string(),
             )
         })?;
+        if candidates
+            .iter()
+            .any(|path| path == RECIPIENT_ENVELOPE_PATH)
+        {
+            if catalog.encryption.is_none() {
+                return Err(SignatureError::UnsignedFile(
+                    RECIPIENT_ENVELOPE_PATH.to_string(),
+                ));
+            }
+            if expected_subjects.contains(RECIPIENT_ENVELOPE_PATH) {
+                return Err(SignatureError::InvalidStatement(
+                    "recipient envelope must be excluded from publisher subjects".to_string(),
+                ));
+            }
+        }
         for (artifact_id, artifact) in &catalog.artifacts {
             let normalized =
                 path_to_string(&normalize_relative_path(Path::new(&artifact.storage.path))?);
@@ -2386,6 +2534,7 @@ fn hash_open_file(file: &mut File, expected_size: u64) -> io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::recipient::canonical_json;
     use ed25519_dalek::{Signer, SigningKey};
     use std::io::Write;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -2485,7 +2634,7 @@ mod tests {
 
     #[test]
     fn encrypted_archive_packages_stored_ranges_and_returns_bounded_reader() {
-        let (root, archive_path, key, trust) = temp_encrypted_schema2_bundle();
+        let (root, archive_path, key, trust, _authority_key) = temp_encrypted_schema2_bundle();
         package_glass_directory_at(&root, &archive_path, &key, "2026-11-15T00:00:00Z")
             .expect("encrypted disk is packaged as a stored ZIP member");
 
@@ -2529,7 +2678,7 @@ mod tests {
 
     #[test]
     fn encrypted_archive_rejects_deflate_descriptors_and_inconsistent_headers() {
-        let (root, archive_path, key, trust) = temp_encrypted_schema2_bundle();
+        let (root, archive_path, key, trust, _authority_key) = temp_encrypted_schema2_bundle();
         let deflated = build_encrypted_archive(&root, CompressionMethod::Deflated, false);
         assert!(matches!(
             verify_glass_archive_bytes(&deflated, "signatures/glass.dsse.json", &trust),
@@ -2581,6 +2730,325 @@ mod tests {
         out_of_range[central + 42..central + 46].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(
             verify_glass_archive_bytes(out_of_range, "signatures/glass.dsse.json", &trust).is_err()
+        );
+
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_file(archive_path);
+    }
+
+    #[test]
+    fn recipient_envelope_binds_the_verified_bundle_and_delegated_authority() {
+        let (root, archive_path, publisher_key, trust, authority_key) =
+            temp_encrypted_schema2_bundle();
+        package_glass_directory_at(&root, &archive_path, &publisher_key, "2026-11-15T00:00:00Z")
+            .expect("package encrypted bundle");
+        let verified =
+            open_verified_glass_archive(&archive_path, "signatures/glass.dsse.json", &trust)
+                .expect("publisher and encrypted artifact set verify");
+        let report = verified.report().clone();
+        assert_eq!(report.glass_identifier, "io.rootglass.tests.schema2");
+        assert_eq!(report.glass_version, "0.2.0");
+        assert_eq!(report.manifest_sha256.as_deref().unwrap().len(), 64);
+        assert_eq!(
+            encrypted_artifact_set_digest(
+                report.artifact_catalog.as_ref().expect("encrypted catalog")
+            )
+            .unwrap(),
+            "fd3d2c8e008685180848bab6672f501ab950116bb456a46531da700de1c440df"
+        );
+        let mut multiple_encrypted = report.artifact_catalog.as_ref().unwrap().clone();
+        multiple_encrypted
+            .artifacts
+            .get_mut("controller-fw")
+            .unwrap()
+            .encryption = Some(rootglass_manifest::ArtifactEncryption {
+            suite_id: rootglass_manifest::EncryptionSuite::QemuLuksV1,
+        });
+        assert_eq!(
+            encrypted_artifact_set_digest(&multiple_encrypted).unwrap(),
+            "a944ba1ea57e9488b3d20c6283660d676feaf0791f07db368595f37a9ae0520b"
+        );
+
+        let recipient = test_age_recipient(b"canonical age public key", b"wrapped image key");
+        let bytes = sign_recipient_envelope(
+            &report,
+            vec![recipient.clone()],
+            &authority_key,
+            &VerificationLimits::default(),
+        )
+        .expect("delegated authority can sign recipient envelope");
+        let verified_recipients =
+            verify_recipient_envelope_bytes(&bytes, &report, &VerificationLimits::default())
+                .expect("recipient envelope verifies");
+        assert_eq!(
+            verified_recipients.authority_key_id(),
+            report
+                .artifact_catalog
+                .as_ref()
+                .unwrap()
+                .encryption
+                .as_ref()
+                .unwrap()
+                .recipient_authorities[0]
+                .key_id
+        );
+        assert_eq!(
+            verified_recipients
+                .recipient(&recipient.recipient_id)
+                .unwrap()
+                .wrapped_imk
+                .as_slice(),
+            b"wrapped image key".as_slice()
+        );
+
+        let mut display_mutation = report.clone();
+        display_mutation.manifest_sha256 = Some("0".repeat(64));
+        assert!(verify_recipient_envelope_bytes(
+            &bytes,
+            &display_mutation,
+            &VerificationLimits::default()
+        )
+        .is_ok());
+        let mut wrong_binding = report.clone();
+        wrong_binding.verified_context.manifest_sha256 = Some("0".repeat(64));
+        assert!(matches!(
+            verify_recipient_envelope_bytes(&bytes, &wrong_binding, &VerificationLimits::default()),
+            Err(SignatureError::InvalidRecipientEnvelope(_))
+        ));
+
+        let decoded: DsseEnvelope = serde_json::from_slice(&bytes).unwrap();
+        let payload_bytes = URL_SAFE_NO_PAD.decode(decoded.payload).unwrap();
+        let mut wrong_set: RecipientEnvelopePayload =
+            serde_json::from_slice(&payload_bytes).unwrap();
+        wrong_set.encrypted_artifact_set_sha256 = "f".repeat(64);
+        let wrong_set_bytes =
+            signed_recipient_payload(&canonical_json(&wrong_set).unwrap(), &authority_key);
+        assert!(matches!(
+            verify_recipient_envelope_bytes(
+                &wrong_set_bytes,
+                &report,
+                &VerificationLimits::default()
+            ),
+            Err(SignatureError::InvalidRecipientEnvelope(_))
+        ));
+
+        let mut tampered = serde_json::from_slice::<DsseEnvelope>(&bytes).unwrap();
+        tampered.payload = URL_SAFE_NO_PAD.encode(b"tampered");
+        assert!(matches!(
+            verify_recipient_envelope(&tampered, &report, &VerificationLimits::default()),
+            Err(SignatureError::SignatureVerificationFailed)
+        ));
+
+        let unauthorized_key = SigningKey::from_bytes(&[77; 32]);
+        let decoded: DsseEnvelope = serde_json::from_slice(&bytes).unwrap();
+        let payload = URL_SAFE_NO_PAD.decode(decoded.payload).unwrap();
+        let unauthorized = signed_recipient_payload(&payload, &unauthorized_key);
+        assert!(matches!(
+            verify_recipient_envelope_bytes(&unauthorized, &report, &VerificationLimits::default()),
+            Err(SignatureError::InvalidRecipientEnvelope(_))
+        ));
+
+        let duplicate_recipient = sign_recipient_envelope(
+            &report,
+            vec![recipient.clone(), recipient],
+            &authority_key,
+            &VerificationLimits::default(),
+        );
+        assert!(matches!(
+            duplicate_recipient,
+            Err(SignatureError::InvalidRecipientEnvelope(_))
+        ));
+        let excessive_recipients = sign_recipient_envelope(
+            &report,
+            vec![test_age_recipient(b"recipient key", b"wrapped key"); MAX_RECIPIENTS + 1],
+            &authority_key,
+            &VerificationLimits::default(),
+        );
+        assert!(matches!(
+            excessive_recipients,
+            Err(SignatureError::InvalidRecipientEnvelope(_))
+        ));
+        let unauthorized_signing_key = SigningKey::from_bytes(&[78; 32]);
+        assert!(matches!(
+            sign_recipient_envelope(
+                &report,
+                Vec::new(),
+                &unauthorized_signing_key,
+                &VerificationLimits::default()
+            ),
+            Err(SignatureError::InvalidRecipientEnvelope(_))
+        ));
+
+        let small_limits = VerificationLimits {
+            max_signature_bytes: 64,
+            max_total_uncompressed_bytes: 64,
+            max_member_bytes: 64,
+            ..VerificationLimits::default()
+        };
+        assert!(matches!(
+            verify_recipient_envelope_bytes(&bytes, &report, &small_limits),
+            Err(SignatureError::SignatureEnvelopeTooLarge { .. })
+        ));
+        let mut oversized_object: DsseEnvelope = serde_json::from_slice(&bytes).unwrap();
+        oversized_object.payload = "A".repeat(200);
+        assert!(matches!(
+            verify_recipient_envelope(&oversized_object, &report, &small_limits),
+            Err(SignatureError::SignatureEnvelopeTooLarge { .. })
+        ));
+        assert!(matches!(
+            verified.verify_recipient_envelope(),
+            Err(SignatureError::MissingRecipientEnvelope)
+        ));
+
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_file(archive_path);
+    }
+
+    #[test]
+    fn recipient_envelope_rejects_noncanonical_json_unknown_fields_and_suites() {
+        let (root, archive_path, publisher_key, trust, authority_key) =
+            temp_encrypted_schema2_bundle();
+        package_glass_directory_at(&root, &archive_path, &publisher_key, "2026-11-15T00:00:00Z")
+            .expect("package encrypted bundle");
+        let verified =
+            open_verified_glass_archive(&archive_path, "signatures/glass.dsse.json", &trust)
+                .expect("publisher signature verifies");
+        let report = verified.report();
+        let bytes = sign_recipient_envelope(
+            report,
+            vec![test_age_recipient(
+                b"canonical age public key",
+                b"wrapped image key",
+            )],
+            &authority_key,
+            &VerificationLimits::default(),
+        )
+        .unwrap();
+        let envelope: DsseEnvelope = serde_json::from_slice(&bytes).unwrap();
+        let payload_bytes = URL_SAFE_NO_PAD.decode(envelope.payload).unwrap();
+        let mut value: serde_json::Value = serde_json::from_slice(&payload_bytes).unwrap();
+
+        let mut unknown_provider = value.clone();
+        unknown_provider["recipients"][0]["providerId"] = serde_json::json!("unknown-provider");
+        let invalid = signed_recipient_payload(
+            &serde_json::to_vec(&unknown_provider).unwrap(),
+            &authority_key,
+        );
+        assert!(matches!(
+            verify_recipient_envelope_bytes(&invalid, report, &VerificationLimits::default()),
+            Err(SignatureError::InvalidRecipientEnvelope(_))
+        ));
+
+        let mut unknown_suite = value.clone();
+        unknown_suite["recipients"][0]["wrappingSuiteId"] = serde_json::json!("rsa-fallback");
+        let invalid =
+            signed_recipient_payload(&serde_json::to_vec(&unknown_suite).unwrap(), &authority_key);
+        assert!(matches!(
+            verify_recipient_envelope_bytes(&invalid, report, &VerificationLimits::default()),
+            Err(SignatureError::InvalidRecipientEnvelope(_))
+        ));
+
+        value["unrecognized"] = serde_json::json!(true);
+        let invalid =
+            signed_recipient_payload(&serde_json::to_vec(&value).unwrap(), &authority_key);
+        assert!(matches!(
+            verify_recipient_envelope_bytes(&invalid, report, &VerificationLimits::default()),
+            Err(SignatureError::InvalidRecipientEnvelope(_))
+        ));
+
+        let canonical = canonical_json(
+            &serde_json::from_slice::<RecipientEnvelopePayload>(&payload_bytes).unwrap(),
+        )
+        .unwrap();
+        let duplicate_field = [b"{\"formatVersion\":1,".as_slice(), &canonical[1..]].concat();
+        let invalid = signed_recipient_payload(&duplicate_field, &authority_key);
+        assert!(matches!(
+            verify_recipient_envelope_bytes(&invalid, report, &VerificationLimits::default()),
+            Err(SignatureError::InvalidRecipientEnvelope(_))
+        ));
+
+        let mut whitespace_payload = canonical_json(
+            &serde_json::from_slice::<RecipientEnvelopePayload>(&payload_bytes).unwrap(),
+        )
+        .unwrap();
+        whitespace_payload.insert(0, b' ');
+        let invalid = signed_recipient_payload(&whitespace_payload, &authority_key);
+        assert!(matches!(
+            verify_recipient_envelope_bytes(&invalid, report, &VerificationLimits::default()),
+            Err(SignatureError::InvalidRecipientEnvelope(_))
+        ));
+
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_file(archive_path);
+    }
+
+    #[test]
+    fn recipient_personalization_preserves_ciphertext_and_publisher_signature() {
+        let (root, archive_path, publisher_key, trust, authority_key) =
+            temp_encrypted_schema2_bundle();
+        package_glass_directory_at(&root, &archive_path, &publisher_key, "2026-11-15T00:00:00Z")
+            .expect("package encrypted bundle");
+        let verified =
+            open_verified_glass_archive(&archive_path, "signatures/glass.dsse.json", &trust)
+                .expect("publisher and payloads verify");
+        let base_signature = read_archive_member(&archive_path, "signatures/glass.dsse.json");
+        let base_disk = read_archive_member(&archive_path, "images/root.raw");
+
+        let first_output = root.join("personalized-one.glass");
+        let first_recipient =
+            test_age_recipient(b"first canonical public key", b"first wrapped key");
+        personalize_glass_archive_at(
+            &verified,
+            &first_output,
+            vec![first_recipient.clone()],
+            &authority_key,
+        )
+        .expect("add a recipient without changing the publisher signature");
+        let first_verified =
+            open_verified_glass_archive(&first_output, "signatures/glass.dsse.json", &trust)
+                .expect("personalized archive retains publisher verification");
+        assert_eq!(
+            first_verified
+                .verify_recipient_envelope()
+                .unwrap()
+                .recipient(&first_recipient.recipient_id)
+                .unwrap()
+                .wrapped_imk,
+            first_recipient.wrapped_imk
+        );
+
+        let second_output = root.join("personalized-two.glass");
+        let second_recipient =
+            test_age_recipient(b"second canonical public key", b"second wrapped key");
+        personalize_glass_archive_at(
+            &first_verified,
+            &second_output,
+            vec![second_recipient.clone()],
+            &authority_key,
+        )
+        .expect("replace an existing recipient set without republishing the bundle");
+        let second_verified =
+            open_verified_glass_archive(&second_output, "signatures/glass.dsse.json", &trust)
+                .expect("replacement archive retains publisher verification");
+        let verified_recipients = second_verified.verify_recipient_envelope().unwrap();
+        assert!(verified_recipients
+            .recipient(&first_recipient.recipient_id)
+            .is_none());
+        assert!(verified_recipients
+            .recipient(&second_recipient.recipient_id)
+            .is_some());
+
+        for output in [&first_output, &second_output] {
+            assert_eq!(
+                read_archive_member(output, "signatures/glass.dsse.json"),
+                base_signature
+            );
+            assert_eq!(read_archive_member(output, "images/root.raw"), base_disk);
+            assert!(!read_archive_member(output, RECIPIENT_ENVELOPE_PATH).is_empty());
+        }
+        assert_ne!(
+            read_archive_member(&first_output, RECIPIENT_ENVELOPE_PATH),
+            read_archive_member(&second_output, RECIPIENT_ENVELOPE_PATH)
         );
 
         let _ = fs::remove_dir_all(root);
@@ -2675,6 +3143,46 @@ mod tests {
             ),
             Err(SignatureError::CompressionRatioExceeded { .. })
         ));
+    }
+
+    #[test]
+    fn encrypted_archive_rejects_oversized_recipient_sidecar() {
+        let (root, archive_path, publisher_key, trust, _authority_key) =
+            temp_encrypted_schema2_bundle();
+        package_glass_directory_at(&root, &archive_path, &publisher_key, "2026-11-15T00:00:00Z")
+            .expect("package encrypted bundle");
+        let original = fs::read(&archive_path).unwrap();
+        let mut source = ZipArchive::new(Cursor::new(original)).unwrap();
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for index in 0..source.len() {
+            let mut entry = source.by_index(index).unwrap();
+            if entry.is_dir() {
+                continue;
+            }
+            let name = entry.name().to_string();
+            let options = SimpleFileOptions::default().compression_method(entry.compression());
+            writer.start_file(name, options).unwrap();
+            io::copy(&mut entry, &mut writer).unwrap();
+        }
+        writer
+            .start_file(
+                RECIPIENT_ENVELOPE_PATH,
+                SimpleFileOptions::default().compression_method(CompressionMethod::Stored),
+            )
+            .unwrap();
+        writer
+            .write_all(&vec![b'x'; MAX_SIGNATURE_ENVELOPE_BYTES as usize + 1])
+            .unwrap();
+        let oversized_archive = writer.finish().unwrap().into_inner();
+        assert!(matches!(
+            verify_glass_archive_bytes(&oversized_archive, "signatures/glass.dsse.json", &trust),
+            Err(SignatureError::SignatureEnvelopeTooLarge {
+                limit: MAX_SIGNATURE_ENVELOPE_BYTES
+            })
+        ));
+
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_file(archive_path);
     }
 
     #[test]
@@ -3062,9 +3570,10 @@ node_id = "mcu"
         (root, archive)
     }
 
-    fn temp_encrypted_schema2_bundle() -> (PathBuf, PathBuf, SigningKey, TrustStore) {
+    fn temp_encrypted_schema2_bundle() -> (PathBuf, PathBuf, SigningKey, TrustStore, SigningKey) {
         let (root, archive) = temp_schema2_bundle(false);
-        let recipient = SigningKey::from_bytes(&[19; 32]).verifying_key().to_bytes();
+        let authority_key = SigningKey::from_bytes(&[19; 32]);
+        let recipient = authority_key.verifying_key().to_bytes();
         let recipient_id = format!("ed25519:{}", hex_sha256(&recipient));
         let manifest_path = root.join("rootglass.toml");
         let manifest = fs::read_to_string(&manifest_path).expect("read schema-2 fixture");
@@ -3089,7 +3598,7 @@ node_id = "mcu"
         sign_glass_directory_at(&root, &key, "2026-11-15T00:00:00Z")
             .expect("sign encrypted schema-2 fixture");
         let trust = trust_store_for(&key);
-        (root, archive, key, trust)
+        (root, archive, key, trust, authority_key)
     }
 
     fn build_encrypted_archive(
@@ -3222,6 +3731,43 @@ node_id = "mcu"
                     .then_some(offset)
             })
             .expect("find ZIP central header")
+    }
+
+    fn test_age_recipient(public_key: &[u8], wrapped_imk: &[u8]) -> RecipientRecord {
+        RecipientRecord {
+            recipient_id: recipient_id_for_public_key(
+                RecipientWrappingSuite::AgeV1X25519,
+                public_key,
+            ),
+            provider_id: RecipientProvider::AgeX25519,
+            wrapping_suite_id: RecipientWrappingSuite::AgeV1X25519,
+            wrapped_imk: wrapped_imk.to_vec(),
+        }
+    }
+
+    fn signed_recipient_payload(payload: &[u8], key: &SigningKey) -> Vec<u8> {
+        let signature = key.sign(&dsse_pae(
+            RECIPIENT_ENVELOPE_PAYLOAD_TYPE.as_bytes(),
+            payload,
+        ));
+        serde_json::to_vec(&DsseEnvelope {
+            payload_type: RECIPIENT_ENVELOPE_PAYLOAD_TYPE.to_string(),
+            payload: URL_SAFE_NO_PAD.encode(payload),
+            signatures: vec![DsseSignature {
+                keyid: format!("ed25519:{}", hex_sha256(&key.verifying_key().to_bytes())),
+                sig: URL_SAFE_NO_PAD.encode(signature.to_bytes()),
+            }],
+        })
+        .unwrap()
+    }
+
+    fn read_archive_member(path: &Path, name: &str) -> Vec<u8> {
+        let file = File::open(path).expect("open archive");
+        let mut archive = ZipArchive::new(file).expect("parse archive");
+        let mut entry = archive.by_name(name).expect("find archive member");
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).expect("read archive member");
+        bytes
     }
 
     fn trust_store_for(key: &SigningKey) -> TrustStore {
