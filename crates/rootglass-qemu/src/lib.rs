@@ -1966,9 +1966,19 @@ mod tests {
         assert!(command_line.contains(DEFAULT_QEMU_SYSTEM_AARCH64));
         assert!(command_line.contains("-machine virt"));
         assert!(command_line.contains("-cpu cortex-a57"));
-        assert!(command_line.contains("-kernel runtime-assets/alpine-aarch64/vmlinuz-virt"));
+        assert!(plan.args.windows(2).any(|args| {
+            args[0] == "-kernel"
+                && args[1]
+                    .replace('\\', "/")
+                    .ends_with("runtime-assets/alpine-aarch64/vmlinuz-virt")
+        }));
         assert!(!command_line.contains("-dtb"));
-        assert!(command_line.contains("-initrd runtime-assets/alpine-aarch64/initramfs-virt"));
+        assert!(plan.args.windows(2).any(|args| {
+            args[0] == "-initrd"
+                && args[1]
+                    .replace('\\', "/")
+                    .ends_with("runtime-assets/alpine-aarch64/initramfs-virt")
+        }));
         assert!(command_line.contains("readonly=on"));
         assert!(command_line.contains("rootfs.img"));
         assert!(command_line.contains("state.img"));
