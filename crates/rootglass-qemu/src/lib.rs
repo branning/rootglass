@@ -1559,11 +1559,13 @@ impl QemuProcess {
         let bounded_log = Arc::new(Mutex::new(BoundedLog { file, written: 0 }));
         let serial = Arc::new(SerialBuffer::default());
         let stderr_tail = Arc::new(Mutex::new(BoundedTail::default()));
+        let redact_stderr = encrypted_temp_dir.is_some();
         if let Err(error) = spawn_pipe_reader(
             stdout,
             Some(Arc::clone(&serial)),
-            Arc::clone(&bounded_log),
+            Some(Arc::clone(&bounded_log)),
             None,
+            false,
         ) {
             let _ = child.kill();
             let _ = child.wait();
@@ -1572,8 +1574,9 @@ impl QemuProcess {
         if let Err(error) = spawn_pipe_reader(
             stderr,
             None,
-            Arc::clone(&bounded_log),
-            Some(Arc::clone(&stderr_tail)),
+            (!redact_stderr).then(|| Arc::clone(&bounded_log)),
+            (!redact_stderr).then(|| Arc::clone(&stderr_tail)),
+            redact_stderr,
         ) {
             let _ = child.kill();
             let _ = child.wait();
@@ -1813,8 +1816,9 @@ fn create_diagnostic_log() -> std::io::Result<(PathBuf, File)> {
 fn spawn_pipe_reader<R: Read + Send + 'static>(
     mut pipe: R,
     serial: Option<Arc<SerialBuffer>>,
-    log: Arc<Mutex<BoundedLog>>,
+    log: Option<Arc<Mutex<BoundedLog>>>,
     stderr_tail: Option<Arc<Mutex<BoundedTail>>>,
+    zeroize_chunks: bool,
 ) -> Result<(), QemuError> {
     thread::Builder::new()
         .name("rootglass-qemu-output".to_string())
@@ -1833,8 +1837,13 @@ fn spawn_pipe_reader<R: Read + Send + 'static>(
                                 tail.push(bytes);
                             }
                         }
-                        if let Ok(mut log) = log.lock() {
-                            log.write(bytes);
+                        if let Some(log) = &log {
+                            if let Ok(mut log) = log.lock() {
+                                log.write(bytes);
+                            }
+                        }
+                        if zeroize_chunks {
+                            buffer[..count].zeroize();
                         }
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -1843,6 +1852,9 @@ fn spawn_pipe_reader<R: Read + Send + 'static>(
             }
             if let Some(serial) = serial {
                 serial.close();
+            }
+            if zeroize_chunks {
+                buffer.zeroize();
             }
         })
         .map(|_| ())
@@ -2271,6 +2283,9 @@ with client:
             props = arguments.get("props", {})
             valid = props.get("format") == "base64" and len(props.get("data", "")) == 44
             trace_line = "object-add:secret-present" if valid else "object-add:secret-missing"
+            sys.stderr.write(props.get("data", "") + "\n")
+            sys.stderr.flush()
+            print("FAKE_QEMU_STDOUT_AFTER_SECRET", flush=True)
         else:
             trace_line = command
         with open(trace, "a") as output:
@@ -2336,6 +2351,24 @@ with client:
             .starts_with("rootglass-qmp-")));
     }
 
+    fn wait_for_diagnostic_marker(process: &QemuProcess, marker: &[u8]) {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let diagnostic = fs::read(process.diagnostic_log()).unwrap();
+            if diagnostic
+                .windows(marker.len())
+                .any(|window| window == marker)
+            {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "diagnostic marker was not drained"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     #[test]
     fn encrypted_qmp_delivers_secret_in_order_then_reaps_and_cleans() {
         let fake = fake_private_qemu();
@@ -2385,10 +2418,12 @@ with client:
                 "cont".to_string(),
             ]
         );
+        wait_for_diagnostic_marker(&process, b"FAKE_QEMU_STDOUT_AFTER_SECRET");
         assert!(!fs::read(process.diagnostic_log())
             .unwrap()
             .windows(key_text.len())
             .any(|window| window == key_text.as_bytes()));
+        assert!(process.stderr_tail().unwrap().bytes.is_empty());
 
         let status = process
             .stop(Duration::from_secs(1), Duration::from_secs(1))
