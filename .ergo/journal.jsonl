@@ -585,3 +585,6 @@
 {"version":1,"task_id":"7ZK6R7","kind":"done","at":"2026-11-16T02:41:28.166834051Z","agent":"codex@worker-1","text":"Merged #152 (f2c632e); all CI jobs passed, including workspace tests, CLI smoke, and x64/arm64 guest boots."}
 {"version":1,"task_id":"2TNH2J","kind":"open","at":"2026-11-16T02:41:49.705828317Z","text":"E02 and E08 are complete; QMP secret-delivery work can start."}
 {"version":1,"task_id":"2TNH2J","kind":"claim","at":"2026-11-16T02:41:49.728869349Z","agent":"codex@worker-1"}
+{"version":1,"task_id":"2TNH2J","kind":"done","at":"2026-11-16T03:57:39.289453411Z","agent":"codex@worker-1","text":"Merged PR #153 as 0824299. CI run 43800677399 passed workspace tests, Clippy, formatting, CLI smoke, Linux desktop compile, x64/arm64 boot smoke, and Windows QEMU crate tests. Real encrypted-guest smoke remains in E13 qualification."}
+{"version":1,"task_id":"XS4CK4","kind":"open","at":"2026-11-16T03:59:03.959569295Z","text":"E00 approved the encrypted instance policy; E08 and E09 are complete, so isolation work can start."}
+{"version":1,"task_id":"XS4CK4","kind":"claim","at":"2026-11-16T03:59:03.981567707Z","agent":"codex@worker-1"}

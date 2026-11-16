@@ -412,6 +412,29 @@ impl QemuLaunchPlan {
     ) -> Result<QemuProcess, QemuError> {
         QemuProcess::spawn_encrypted(self, artifact, artifact_length, image_master_key)
     }
+
+    /// Start an encrypted guest with an ephemeral encrypted QCOW2 overlay backed by its
+    /// read-only LUKS root disk. The overlay key is delivered through private QMP and is
+    /// discarded as soon as QEMU has opened the block graph.
+    pub fn spawn_encrypted_overlay_supervised<R: Read>(
+        &self,
+        artifact: R,
+        artifact_length: u64,
+        image_master_key: ImageMasterKey,
+        overlay_key: ImageMasterKey,
+        temp_parent: &Path,
+        on_session: impl FnMut(Option<u32>, &Path) -> Result<(), std::io::Error>,
+    ) -> Result<QemuProcess, QemuError> {
+        QemuProcess::spawn_encrypted_with_overlay(
+            self,
+            artifact,
+            artifact_length,
+            image_master_key,
+            overlay_key,
+            temp_parent,
+            on_session,
+        )
+    }
 }
 
 fn qemu_path_argument(path: &Path) -> String {
@@ -659,12 +682,15 @@ impl QmpControl {
         &mut self,
         image_path: &Path,
         image_master_key: ImageMasterKey,
+        overlay: Option<(&Path, ImageMasterKey)>,
     ) -> Result<(), QemuError> {
         match self {
             Self::Tcp(_) => Err(QemuError::EncryptedSetup {
                 stage: "opening private QMP",
             }),
-            Self::Private(qmp) => qmp.configure_encrypted_rootfs(image_path, image_master_key),
+            Self::Private(qmp) => {
+                qmp.configure_encrypted_rootfs(image_path, image_master_key, overlay)
+            }
         }
     }
 }
@@ -736,7 +762,7 @@ struct PrivateQmpReply {
     #[serde(default)]
     id: Option<u64>,
     #[serde(rename = "return", default)]
-    result: Option<serde::de::IgnoredAny>,
+    result: Option<serde_json::Value>,
     #[serde(default)]
     error: Option<serde::de::IgnoredAny>,
 }
@@ -780,6 +806,16 @@ impl PrivateQmpClient {
         arguments: serde_json::Value,
         stage: &'static str,
     ) -> Result<(), QemuError> {
+        self.execute_value_result(command, arguments, stage)
+            .map(|_| ())
+    }
+
+    fn execute_value_result(
+        &mut self,
+        command: &'static str,
+        arguments: serde_json::Value,
+        stage: &'static str,
+    ) -> Result<serde_json::Value, QemuError> {
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1).max(1);
         let request = Zeroizing::new(
@@ -793,7 +829,11 @@ impl PrivateQmpClient {
         self.execute_request(&request, id, stage)
     }
 
-    fn add_image_master_key(&mut self, key: &ImageMasterKey) -> Result<(), QemuError> {
+    fn add_secret(
+        &mut self,
+        secret_id: &'static str,
+        key: &ImageMasterKey,
+    ) -> Result<(), QemuError> {
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1).max(1);
         let mut encoded_key = Zeroizing::new([0u8; 44]);
@@ -807,23 +847,27 @@ impl PrivateQmpClient {
         // or JSON Value. Both encoded and serialized key bytes are zeroized.
         let mut request = Zeroizing::new(Vec::with_capacity(192));
         request.extend_from_slice(
-            br#"{"execute":"object-add","arguments":{"qom-type":"secret","id":"rootglass-imk","props":{"format":"base64","data":""#,
+            br#"{"execute":"object-add","arguments":{"qom-type":"secret","id":""#,
         );
+        request.extend_from_slice(secret_id.as_bytes());
+        request.extend_from_slice(br#"","props":{"format":"base64","data":""#);
         request.extend_from_slice(&encoded_key[..]);
         request.extend_from_slice(b"\"}},\"id\":");
         request.extend_from_slice(id.to_string().as_bytes());
         request.extend_from_slice(b"}");
         encoded_key.zeroize();
         self.execute_request(&request, id, "adding QEMU secret")
+            .map(|_| ())
     }
 
     fn configure_encrypted_rootfs(
         &mut self,
         image_path: &Path,
         image_master_key: ImageMasterKey,
+        overlay: Option<(&Path, ImageMasterKey)>,
     ) -> Result<(), QemuError> {
         let filename = image_path.to_string_lossy().into_owned();
-        self.add_image_master_key(&image_master_key)?;
+        self.add_secret("rootglass-imk", &image_master_key)?;
         self.execute_value(
             "blockdev-add",
             serde_json::json!({
@@ -855,11 +899,19 @@ impl PrivateQmpClient {
             }),
             "opening encrypted rootfs",
         )?;
+        let rootfs_node = if let Some((overlay_path, overlay_key)) = overlay {
+            let size = self.encrypted_rootfs_size()?;
+            self.create_encrypted_overlay(overlay_path, image_path, size, &overlay_key)?;
+            drop(overlay_key);
+            "rootglass-encrypted-overlay"
+        } else {
+            "rootglass-encrypted-rootfs"
+        };
         self.execute_value(
             "device_add",
             serde_json::json!({
                 "driver": "virtio-blk-device",
-                "drive": "rootglass-encrypted-rootfs",
+                "drive": rootfs_node,
                 "id": "rootglass-encrypted-rootfs-device",
             }),
             "attaching encrypted rootfs",
@@ -869,12 +921,137 @@ impl PrivateQmpClient {
         Ok(())
     }
 
+    fn encrypted_rootfs_size(&mut self) -> Result<u64, QemuError> {
+        let result = self.execute_value_result(
+            "query-named-block-nodes",
+            serde_json::json!({}),
+            "querying encrypted rootfs size",
+        )?;
+        result
+            .as_array()
+            .and_then(|nodes| {
+                nodes.iter().find(|node| {
+                    node.get("node-name").and_then(serde_json::Value::as_str)
+                        == Some("rootglass-encrypted-rootfs")
+                })
+            })
+            .and_then(|node| node.get("image"))
+            .and_then(|image| image.get("virtual-size"))
+            .and_then(serde_json::Value::as_u64)
+            .filter(|size| *size > 0)
+            .ok_or(QemuError::EncryptedSetup {
+                stage: "reading encrypted rootfs size",
+            })
+    }
+
+    fn create_encrypted_overlay(
+        &mut self,
+        overlay_path: &Path,
+        backing_path: &Path,
+        size: u64,
+        overlay_key: &ImageMasterKey,
+    ) -> Result<(), QemuError> {
+        self.add_secret("rootglass-overlay-key", overlay_key)?;
+        let overlay_filename = overlay_path.to_string_lossy().into_owned();
+        let backing_filename = backing_path.to_string_lossy().into_owned();
+        self.execute_value(
+            "blockdev-add",
+            serde_json::json!({
+                "driver": "file",
+                "filename": overlay_filename,
+                "node-name": "rootglass-encrypted-overlay-file",
+            }),
+            "opening private overlay file",
+        )?;
+        self.execute_value(
+            "blockdev-create",
+            serde_json::json!({
+                "job-id": "rootglass-overlay-create",
+                "options": {
+                    "driver": "qcow2",
+                    "file": "rootglass-encrypted-overlay-file",
+                    "size": size,
+                    "backing-file": backing_filename,
+                    "backing-fmt": "luks",
+                    "encrypt": {
+                        "format": "luks",
+                        "key-secret": "rootglass-overlay-key",
+                        "cipher-alg": "aes-256",
+                        "cipher-mode": "xts",
+                        "ivgen-alg": "plain64",
+                        "ivgen-hash-alg": "sha256",
+                        "hash-alg": "sha256",
+                        "iter-time": 2000,
+                    },
+                },
+            }),
+            "creating encrypted overlay",
+        )?;
+        self.wait_for_blockdev_create()?;
+        self.execute_value(
+            "blockdev-add",
+            serde_json::json!({
+                "driver": "qcow2",
+                "node-name": "rootglass-encrypted-overlay",
+                "file": "rootglass-encrypted-overlay-file",
+                "backing": "rootglass-encrypted-rootfs",
+                "encrypt": {
+                    "format": "luks",
+                    "key-secret": "rootglass-overlay-key",
+                },
+            }),
+            "opening encrypted overlay",
+        )
+    }
+
+    fn wait_for_blockdev_create(&mut self) -> Result<(), QemuError> {
+        let deadline = Instant::now() + QMP_STARTUP_TIMEOUT;
+        loop {
+            let jobs = self.execute_value_result(
+                "query-jobs",
+                serde_json::json!({}),
+                "checking encrypted overlay creation",
+            )?;
+            let job = jobs
+                .as_array()
+                .and_then(|jobs| {
+                    jobs.iter().find(|job| {
+                        job.get("id").and_then(serde_json::Value::as_str)
+                            == Some("rootglass-overlay-create")
+                    })
+                })
+                .ok_or(QemuError::EncryptedSetup {
+                    stage: "waiting for encrypted overlay creation",
+                })?;
+            let status = job.get("status").and_then(serde_json::Value::as_str);
+            if status == Some("concluded") {
+                if job.get("error").is_some() {
+                    return Err(QemuError::EncryptedSetup {
+                        stage: "creating encrypted overlay",
+                    });
+                }
+                self.execute_value(
+                    "job-dismiss",
+                    serde_json::json!({"id": "rootglass-overlay-create"}),
+                    "closing encrypted overlay creation job",
+                )?;
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(QemuError::EncryptedSetup {
+                    stage: "waiting for encrypted overlay creation",
+                });
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+
     fn execute_request(
         &mut self,
         request: &[u8],
         id: u64,
         stage: &'static str,
-    ) -> Result<(), QemuError> {
+    ) -> Result<serde_json::Value, QemuError> {
         self.stream
             .write_all(request)
             .and_then(|()| self.stream.write_all(b"\r\n"))
@@ -889,7 +1066,7 @@ impl PrivateQmpClient {
             if response.error.is_some() || response.result.is_none() {
                 return Err(QemuError::EncryptedSetup { stage });
             }
-            return Ok(());
+            return Ok(response.result.expect("checked for QMP success result"));
         }
     }
 
@@ -933,6 +1110,8 @@ impl PrivateQmpClient {
 
 struct EncryptedTempDir {
     path: PathBuf,
+    qmp_dir: Option<PathBuf>,
+    preserve_on_drop: bool,
 }
 
 impl EncryptedTempDir {
@@ -948,7 +1127,13 @@ impl EncryptedTempDir {
                 builder.mode(0o700);
             }
             match builder.create(&path) {
-                Ok(()) => return Ok(Self { path }),
+                Ok(()) => {
+                    return Ok(Self {
+                        path,
+                        qmp_dir: None,
+                        preserve_on_drop: false,
+                    })
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(source) => {
                     return Err(QemuError::ProcessIo {
@@ -966,11 +1151,71 @@ impl EncryptedTempDir {
     fn image_path(&self) -> PathBuf {
         self.path.join("encrypted-rootfs.img")
     }
+
+    fn overlay_path(&self) -> PathBuf {
+        self.path.join("encrypted-overlay.qcow2")
+    }
+
+    fn create_overlay_file(&self) -> Result<PathBuf, QemuError> {
+        let path = self.overlay_path();
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(&path).map_err(|_| QemuError::EncryptedSetup {
+            stage: "creating private encrypted overlay",
+        })?;
+        file.sync_all().map_err(|_| QemuError::EncryptedSetup {
+            stage: "protecting private encrypted overlay",
+        })?;
+        Ok(path)
+    }
+
+    #[cfg(unix)]
+    fn create_qmp_dir(&mut self) -> Result<PathBuf, QemuError> {
+        let session_id = self
+            .path
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .ok_or(QemuError::EncryptedSetup {
+                stage: "validating private QMP directory name",
+            })?;
+        let path = Path::new("/tmp").join(format!("rgqmp-{session_id}"));
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder
+            .create(&path)
+            .map_err(|_| QemuError::EncryptedSetup {
+                stage: "creating private QMP directory",
+            })?;
+        self.qmp_dir = Some(path.clone());
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).map_err(|_| {
+                QemuError::EncryptedSetup {
+                    stage: "protecting private QMP directory",
+                }
+            })?;
+        }
+        Ok(path)
+    }
 }
 
 impl Drop for EncryptedTempDir {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
+        if !self.preserve_on_drop {
+            let _ = fs::remove_dir_all(&self.path);
+            if let Some(qmp_dir) = self.qmp_dir.take() {
+                let _ = fs::remove_dir_all(qmp_dir);
+            }
+        }
     }
 }
 
@@ -1035,10 +1280,10 @@ struct PrivateQmpEndpoint {
 
 #[cfg(unix)]
 impl PrivateQmpEndpoint {
-    fn bind(directory: &EncryptedTempDir) -> Result<Self, QemuError> {
+    fn bind(directory: &mut EncryptedTempDir) -> Result<Self, QemuError> {
         use std::os::unix::fs::PermissionsExt;
 
-        let socket_path = directory.path.join("q");
+        let socket_path = directory.create_qmp_dir()?.join("q");
         if socket_path.to_string_lossy().contains(',') {
             return Err(QemuError::EncryptedSetup {
                 stage: "validating private QMP socket path",
@@ -1260,13 +1505,16 @@ struct PrivateQmpEndpoint {
 
 #[cfg(windows)]
 impl PrivateQmpEndpoint {
-    fn bind(_directory: &EncryptedTempDir) -> Result<Self, QemuError> {
+    fn bind(directory: &EncryptedTempDir) -> Result<Self, QemuError> {
         use std::os::windows::io::{FromRawHandle, OwnedHandle};
-        use std::sync::atomic::{AtomicU64, Ordering};
-
-        static NEXT_PIPE_ID: AtomicU64 = AtomicU64::new(0);
-        let id = NEXT_PIPE_ID.fetch_add(1, Ordering::Relaxed);
-        let name = format!(r"\\.\pipe\rootglass-qmp-{}-{id}", std::process::id());
+        let session_id = directory
+            .path
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .ok_or(QemuError::EncryptedSetup {
+                stage: "validating private QMP pipe name",
+            })?;
+        let name = format!(r"\\.\pipe\{session_id}");
         let wide_name = name
             .encode_utf16()
             .chain(std::iter::once(0))
@@ -1433,6 +1681,7 @@ impl QemuProcess {
             supervised_args(&plan.args, port),
             move |_| QmpClient::connect(port, QMP_STARTUP_TIMEOUT).map(QmpControl::Tcp),
             None,
+            |_| Ok(()),
         )
     }
 
@@ -1458,15 +1707,65 @@ impl QemuProcess {
         image_master_key: ImageMasterKey,
         temp_parent: &Path,
     ) -> Result<Self, QemuError> {
+        Self::spawn_encrypted_configured(
+            plan,
+            artifact,
+            artifact_length,
+            image_master_key,
+            None,
+            temp_parent,
+            |_, _| Ok(()),
+        )
+    }
+
+    fn spawn_encrypted_with_overlay<R: Read>(
+        plan: &QemuLaunchPlan,
+        artifact: R,
+        artifact_length: u64,
+        image_master_key: ImageMasterKey,
+        overlay_key: ImageMasterKey,
+        temp_parent: &Path,
+        on_session: impl FnMut(Option<u32>, &Path) -> Result<(), std::io::Error>,
+    ) -> Result<Self, QemuError> {
+        Self::spawn_encrypted_configured(
+            plan,
+            artifact,
+            artifact_length,
+            image_master_key,
+            Some(overlay_key),
+            temp_parent,
+            on_session,
+        )
+    }
+
+    fn spawn_encrypted_configured<R: Read>(
+        plan: &QemuLaunchPlan,
+        artifact: R,
+        artifact_length: u64,
+        image_master_key: ImageMasterKey,
+        overlay_key: Option<ImageMasterKey>,
+        temp_parent: &Path,
+        mut on_session: impl FnMut(Option<u32>, &Path) -> Result<(), std::io::Error>,
+    ) -> Result<Self, QemuError> {
         if !plan.args.iter().any(|argument| argument == "-S") {
             return Err(QemuError::EncryptedSetup {
                 stage: "validating paused launch options",
             });
         }
-        let encrypted_temp_dir = EncryptedTempDir::create_in(temp_parent)?;
+        let mut encrypted_temp_dir = EncryptedTempDir::create_in(temp_parent)?;
+        let session_path = encrypted_temp_dir.path.clone();
+        on_session(None, &session_path).map_err(|source| QemuError::ProcessIo {
+            operation: "recording encrypted QEMU session directory",
+            source,
+        })?;
         let image_path =
             materialize_encrypted_image(&encrypted_temp_dir, artifact, artifact_length)?;
-        let endpoint = PrivateQmpEndpoint::bind(&encrypted_temp_dir)?;
+        let overlay_path = if overlay_key.is_some() {
+            Some(encrypted_temp_dir.create_overlay_file()?)
+        } else {
+            None
+        };
+        let endpoint = PrivateQmpEndpoint::bind(&mut encrypted_temp_dir)?;
         let qmp_argument = endpoint.qemu_argument();
         let args = supervised_args_with_qmp(&plan.args, qmp_argument);
         let mut process = Self::spawn_with_connector(
@@ -1478,6 +1777,12 @@ impl QemuProcess {
                     .map(QmpControl::Private)
             },
             Some(encrypted_temp_dir),
+            move |pid| {
+                on_session(Some(pid), &session_path).map_err(|source| QemuError::ProcessIo {
+                    operation: "recording encrypted QEMU session",
+                    source,
+                })
+            },
         )?;
         let setup_result = process
             .qmp
@@ -1485,7 +1790,11 @@ impl QemuProcess {
             .ok_or(QemuError::EncryptedSetup {
                 stage: "initializing encrypted QMP",
             })?
-            .configure_encrypted_rootfs(&image_path, image_master_key);
+            .configure_encrypted_rootfs(
+                &image_path,
+                image_master_key,
+                overlay_path.as_deref().zip(overlay_key),
+            );
         if let Err(error) = setup_result {
             if let Err(cleanup) = process.abort_and_reap() {
                 let stage = match &error {
@@ -1507,6 +1816,7 @@ impl QemuProcess {
         args: Vec<String>,
         connect_qmp: impl FnOnce(&mut Child) -> Result<QmpControl, QemuError>,
         encrypted_temp_dir: Option<EncryptedTempDir>,
+        on_spawn: impl FnOnce(u32) -> Result<(), QemuError>,
     ) -> Result<Self, QemuError> {
         let binary = qemu_executable_path(&plan.binary.path);
         let command_line = command_line(&binary, &args);
@@ -1528,6 +1838,11 @@ impl QemuProcess {
             command: command_line,
             source,
         })?;
+        if let Err(error) = on_spawn(child.id()) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
         let serial_input = child.stdin.take();
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
@@ -1639,6 +1954,18 @@ impl QemuProcess {
     /// Return the diagnostic log path for this run.
     pub fn diagnostic_log(&self) -> &std::path::Path {
         &self.diagnostic_log
+    }
+
+    /// Return the supervised child PID for a session lease.
+    pub fn process_id(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// Return the private temporary directory owned by an encrypted run.
+    pub fn encrypted_session_dir(&self) -> Option<&Path> {
+        self.encrypted_temp_dir
+            .as_ref()
+            .map(|directory| directory.path.as_path())
     }
 
     /// Return a bounded snapshot of QEMU stderr, kept separate from guest serial output.
@@ -1753,6 +2080,15 @@ impl Drop for QemuProcess {
     fn drop(&mut self) {
         if self.try_wait().ok().flatten().is_none() {
             let _ = self.stop(Duration::from_secs(1), Duration::from_secs(1));
+        }
+        if self
+            .child
+            .try_wait()
+            .map_or(true, |status| status.is_none())
+        {
+            if let Some(directory) = self.encrypted_temp_dir.as_mut() {
+                directory.preserve_on_drop = true;
+            }
         }
     }
 }
@@ -2290,13 +2626,26 @@ with client:
             trace_line = command
         with open(trace, "a") as output:
             output.write(trace_line + "\n")
-        stage = command + ("-" + str(command_counts[command]) if command == "blockdev-add" else "")
+        stage = command + ("-" + str(command_counts[command]) if command in ("blockdev-add", "object-add") else "")
         if command == timeout_at:
             time.sleep(30)
             continue
         if command == fail_at or stage == fail_at:
             description = arguments.get("props", {}).get("data", "injected QMP failure")
             response = {"error": {"class": "GenericError", "desc": description}, "id": request.get("id")}
+        elif command == "query-named-block-nodes":
+            response = {
+                "return": [{
+                    "node-name": "rootglass-encrypted-rootfs",
+                    "image": {"virtual-size": 1048576},
+                }],
+                "id": request.get("id"),
+            }
+        elif command == "query-jobs":
+            response = {
+                "return": [{"id": "rootglass-overlay-create", "status": "concluded"}],
+                "id": request.get("id"),
+            }
         else:
             response = {"return": {}, "id": request.get("id")}
         client.sendall(json.dumps(response).encode() + b"\r\n")
@@ -2333,6 +2682,17 @@ with client:
 
     fn test_image_master_key() -> ImageMasterKey {
         ImageMasterKey::new(Zeroizing::new([0x5a; 32]))
+    }
+
+    #[cfg(unix)]
+    fn private_qmp_dir_for(session_dir: &Path) -> PathBuf {
+        Path::new("/tmp").join(format!(
+            "rgqmp-{}",
+            session_dir
+                .file_name()
+                .expect("encrypted session has a name")
+                .to_string_lossy()
+        ))
     }
 
     fn assert_private_qemu_reaped(fake: &FakePrivateQemu) {
@@ -2398,6 +2758,16 @@ with client:
             0o700
         );
         assert!(!session_dir.join("q").exists());
+        #[cfg(unix)]
+        {
+            let qmp_dir = private_qmp_dir_for(&session_dir);
+            assert!(qmp_dir.is_dir());
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(qmp_dir).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
         assert_eq!(
             fs::metadata(&image).unwrap().permissions().mode() & 0o777,
             0o400
@@ -2483,6 +2853,189 @@ with client:
 
         assert!(error.to_string().contains("adding QEMU secret"));
         assert_private_qemu_reaped(&fake);
+    }
+
+    #[test]
+    fn encrypted_qmp_creates_independent_private_overlay_before_resuming() {
+        let fake = fake_private_qemu();
+        let plan = private_plan(&fake, "", "");
+        let root_key_text = BASE64_STANDARD.encode([0x5a; 32]);
+        let overlay_key_text = BASE64_STANDARD.encode([0x2a; 32]);
+        let artifact = b"verified ciphertext extent";
+        let mut process = QemuProcess::spawn_encrypted_with_overlay(
+            &plan,
+            std::io::Cursor::new(artifact),
+            artifact.len() as u64,
+            test_image_master_key(),
+            ImageMasterKey::new(Zeroizing::new([0x2a; 32])),
+            &fake.root,
+            |_, _| Ok(()),
+        )
+        .expect("encrypted overlay is created through QMP");
+
+        let session_dir = process
+            .encrypted_temp_dir
+            .as_ref()
+            .expect("encrypted launch retains its private temporary directory")
+            .path
+            .clone();
+        let overlay = session_dir.join("encrypted-overlay.qcow2");
+        assert!(overlay.is_file());
+        assert_eq!(
+            fs::metadata(&overlay).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::read_to_string(&fake.trace)
+                .unwrap()
+                .lines()
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+            vec![
+                "qmp_capabilities".to_string(),
+                "object-add:secret-present".to_string(),
+                "blockdev-add".to_string(),
+                "blockdev-add".to_string(),
+                "blockdev-add".to_string(),
+                "query-named-block-nodes".to_string(),
+                "object-add:secret-present".to_string(),
+                "blockdev-add".to_string(),
+                "blockdev-create".to_string(),
+                "query-jobs".to_string(),
+                "job-dismiss".to_string(),
+                "blockdev-add".to_string(),
+                "device_add".to_string(),
+                "cont".to_string(),
+            ]
+        );
+        wait_for_diagnostic_marker(&process, b"FAKE_QEMU_STDOUT_AFTER_SECRET");
+        let diagnostics = fs::read(process.diagnostic_log()).unwrap();
+        assert!(!diagnostics
+            .windows(root_key_text.len())
+            .any(|window| window == root_key_text.as_bytes()));
+        assert!(!diagnostics
+            .windows(overlay_key_text.len())
+            .any(|window| window == overlay_key_text.as_bytes()));
+        assert!(process.stderr_tail().unwrap().bytes.is_empty());
+
+        process
+            .stop(Duration::from_secs(1), Duration::from_secs(1))
+            .expect("encrypted guest stops and reaps QEMU");
+        assert!(!session_dir.exists());
+        #[cfg(unix)]
+        assert!(!private_qmp_dir_for(&session_dir).exists());
+        assert_private_qemu_reaped(&fake);
+    }
+
+    #[test]
+    fn concurrent_encrypted_instances_have_distinct_readonly_bases_and_overlays() {
+        let first_fake = fake_private_qemu();
+        let second_fake = fake_private_qemu();
+        let first_plan = private_plan(&first_fake, "", "");
+        let second_plan = private_plan(&second_fake, "", "");
+        let artifact = b"same verified base image";
+        let mut first = QemuProcess::spawn_encrypted_with_overlay(
+            &first_plan,
+            std::io::Cursor::new(artifact),
+            artifact.len() as u64,
+            test_image_master_key(),
+            ImageMasterKey::new(Zeroizing::new([0x11; 32])),
+            &first_fake.root,
+            |_, _| Ok(()),
+        )
+        .expect("first encrypted instance starts");
+        let mut second = QemuProcess::spawn_encrypted_with_overlay(
+            &second_plan,
+            std::io::Cursor::new(artifact),
+            artifact.len() as u64,
+            test_image_master_key(),
+            ImageMasterKey::new(Zeroizing::new([0x22; 32])),
+            &second_fake.root,
+            |_, _| Ok(()),
+        )
+        .expect("second encrypted instance starts");
+
+        let first_dir = first.encrypted_session_dir().unwrap().to_path_buf();
+        let second_dir = second.encrypted_session_dir().unwrap().to_path_buf();
+        assert_ne!(first_dir, second_dir);
+        #[cfg(unix)]
+        assert_ne!(
+            private_qmp_dir_for(&first_dir),
+            private_qmp_dir_for(&second_dir)
+        );
+        assert_ne!(
+            first_dir.join("encrypted-overlay.qcow2"),
+            second_dir.join("encrypted-overlay.qcow2")
+        );
+        for directory in [&first_dir, &second_dir] {
+            let base = directory.join("encrypted-rootfs.img");
+            let overlay = directory.join("encrypted-overlay.qcow2");
+            assert_eq!(fs::read(&base).unwrap(), artifact);
+            assert!(overlay.is_file());
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    fs::metadata(base).unwrap().permissions().mode() & 0o777,
+                    0o400
+                );
+                assert_eq!(
+                    fs::metadata(overlay).unwrap().permissions().mode() & 0o777,
+                    0o600
+                );
+            }
+        }
+
+        first
+            .stop(Duration::from_secs(1), Duration::from_secs(1))
+            .unwrap();
+        assert!(second.encrypted_session_dir().unwrap().exists());
+        #[cfg(unix)]
+        assert!(!private_qmp_dir_for(&first_dir).exists());
+        second
+            .stop(Duration::from_secs(1), Duration::from_secs(1))
+            .unwrap();
+        #[cfg(unix)]
+        assert!(!private_qmp_dir_for(&second_dir).exists());
+        assert_private_qemu_reaped(&first_fake);
+        assert_private_qemu_reaped(&second_fake);
+    }
+
+    #[test]
+    fn encrypted_overlay_qmp_failures_reap_qemu_and_remove_overlay() {
+        for stage in [
+            "object-add-2",
+            "query-named-block-nodes",
+            "blockdev-add-4",
+            "blockdev-create",
+            "query-jobs",
+            "job-dismiss",
+            "blockdev-add-5",
+            "device_add",
+            "cont",
+        ] {
+            let fake = fake_private_qemu();
+            let plan = private_plan(&fake, stage, "");
+            let artifact = b"verified ciphertext extent";
+            let error = QemuProcess::spawn_encrypted_with_overlay(
+                &plan,
+                std::io::Cursor::new(artifact),
+                artifact.len() as u64,
+                test_image_master_key(),
+                ImageMasterKey::new(Zeroizing::new([0x2a; 32])),
+                &fake.root,
+                |_, _| Ok(()),
+            )
+            .err()
+            .expect("injected overlay setup error aborts startup");
+            assert!(
+                !error
+                    .to_string()
+                    .contains(&BASE64_STANDARD.encode([0x2a; 32])),
+                "overlay secret remains redacted at {stage}"
+            );
+            assert_private_qemu_reaped(&fake);
+        }
     }
 
     #[test]
