@@ -1,6 +1,9 @@
 #[cfg(feature = "tui")]
 pub mod ui_model;
 
+#[cfg(feature = "tui")]
+mod encryption_workspace;
+
 #[cfg(feature = "desktop-ui")]
 mod gui;
 

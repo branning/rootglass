@@ -97,17 +97,32 @@ pub(crate) fn open_archive_verified_recipient_envelope(
     trust_store: &TrustStore,
     limits: &ImportLimits,
 ) -> Result<(VerificationReport, VerifiedRecipientEnvelope), ImportError> {
+    let verified = open_archive_verified(source, trust_store, limits)?;
+    let envelope = verified.verify_recipient_envelope()?;
+    Ok((verified.report().clone(), envelope))
+}
+
+/// Open a bounded ZIP archive after validating its container structure and
+/// publisher-signed contents. The returned reader keeps archive offsets
+/// behind the signature crate's verified-archive abstraction.
+pub(crate) fn open_archive_verified(
+    source: impl AsRef<Path>,
+    trust_store: &TrustStore,
+    limits: &ImportLimits,
+) -> Result<rootglass_signature::VerifiedArchive, ImportError> {
     let source = source.as_ref();
     validate_limits(limits)?;
     inspect_archive(source, limits)?;
-    let verified = open_verified_glass_archive_with_limits(
+    Ok(open_verified_glass_archive_with_limits(
         source,
         SIGNATURE_PATH,
         trust_store,
         &verification_limits(limits),
-    )?;
-    let envelope = verified.verify_recipient_envelope()?;
-    Ok((verified.report().clone(), envelope))
+    )?)
+}
+
+pub(crate) fn archive_content_sha256(source: impl AsRef<Path>) -> Result<String, ImportError> {
+    hash_archive_file(source.as_ref(), ImportLimits::default().max_archive_bytes)
 }
 
 /// Read the manifest schema from a bounded archive before the caller chooses

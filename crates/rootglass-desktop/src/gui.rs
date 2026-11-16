@@ -9,6 +9,7 @@ use crate::ui_model::{
     UiState,
 };
 use failure_view::RecoveryFailure;
+use crate::encryption_workspace::{EncryptedGuestState, EncryptionWorkspace};
 use gpui_kit::actions;
 use gpui_kit::base::StyledExt;
 use gpui_kit::component::button::*;
@@ -33,6 +34,8 @@ const ROOTGLASS_CONTEXT: &str = "RootglassWindow";
 
 struct RootglassWindow {
     model: UiModel,
+    encryption: EncryptionWorkspace,
+    encryption_open: bool,
     input: Entity<InputState>,
     running_tab: RunningTab,
     qemu_diagnostics: String,
@@ -138,7 +141,11 @@ impl Render for RootglassWindow {
                 this.file_drop_active = false;
                 if let Some(path) = paths.paths().first().cloned() {
                     desktop_smoke_event("ROOTGLASS_DESKTOP_DROP_SUBMIT");
-                    this.open_path(path, cx);
+                    if this.encryption_open {
+                        this.start_encrypted_verification(path, cx);
+                    } else {
+                        this.open_path(path, cx);
+                    }
                 }
                 cx.notify();
             }))
@@ -157,7 +164,9 @@ impl Render for RootglassWindow {
         );
         let recovery_failure = RecoveryFailure::from_ui_state(&self.model.state);
         let is_recovery_failure = recovery_failure.is_some();
-        let main = if let UiState::PublisherReview(review) = &self.model.state {
+        let main = if self.encryption_open {
+            self.encryption_view(cx)
+        } else if let UiState::PublisherReview(review) = &self.model.state {
             div()
                 .flex_1()
                 .child(publisher_review_view(review, &self.model.trust_policy, cx))
@@ -297,6 +306,32 @@ impl Render for RootglassWindow {
             }
             div().flex_1().child(main)
         };
+        let page_navigation = div()
+            .h_flex()
+            .gap_2()
+            .px_4()
+            .py_2()
+            .bg(cx.theme().sidebar)
+            .child(
+                Button::new("page-library")
+                    .ghost()
+                    .label("LIBRARY")
+                    .selected(!self.encryption_open)
+                    .on_click(cx.listener(|this, _, _, cx| this.open_library(cx))),
+            )
+            .child(
+                Button::new("page-encryption")
+                    .ghost()
+                    .label("ENCRYPTION")
+                    .selected(self.encryption_open)
+                    .on_click(cx.listener(|this, _, _, cx| this.open_encryption(cx))),
+            );
+        let main = div()
+            .v_flex()
+            .flex_1()
+            .min_h(px(0.0))
+            .child(page_navigation)
+            .child(main);
         let mut layout = root.child(
             div()
                 .h_flex()
@@ -305,7 +340,11 @@ impl Render for RootglassWindow {
                 .child(sidebar_view(cx))
                 .child(main),
         );
-        if !is_active_run && !is_recovery_failure && !self.model.console.is_empty() {
+        if !self.encryption_open
+            && !is_active_run
+            && !is_recovery_failure
+            && !self.model.console.is_empty()
+        {
             layout = layout.child(
                 div()
                     .v_flex()
@@ -756,7 +795,7 @@ fn sidebar_view(cx: &App) -> Div {
         .child(muted_text("Settings", cx).p_2())
         .child(div().flex_1())
         .child(eyebrow("ON THIS COMPUTER", cx))
-        .child(muted_text("One glass at a time", cx))
+        .child(muted_text("Encrypted slots follow signed policy", cx))
         .child(muted_text(
             format!("{} · {}", std::env::consts::OS, std::env::consts::ARCH),
             cx,
@@ -765,6 +804,59 @@ fn sidebar_view(cx: &App) -> Div {
 
 fn section_heading(label: impl Into<String>, cx: &App) -> Div {
     div().pt_2().child(eyebrow(label, cx))
+}
+
+fn encryption_card(label: &str, cx: &App) -> Div {
+    div()
+        .v_flex()
+        .gap_2()
+        .p_4()
+        .bg(cx.theme().group_box)
+        .child(section_heading(label, cx))
+}
+
+fn capability_label(enabled: bool) -> &'static str {
+    if enabled {
+        "available"
+    } else {
+        "unavailable"
+    }
+}
+
+fn error_text(text: impl Into<String>, cx: &App) -> Div {
+    div()
+        .child(text.into())
+        .text_size(px(12.0))
+        .text_color(cx.theme().foreground)
+}
+
+fn verification_row(label: &str, check: &rootglass_app::VerificationCheck, cx: &App) -> Div {
+    let state = match check.status {
+        rootglass_app::VerificationStatus::Verified => "VERIFIED",
+        rootglass_app::VerificationStatus::Failed => "FAILED",
+        rootglass_app::VerificationStatus::NotChecked => "NOT CHECKED",
+    };
+    div()
+        .v_flex()
+        .gap_1()
+        .py_2()
+        .border_b_1()
+        .border_color(cx.theme().border)
+        .child(
+            div()
+                .h_flex()
+                .items_center()
+                .gap_2()
+                .child(eyebrow(label, cx))
+                .child(div().flex_1())
+                .child(
+                    div()
+                        .child(state)
+                        .font_family(cx.theme().mono_font_family.clone())
+                        .text_size(px(11.0)),
+                ),
+        )
+        .child(muted_text(check.detail.clone(), cx))
 }
 
 fn info_row(label: impl Into<String>, value: &str, cx: &App) -> Div {
@@ -916,6 +1008,9 @@ impl RootglassWindow {
             }
             if view
                 .update(cx, |view, cx| {
+                    if let Ok(events) = &result {
+                        view.encryption.apply_events(events);
+                    }
                     view.model.apply_poll_result(result);
                     if guest_ready {
                         view.failure_guest_was_ready = true;
@@ -944,10 +1039,15 @@ impl RootglassWindow {
             cx.subscribe_in(&input, window, |view, state, event, window, cx| {
                 if let InputEvent::PressEnter { .. } = event {
                     let text = state.read(cx).value().to_string();
-                    if let Some((run, bytes)) = view.model.input_request(&text) {
+                    let encrypted_request = view.encryption.console_input_request(&text);
+                    let request = encrypted_request
+                        .clone()
+                        .or_else(|| view.model.input_request(&text));
+                    if let Some((run, bytes)) = request {
                         desktop_smoke_event("ROOTGLASS_DESKTOP_SERIAL_INPUT_REQUEST");
                         let service = view.model.shared_service();
                         let background_executor = cx.background_executor().clone();
+                        let is_encrypted = encrypted_request.is_some();
                         cx.spawn(async move |view, cx| {
                             let service_for_write = service.clone();
                             let run_for_write = run.clone();
@@ -964,7 +1064,14 @@ impl RootglassWindow {
                                 } else {
                                     "ROOTGLASS_DESKTOP_SERIAL_INPUT_FAILED"
                                 });
-                                view.model.finish_input(&run, result);
+                                if is_encrypted {
+                                    view.encryption.finish_serial_input(
+                                        &run,
+                                        result.map_err(|error| error.to_string()),
+                                    );
+                                } else {
+                                    view.model.finish_input(&run, result);
+                                }
                                 cx.notify();
                             });
                         })
@@ -981,8 +1088,10 @@ impl RootglassWindow {
             .is_some()
             .then(|| cx.new(|cx| embedded_terminal::EmbeddedTerminal::new(window, cx)));
 
-        Self {
+        let mut view = Self {
             model,
+            encryption: EncryptionWorkspace::default(),
+            encryption_open: false,
             input,
             running_tab: RunningTab::Console,
             qemu_diagnostics: String::new(),
@@ -1001,7 +1110,11 @@ impl RootglassWindow {
             _library_task,
             _poll_task,
             _input_subscription,
+        };
+        if std::env::var_os("ROOTGLASS_DESKTOP_SMOKE_ENCRYPTION_PAGE").is_some() {
+            view.open_encryption(cx);
         }
+        view
     }
 
     fn on_open_bundle(&mut self, _: &OpenBundle, _: &mut Window, cx: &mut Context<Self>) {
@@ -1014,6 +1127,694 @@ impl RootglassWindow {
 
     fn on_quit(&mut self, _: &Quit, window: &mut Window, _: &mut Context<Self>) {
         window.remove_window();
+    }
+
+    fn open_library(&mut self, cx: &mut Context<Self>) {
+        self.encryption_open = false;
+        cx.notify();
+    }
+
+    fn open_encryption(&mut self, cx: &mut Context<Self>) {
+        self.encryption_open = true;
+        self.refresh_encryption_status(cx);
+        cx.notify();
+    }
+
+    fn refresh_encryption_status(&mut self, cx: &mut Context<Self>) {
+        let refresh_identities = self.encryption.begin_identity_refresh();
+        let refresh_instances = self.encryption.begin_instance_refresh();
+        if !refresh_identities && !refresh_instances {
+            return;
+        }
+        let service = self.model.shared_service();
+        let background_executor = cx.background_executor().clone();
+        cx.spawn(async move |view, cx| {
+            let service_for_refresh = service.clone();
+            let (identities, instances) = background_executor
+                .spawn(async move {
+                    match lock_service(&service_for_refresh) {
+                        Ok(mut service) => (
+                            service.recipient_identities(),
+                            service.list_encrypted_instances(),
+                        ),
+                        Err(error) => (Err(error.clone()), Err(error)),
+                    }
+                })
+                .await;
+            let _ = view.update(cx, |view, cx| {
+                if refresh_identities {
+                    view.encryption
+                        .finish_identity_refresh(identities.map_err(|error| error.to_string()));
+                }
+                if refresh_instances {
+                    view.encryption
+                        .finish_instance_refresh(instances.map_err(|error| error.to_string()));
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn open_encrypted_archive(&mut self, cx: &mut Context<Self>) {
+        let selection = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Select an encrypted Rootglass .glass archive".into()),
+        });
+        desktop_smoke_event("ROOTGLASS_DESKTOP_ENCRYPTION_PICKER_OPEN");
+        cx.spawn(async move |view, cx| {
+            let selected = match selection.await {
+                Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                Ok(Ok(None)) | Ok(Err(_)) | Err(_) => None,
+            };
+            let Some(path) = selected else { return };
+            let _ = view.update(cx, |view, cx| {
+                view.start_encrypted_verification(path, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn start_encrypted_verification(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.encryption.select_archive(path);
+        let Some(path) = self.encryption.begin_verification() else {
+            return;
+        };
+        self.encryption.begin_instance_refresh();
+        let service = self.model.shared_service();
+        let background_executor = cx.background_executor().clone();
+        desktop_smoke_event("ROOTGLASS_DESKTOP_ENCRYPTION_VERIFY_START");
+        cx.notify();
+        cx.spawn(async move |view, cx| {
+            let service_for_verify = service.clone();
+            let (verification, instances) = background_executor
+                .spawn(async move {
+                    match lock_service(&service_for_verify) {
+                        Ok(mut service) => (
+                            service.inspect_encrypted_archive(&path),
+                            service.list_encrypted_instances(),
+                        ),
+                        Err(error) => (Err(error.clone()), Err(error)),
+                    }
+                })
+                .await;
+            let _ = view.update(cx, |view, cx| {
+                view.encryption
+                    .finish_verification(verification.map_err(|error| error.to_string()));
+                view.encryption
+                    .finish_instance_refresh(instances.map_err(|error| error.to_string()));
+                desktop_smoke_event("ROOTGLASS_DESKTOP_ENCRYPTION_VERIFY_DONE");
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn start_encrypted_guest(&mut self, cx: &mut Context<Self>) {
+        let Some((path, recipient_id)) = self.encryption.begin_launch() else {
+            return;
+        };
+        let known_sessions = self
+            .encryption
+            .instances
+            .iter()
+            .filter_map(|instance| instance.stable_id.clone())
+            .collect::<Vec<_>>();
+        let service = self.model.shared_service();
+        let background_executor = cx.background_executor().clone();
+        let owner_pid = std::process::id();
+        let content_sha256 = self
+            .encryption
+            .verification
+            .as_ref()
+            .and_then(|verification| verification.content_sha256.clone());
+        desktop_smoke_event("ROOTGLASS_DESKTOP_ENCRYPTED_START_REQUEST");
+        cx.notify();
+        cx.spawn(async move |view, cx| {
+            let service_for_start = service.clone();
+            let (launch, instances) = background_executor
+                .spawn(async move {
+                    match lock_service(&service_for_start) {
+                        Ok(mut service) => {
+                            let launch = service.start_encrypted(&path, Some(&recipient_id));
+                            let instances = service.list_encrypted_instances();
+                            (launch, instances)
+                        }
+                        Err(error) => (Err(error.clone()), Err(error)),
+                    }
+                })
+                .await;
+            let stable_id = match (&launch, &instances) {
+                (Ok(_), Ok(instances)) => instances
+                    .iter()
+                    .find(|instance| {
+                        instance.owner_pid == owner_pid
+                            && content_sha256
+                                .as_ref()
+                                .is_none_or(|digest| &instance.content_sha256 == digest)
+                            && !known_sessions.contains(&instance.run_id)
+                    })
+                    .map(|instance| instance.run_id.clone()),
+                _ => None,
+            };
+            let result = launch.map(|run| (run, stable_id));
+            let _ = view.update(cx, |view, cx| {
+                let started = result.is_ok();
+                view.encryption
+                    .finish_launch(result.map_err(|error| error.to_string()));
+                view.encryption
+                    .finish_instance_refresh(instances.map_err(|error| error.to_string()));
+                desktop_smoke_event(if started {
+                    "ROOTGLASS_DESKTOP_ENCRYPTED_START_ACCEPTED"
+                } else {
+                    "ROOTGLASS_DESKTOP_ENCRYPTED_START_FAILED"
+                });
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn stop_encrypted_guest(&mut self, run: rootglass_app::RunId, cx: &mut Context<Self>) {
+        if !self.encryption.begin_stop(&run) {
+            return;
+        }
+        let service = self.model.shared_service();
+        let background_executor = cx.background_executor().clone();
+        let run_for_stop = run.clone();
+        cx.notify();
+        cx.spawn(async move |view, cx| {
+            let service_for_stop = service.clone();
+            let result = background_executor
+                .spawn(async move {
+                    lock_service(&service_for_stop)
+                        .and_then(|mut service| service.stop(&run_for_stop))
+                })
+                .await;
+            let _ = view.update(cx, |view, cx| {
+                let stopped = result.is_ok();
+                view.encryption
+                    .finish_stop(&run, result.map_err(|error| error.to_string()));
+                desktop_smoke_event(if stopped {
+                    "ROOTGLASS_DESKTOP_ENCRYPTED_STOPPED"
+                } else {
+                    "ROOTGLASS_DESKTOP_ENCRYPTED_STOP_FAILED"
+                });
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn stop_remote_encrypted_guest(&mut self, stable_id: String, cx: &mut Context<Self>) {
+        if !self.encryption.begin_remote_stop(&stable_id) {
+            return;
+        }
+        self.encryption.begin_instance_refresh();
+        let service = self.model.shared_service();
+        let background_executor = cx.background_executor().clone();
+        let stable_id_for_stop = stable_id.clone();
+        cx.notify();
+        cx.spawn(async move |view, cx| {
+            let service_for_stop = service.clone();
+            let (stop, instances) = background_executor
+                .spawn(async move {
+                    match lock_service(&service_for_stop) {
+                        Ok(mut service) => {
+                            let stop = service.request_stop_encrypted_instance(&stable_id_for_stop);
+                            let instances = service.list_encrypted_instances();
+                            (stop, instances)
+                        }
+                        Err(error) => (Err(error.clone()), Err(error)),
+                    }
+                })
+                .await;
+            let _ = view.update(cx, |view, cx| {
+                view.encryption
+                    .finish_remote_stop(&stable_id, stop.map_err(|error| error.to_string()));
+                view.encryption
+                    .finish_instance_refresh(instances.map_err(|error| error.to_string()));
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn refresh_encrypted_instances(&mut self, cx: &mut Context<Self>) {
+        if !self.encryption.begin_instance_refresh() {
+            return;
+        }
+        let service = self.model.shared_service();
+        let background_executor = cx.background_executor().clone();
+        cx.notify();
+        cx.spawn(async move |view, cx| {
+            let service_for_list = service.clone();
+            let result = background_executor
+                .spawn(async move {
+                    lock_service(&service_for_list)
+                        .and_then(|mut service| service.list_encrypted_instances())
+                })
+                .await;
+            let _ = view.update(cx, |view, cx| {
+                view.encryption
+                    .finish_instance_refresh(result.map_err(|error| error.to_string()));
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn encryption_view(&mut self, cx: &mut Context<Self>) -> Div {
+        let mut page = div()
+            .v_flex()
+            .flex_1()
+            .min_h(px(0.0))
+            .gap_4()
+            .p_6()
+            .bg(cx.theme().background)
+            .child(
+                div()
+                    .v_flex()
+                    .gap_1()
+                    .child(eyebrow("LOCAL IDENTITY · VERIFICATION · WORKSPACES", cx))
+                    .child(page_title("Encryption", cx))
+                    .child(muted_text(
+                        "Verify encrypted bundles before launch. Private identity material stays in the operating-system credential store.",
+                        cx,
+                    )),
+            );
+
+        let mut identity_panel = encryption_card("LOCAL AGE IDENTITIES", cx);
+        identity_panel = identity_panel.child(
+            div().h_flex().items_center().child(div().flex_1()).child(
+                Button::new("refresh-encryption-identities")
+                    .secondary()
+                    .label(if self.encryption.identity_loading {
+                        "LOADING…"
+                    } else {
+                        "REFRESH"
+                    })
+                    .disabled(self.encryption.identity_loading)
+                    .on_click(cx.listener(|this, _, _, cx| this.refresh_encryption_status(cx))),
+            ),
+        );
+        if let Some(capabilities) = self.encryption.identity_capabilities {
+            identity_panel = identity_panel
+                .child(info_row("Provider", capabilities.provider_id.id(), cx))
+                .child(info_row(
+                    "Hardware",
+                    if capabilities.hardware_backed {
+                        "Provider reports hardware-backed storage."
+                    } else {
+                        "Software-backed Age identity; no TPM or Secure Enclave claim."
+                    },
+                    cx,
+                ))
+                .child(info_row(
+                    "Operations",
+                    &format!(
+                        "Create: {} · Unwrap: {}",
+                        capability_label(capabilities.can_create),
+                        capability_label(capabilities.can_unwrap)
+                    ),
+                    cx,
+                ));
+        }
+        if self.encryption.identity_loading {
+            identity_panel = identity_panel.child(muted_text(
+                "Reading public identities from the operating-system credential store…",
+                cx,
+            ));
+        } else if let Some(error) = &self.encryption.identity_error {
+            identity_panel = identity_panel.child(error_text(error, cx));
+        } else if self.encryption.identities.is_empty() {
+            identity_panel = identity_panel.child(muted_text(
+                "No Age identities are available. Create one with `rootglass identity create`.",
+                cx,
+            ));
+        } else {
+            for identity in self.encryption.identities.clone() {
+                let recipient_id = identity.recipient_id.clone();
+                let copy_id = recipient_id.clone();
+                let label = identity
+                    .label
+                    .clone()
+                    .unwrap_or_else(|| "Age identity".to_string());
+                identity_panel = identity_panel.child(
+                    div()
+                        .h_flex()
+                        .items_center()
+                        .gap_3()
+                        .py_2()
+                        .border_b_1()
+                        .border_color(cx.theme().border)
+                        .child(
+                            div()
+                                .v_flex()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .child(label)
+                                .child(
+                                    div()
+                                        .child(recipient_id.clone())
+                                        .font_family(cx.theme().mono_font_family.clone())
+                                        .text_size(px(11.0)),
+                                )
+                                .child(muted_text(
+                                    format!("Public key: {}", identity.public_key),
+                                    cx,
+                                )),
+                        )
+                        .child(
+                            Button::new(format!("copy-recipient-{}", identity.recipient_id))
+                                .secondary()
+                                .label("COPY FINGERPRINT")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(
+                                        copy_id.clone(),
+                                    ));
+                                    this.encryption.copy_notice =
+                                        Some("Recipient fingerprint copied.".to_string());
+                                    cx.notify();
+                                })),
+                        ),
+                );
+            }
+        }
+        if let Some(notice) = &self.encryption.copy_notice {
+            identity_panel = identity_panel.child(muted_text(notice.clone(), cx));
+        }
+
+        let mut verification_panel = encryption_card("BUNDLE VERIFICATION", cx);
+        verification_panel = verification_panel.child(
+            div().h_flex().items_center().child(div().flex_1()).child(
+                Button::new("choose-encrypted-bundle")
+                    .primary()
+                    .label("VERIFY .GLASS")
+                    .disabled(self.encryption.verification_loading)
+                    .on_click(cx.listener(|this, _, _, cx| this.open_encrypted_archive(cx))),
+            ),
+        );
+        if let Some(path) = &self.encryption.archive_path {
+            verification_panel =
+                verification_panel.child(info_row("Archive", &path.display().to_string(), cx));
+        }
+        if self.encryption.verification_loading {
+            verification_panel = verification_panel.child(muted_text(
+                "Verifying publisher signature, recipient authority, encrypted rootfs, and signed policy…",
+                cx,
+            ));
+        }
+        if let Some(error) = &self.encryption.verification_error {
+            verification_panel = verification_panel.child(error_text(error, cx));
+        }
+        if let Some(verification) = &self.encryption.verification {
+            verification_panel = verification_panel
+                .child(verification_row(
+                    "Publisher signature",
+                    &verification.publisher_signature,
+                    cx,
+                ))
+                .child(verification_row(
+                    "Recipient envelope",
+                    &verification.recipient_envelope,
+                    cx,
+                ))
+                .child(verification_row(
+                    "Encrypted rootfs",
+                    &verification.encrypted_rootfs,
+                    cx,
+                ))
+                .child(verification_row(
+                    "Signed policy",
+                    &verification.signed_policy,
+                    cx,
+                ));
+            if let Some(limit) = verification.max_concurrent_instances {
+                verification_panel = verification_panel.child(info_row(
+                    "Instance capacity",
+                    &format!(
+                        "{} of {limit} signed concurrent instance(s) in use",
+                        self.encryption.active_instance_count_for_selected_archive()
+                    ),
+                    cx,
+                ));
+            }
+            let mut recipients = div()
+                .v_flex()
+                .gap_1()
+                .child(section_heading("AUTHORIZED RECIPIENTS", cx));
+            if verification.recipients.is_empty() {
+                recipients = recipients.child(muted_text(
+                    "No recipients were authenticated from the envelope.",
+                    cx,
+                ));
+            } else {
+                for recipient in &verification.recipients {
+                    let local = self
+                        .encryption
+                        .local_recipient_available(&recipient.recipient_id);
+                    let selected = self.encryption.selected_recipient_id.as_deref()
+                        == Some(recipient.recipient_id.as_str());
+                    let recipient_id = recipient.recipient_id.clone();
+                    recipients = recipients.child(
+                        div()
+                            .h_flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .child(recipient_id.clone())
+                                    .font_family(cx.theme().mono_font_family.clone())
+                                    .text_size(px(11.0)),
+                            )
+                            .child(muted_text(recipient.provider_id.clone(), cx))
+                            .child(
+                                Button::new(format!("select-recipient-{}", recipient.recipient_id))
+                                    .secondary()
+                                    .selected(selected)
+                                    .label(if selected {
+                                        "SELECTED"
+                                    } else if local {
+                                        "USE THIS IDENTITY"
+                                    } else {
+                                        "NOT AVAILABLE"
+                                    })
+                                    .disabled(!local || selected)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.encryption.select_recipient(&recipient_id);
+                                        cx.notify();
+                                    })),
+                            ),
+                    );
+                }
+            }
+            verification_panel = verification_panel.child(recipients);
+            if self.encryption.identity_capabilities.is_some()
+                && !verification.recipients.is_empty()
+                && self.encryption.selected_recipient_id.is_none()
+            {
+                verification_panel = verification_panel.child(muted_text(
+                    "No local identity matches these recipients. The bundle is verified, but encrypted launch is unavailable.",
+                    cx,
+                ));
+            }
+            verification_panel = verification_panel.child(
+                Button::new("start-encrypted-instance")
+                    .primary()
+                    .label(if self.encryption.launching {
+                        "STARTING…"
+                    } else {
+                        "START ENCRYPTED GUEST"
+                    })
+                    .disabled(!self.encryption.can_launch())
+                    .on_click(cx.listener(|this, _, _, cx| this.start_encrypted_guest(cx))),
+            );
+            if let Some(error) = &self.encryption.launch_error {
+                verification_panel = verification_panel.child(error_text(error, cx));
+            }
+        }
+
+        let mut instances_panel = encryption_card("ENCRYPTED WORKSPACES", cx);
+        instances_panel = instances_panel.child(
+            div().h_flex().items_center().child(div().flex_1()).child(
+                Button::new("refresh-encrypted-instances")
+                    .secondary()
+                    .label(if self.encryption.instance_refreshing {
+                        "REFRESHING…"
+                    } else {
+                        "REFRESH"
+                    })
+                    .disabled(self.encryption.instance_refreshing)
+                    .on_click(cx.listener(|this, _, _, cx| this.refresh_encrypted_instances(cx))),
+            ),
+        );
+        if self.encryption.instances.is_empty() {
+            instances_panel = instances_panel.child(muted_text(
+                "No encrypted guest has been started in this window.",
+                cx,
+            ));
+        } else {
+            let guests = self.encryption.instances.clone();
+            let mut tabs = div().h_flex().gap_2().overflow_x_scrollbar();
+            for guest in &guests {
+                let run = guest.run_id.clone();
+                let selected = self.encryption.focused_run.as_ref() == Some(&run);
+                tabs = tabs.child(
+                    Button::new(format!("encrypted-workspace-{}", guest.run_id.0))
+                        .ghost()
+                        .selected(selected)
+                        .label(format!("{} · {}", guest.name, guest.state.label()))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.encryption.focus(&run);
+                            cx.notify();
+                        })),
+                );
+            }
+            instances_panel = instances_panel.child(tabs);
+            if let Some(guest) = self.encryption.focused_instance().cloned() {
+                let run = guest.run_id.clone();
+                let mut guest_panel = div()
+                    .v_flex()
+                    .gap_2()
+                    .p_3()
+                    .bg(cx.theme().background)
+                    .child(
+                        div()
+                            .h_flex()
+                            .items_center()
+                            .gap_3()
+                            .child(page_title(guest.name.clone(), cx))
+                            .child(muted_text(guest.state.label(), cx))
+                            .child(div().flex_1())
+                            .child(
+                                Button::new(format!("stop-encrypted-{}", guest.run_id.0))
+                                    .secondary()
+                                    .label(if guest.stop_requested {
+                                        "STOPPING…"
+                                    } else {
+                                        "STOP GUEST"
+                                    })
+                                    .disabled(!guest.state.is_active() || guest.stop_requested)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.stop_encrypted_guest(run.clone(), cx)
+                                    })),
+                            ),
+                    );
+                match &guest.state {
+                    EncryptedGuestState::Failed { summary, detail } => {
+                        guest_panel =
+                            guest_panel.child(error_text(format!("{summary}\n{detail}"), cx));
+                    }
+                    EncryptedGuestState::Exited {
+                        exit_code,
+                        expected,
+                    } => {
+                        guest_panel = guest_panel.child(muted_text(
+                            format!("QEMU exited; code {exit_code:?}; expected: {expected}"),
+                            cx,
+                        ));
+                    }
+                    _ => {}
+                }
+                if let Some(error) = &guest.operation_error {
+                    guest_panel = guest_panel.child(error_text(error, cx));
+                }
+                let console = if guest.console.is_empty() {
+                    "No serial output received yet.".to_string()
+                } else {
+                    fenced_text(&guest.console)
+                };
+                guest_panel = guest_panel
+                    .child(
+                        div()
+                            .h(px(240.0))
+                            .p_3()
+                            .bg(cx.theme().group_box)
+                            .overflow_y_scrollbar()
+                            .child(
+                                TextView::markdown(
+                                    format!("encrypted-console-{}", guest.run_id.0),
+                                    console,
+                                )
+                                .selectable(true)
+                                .selection_format(SelectionFormat::Plain),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .h_flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                Input::new(&self.input)
+                                    .disabled(guest.state != EncryptedGuestState::Running),
+                            )
+                            .child(muted_text("Enter sends to this guest", cx)),
+                    );
+                if guest.console_truncated {
+                    guest_panel = guest_panel.child(muted_text(
+                        "Older serial output was dropped to keep the workspace bounded.",
+                        cx,
+                    ));
+                }
+                instances_panel = instances_panel.child(guest_panel);
+            }
+        }
+        if let Some(error) = &self.encryption.instance_error {
+            instances_panel = instances_panel.child(error_text(error, cx));
+        }
+        for instance in self
+            .encryption
+            .remote_instances
+            .iter()
+            .filter(|instance| instance.owner_pid != std::process::id())
+        {
+            let stable_id = instance.run_id.clone();
+            let stop_pending = self.encryption.remote_stop_pending(&stable_id);
+            instances_panel = instances_panel.child(
+                div()
+                    .h_flex()
+                    .items_center()
+                    .gap_2()
+                    .py_2()
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    .child(div().flex_1().child(format!(
+                        "External encrypted instance · PID {} · slot {} · {}",
+                        instance.owner_pid,
+                        instance.slot_index + 1,
+                        &instance.content_sha256[..12]
+                    )))
+                    .child(muted_text(
+                        "Serial output is available in its owner window.",
+                        cx,
+                    ))
+                    .child(
+                        Button::new(format!("stop-external-{}", instance.run_id))
+                            .secondary()
+                            .label(if stop_pending {
+                                "STOPPING…"
+                            } else {
+                                "REQUEST STOP"
+                            })
+                            .disabled(stop_pending)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.stop_remote_encrypted_guest(stable_id.clone(), cx);
+                            })),
+                    ),
+            );
+        }
+
+        div().flex_1().min_h(px(0.0)).child(
+            page.child(identity_panel)
+                .child(verification_panel)
+                .child(instances_panel)
+                .overflow_y_scrollbar(),
+        )
     }
 
     #[cfg(feature = "embedded-terminal")]

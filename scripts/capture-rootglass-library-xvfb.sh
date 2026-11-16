@@ -77,6 +77,11 @@ fi
 
 xdotool windowfocus --sync "$window_id"
 sleep 1
-import -window "$window_id" "${artifact_dir}/00-empty-library.png"
-identify -format '%f: %wx%h %m\n' "${artifact_dir}/00-empty-library.png"
+if [[ -n "${ROOTGLASS_DESKTOP_SMOKE_ENCRYPTION_PAGE:-}" ]]; then
+  screenshot="${artifact_dir}/00-encryption-workspace.png"
+else
+  screenshot="${artifact_dir}/00-empty-library.png"
+fi
+import -window "$window_id" "$screenshot"
+identify -format '%f: %wx%h %m\n' "$screenshot"
 cat "$log_file" "$event_file" 2>/dev/null || true
