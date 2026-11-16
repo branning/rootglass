@@ -576,3 +576,9 @@
 {"version":1,"task_id":"IZA7UK","kind":"claim","at":"2026-11-16T01:08:43.133584499Z","agent":"codex@worker-1"}
 {"version":1,"task_id":"IZA7UK","kind":"result","at":"2026-11-16T01:45:25.04257991Z","agent":"codex@worker-1","text":"Local checks: app 46/46; signature policy 1/1; fmt/Clippy and macOS/Windows checks passed."}
 {"version":1,"task_id":"IZA7UK","kind":"result","at":"2026-11-16T01:50:38.064087488Z","agent":"codex@worker-1","text":"Checks: app tests 46/46; signature 1/1; Clippy and fmt pass; macOS/Windows compile checks passed."}
+{"version":1,"task_id":"IZA7UK","kind":"result","at":"2026-11-16T01:52:00.500325388Z","agent":"codex@worker-1","text":"PR: https://github.com/branning/rootglass/pull/151 open; pending required CI and review."}
+{"version":1,"task_id":"IZA7UK","kind":"done","at":"2026-11-16T02:09:50.461169571Z","agent":"codex@worker-1","text":"Merged #151 (b299001); required CI and embedded guest workflow passed."}
+{"version":1,"task_id":"7ZK6R7","kind":"open","at":"2026-11-16T02:10:48.542963462Z","text":"E00–E04 are complete; Age provider and verified policy are available."}
+{"version":1,"task_id":"7ZK6R7","kind":"claim","at":"2026-11-16T02:10:48.561973935Z","agent":"codex@worker-1"}
+{"version":1,"task_id":"7ZK6R7","kind":"result","at":"2026-11-16T02:28:51.308882715Z","agent":"codex@worker-1","text":"app 51/51; core 15/15; Clippy clean; fmt and diff-check clean; negatives precede key access"}
+{"version":1,"task_id":"7ZK6R7","kind":"result","at":"2026-11-16T02:37:06.896679347Z","agent":"codex@worker-1","text":"Asset-free workspace tests pass after narrowing the schema gate; schema-1 launch checks are preserved"}

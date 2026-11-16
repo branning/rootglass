@@ -4,14 +4,18 @@ pub mod import;
 pub mod registry;
 pub mod state;
 
+use rootglass_core::identity::{
+    IdentityProviderError, ImageMasterKey, ProviderCapabilities, RecipientIdentityProvider,
+};
 use rootglass_core::runtime_assets::RuntimeAssetsResolver;
 use rootglass_core::storage::{LocalWritableOverlay, WritableOverlaySelection};
 use rootglass_core::{
     CoreError, HostCapabilities, LaunchRequest, LifecycleState, RootglassRuntime,
 };
+use rootglass_manifest::MinimumRecipientHardware;
 use rootglass_qemu::{QemuLaunchPlan, QemuProcess, SerialChunk};
 use rootglass_signature::trust_config::{load_trust_store, LoadedTrustStore, TrustConfigError};
-use rootglass_signature::{SignatureError, TrustStore};
+use rootglass_signature::{SignatureError, TrustStore, VerifiedArtifactReader};
 use std::collections::{BTreeSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -81,6 +85,61 @@ pub struct ManifestValidationReport {
 pub struct PreflightReport {
     pub summary: GlassSummary,
     pub readiness: Vec<String>,
+}
+
+/// Public claims produced only after the publisher, recipient authority, archive layout,
+/// encrypted artifact digest, and selected provider have passed preflight.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EncryptedArtifactPreflightInfo {
+    pub glass_identifier: String,
+    pub glass_version: String,
+    pub artifact_id: String,
+    pub recipient_id: String,
+    pub minimum_recipient_hardware: MinimumRecipientHardware,
+    pub provider: ProviderCapabilities,
+}
+
+/// A fully verified encrypted artifact with its IMK unwrapped as the final preflight step.
+/// It is not cloneable or serializable; callers should pass it directly to QEMU setup.
+pub struct PreparedEncryptedArtifact {
+    info: EncryptedArtifactPreflightInfo,
+    artifact_reader: VerifiedArtifactReader,
+    image_master_key: ImageMasterKey,
+}
+
+impl PreparedEncryptedArtifact {
+    pub fn info(&self) -> &EncryptedArtifactPreflightInfo {
+        &self.info
+    }
+
+    pub fn artifact_reader(&mut self) -> &mut VerifiedArtifactReader {
+        &mut self.artifact_reader
+    }
+
+    /// Borrow the zeroizing key wrapper for immediate QEMU secret setup.
+    pub fn image_master_key(&self) -> &ImageMasterKey {
+        &self.image_master_key
+    }
+
+    pub fn into_parts(
+        self,
+    ) -> (
+        EncryptedArtifactPreflightInfo,
+        VerifiedArtifactReader,
+        ImageMasterKey,
+    ) {
+        (self.info, self.artifact_reader, self.image_master_key)
+    }
+}
+
+impl std::fmt::Debug for PreparedEncryptedArtifact {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedEncryptedArtifact")
+            .field("info", &self.info)
+            .field("artifact_length", &self.artifact_reader.len())
+            .field("image_master_key", &self.image_master_key)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -181,6 +240,22 @@ pub struct PackageLibrary {
 }
 
 impl PackageLibrary {
+    fn validate_installed_package_path(
+        &self,
+        installed: &registry::InstalledGlass,
+    ) -> Result<(), AppError> {
+        let expected_package = self.root.join("packages").join(&installed.content_sha256);
+        if installed.package_path != expected_package {
+            return Err(AppError {
+                phase: LifecycleState::Verifying,
+                summary: "The installed-glass registry contains an invalid package path."
+                    .to_string(),
+                detail: installed.package_path.display().to_string(),
+            });
+        }
+        Ok(())
+    }
+
     pub fn import_archive(
         &self,
         source: impl AsRef<Path>,
@@ -218,15 +293,7 @@ impl PackageLibrary {
         if self.revoked_key_ids.contains(&installed.key_id) {
             return Err(revoked_key_app_error(&installed.key_id));
         }
-        let expected_package = self.root.join("packages").join(&installed.content_sha256);
-        if installed.package_path != expected_package {
-            return Err(AppError {
-                phase: LifecycleState::Verifying,
-                summary: "The installed-glass registry contains an invalid package path."
-                    .to_string(),
-                detail: installed.package_path.display().to_string(),
-            });
-        }
+        self.validate_installed_package_path(installed)?;
         crate::import::open_installed_encrypted_artifact(
             installed,
             artifact_id,
@@ -234,6 +301,113 @@ impl PackageLibrary {
             &crate::import::ImportLimits::default(),
         )
         .map_err(|error| import_app_error("The encrypted artifact could not be opened.", error))
+    }
+
+    /// Verify an installed encrypted artifact and unwrap its selected recipient key only after
+    /// publisher trust, signed-subject digests, ZIP layout, recipient authority, and provider
+    /// capability have all passed. This method does not start QEMU.
+    pub fn preflight_encrypted_artifact(
+        &self,
+        installed: &registry::InstalledGlass,
+        artifact_id: &str,
+        recipient_id: &str,
+        provider: &dyn RecipientIdentityProvider,
+    ) -> Result<PreparedEncryptedArtifact, AppError> {
+        if self.revoked_key_ids.contains(&installed.key_id) {
+            return Err(revoked_key_app_error(&installed.key_id));
+        }
+        self.validate_installed_package_path(installed)?;
+
+        let verified = import::open_installed_verified_archive(
+            installed,
+            &self.trust_store,
+            &import::ImportLimits::default(),
+        )
+        .map_err(|error| {
+            import_app_error(
+                "The encrypted glass could not be verified for preflight.",
+                error,
+            )
+        })?;
+        let report = verified.report();
+        let catalog = report.artifact_catalog.as_ref().ok_or_else(|| AppError {
+            phase: LifecycleState::Verifying,
+            summary: "The installed glass has no verified encrypted artifact catalog.".to_string(),
+            detail: "Encrypted preflight requires a publisher-verified schema-2 artifact catalog."
+                .to_string(),
+        })?;
+        let artifact = catalog.artifacts.get(artifact_id).ok_or_else(|| AppError {
+            phase: LifecycleState::Verifying,
+            summary: "The selected encrypted artifact is not in this glass.".to_string(),
+            detail: format!("Artifact '{artifact_id}' is not declared by the signed catalog."),
+        })?;
+        if artifact.encryption.is_none() {
+            return Err(AppError {
+                phase: LifecycleState::Verifying,
+                summary: "The selected artifact is not encrypted.".to_string(),
+                detail: format!("Artifact '{artifact_id}' has no signed encryption declaration."),
+            });
+        }
+
+        // Opening the recipient sidecar and disk range happens only after the full publisher
+        // subject set has been verified by `open_installed_verified_archive`.
+        let envelope = verified.verify_recipient_envelope().map_err(|error| {
+            import_app_error("The recipient authorization could not be verified.", error)
+        })?;
+        let artifact_reader = verified
+            .open_encrypted_artifact(artifact_id)
+            .map_err(|error| import_app_error("The encrypted disk layout is invalid.", error))?;
+        let recipient = envelope
+            .recipient(recipient_id)
+            .ok_or_else(|| identity_provider_app_error(IdentityProviderError::RecipientNotFound))?;
+
+        let capabilities = provider.capabilities();
+        if !capabilities.can_unwrap
+            || capabilities.provider_id != recipient.provider_id
+            || capabilities.wrapping_suite_id != recipient.wrapping_suite_id
+        {
+            return Err(identity_provider_app_error(
+                IdentityProviderError::UnsupportedRecipient,
+            ));
+        }
+        if !capabilities.satisfies(envelope.minimum_recipient_hardware()) {
+            return Err(identity_provider_app_error(
+                IdentityProviderError::HardwarePolicyUnsatisfied,
+            ));
+        }
+
+        // Hardware policy and provider-suite checks precede all key-store access.
+        let identities = provider
+            .list_identities()
+            .map_err(identity_provider_app_error)?;
+        if !identities.iter().any(|identity| {
+            identity.recipient_id == recipient_id
+                && identity.provider_id == capabilities.provider_id
+                && identity.wrapping_suite_id == capabilities.wrapping_suite_id
+        }) {
+            return Err(identity_provider_app_error(
+                IdentityProviderError::IdentityNotFound,
+            ));
+        }
+
+        // The provider receives an envelope whose authority, manifest binding, and hardware
+        // requirement are already verified. Key unwrap is the final preflight operation.
+        let image_master_key = provider
+            .unwrap_image_key(&envelope, recipient_id)
+            .map_err(identity_provider_app_error)?;
+
+        Ok(PreparedEncryptedArtifact {
+            info: EncryptedArtifactPreflightInfo {
+                glass_identifier: report.glass_identifier.clone(),
+                glass_version: report.glass_version.clone(),
+                artifact_id: artifact_id.to_string(),
+                recipient_id: recipient_id.to_string(),
+                minimum_recipient_hardware: envelope.minimum_recipient_hardware().clone(),
+                provider: capabilities,
+            },
+            artifact_reader,
+            image_master_key,
+        })
     }
 
     pub fn installed_glasses(&self) -> Result<Vec<registry::InstalledGlass>, AppError> {
@@ -1268,6 +1442,14 @@ fn import_app_error(summary: &str, error: impl std::fmt::Display) -> AppError {
     }
 }
 
+fn identity_provider_app_error(error: IdentityProviderError) -> AppError {
+    AppError {
+        phase: LifecycleState::Verifying,
+        summary: "The selected recipient identity cannot open this encrypted glass.".to_string(),
+        detail: error.to_string(),
+    }
+}
+
 fn revoked_key_app_error(key_id: &str) -> AppError {
     AppError {
         phase: LifecycleState::Verifying,
@@ -1412,7 +1594,9 @@ mod library_tests {
     use serde_json::json;
     use sha2::{Digest, Sha256};
     use std::fs::{self, File};
-    use std::io::{self, Read};
+    use std::io::{self, Read, Write};
+    use std::str::FromStr;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
     use zip::write::SimpleFileOptions;
 
@@ -1521,6 +1705,14 @@ mod library_tests {
     }
 
     fn package_encrypted_schema2_fixture(root: &Path, archive: &Path) -> TrustStore {
+        package_encrypted_schema2_fixture_with_policy(root, archive, "software-allowed")
+    }
+
+    fn package_encrypted_schema2_fixture_with_policy(
+        root: &Path,
+        archive: &Path,
+        minimum_hardware: &str,
+    ) -> TrustStore {
         fs::create_dir_all(root.join("images")).unwrap();
         fs::create_dir_all(root.join("signatures")).unwrap();
         let disk = b"mock encrypted disk bytes";
@@ -1565,7 +1757,7 @@ kind = "zip-entry"
 path = "images/root.raw"
 
 [artifact_catalog.encryption]
-minimum_recipient_hardware = "software-allowed"
+minimum_recipient_hardware = "{minimum_hardware}"
 max_concurrent_instances = 1
 
 [[artifact_catalog.encryption.recipient_authorities]]
@@ -1632,6 +1824,215 @@ node_id = "linux"
             key_id,
             public_key_base64url: URL_SAFE_NO_PAD.encode(public_key),
         }])
+    }
+
+    fn personalize_encrypted_fixture(
+        root: &Path,
+        archive: &Path,
+        minimum_hardware: &str,
+    ) -> (
+        PathBuf,
+        TrustStore,
+        rootglass_core::identity::RecipientIdentity,
+    ) {
+        let trust = package_encrypted_schema2_fixture_with_policy(root, archive, minimum_hardware);
+        let authority_key = SigningKey::from_bytes(&[53; 32]);
+        let verified = rootglass_signature::open_verified_glass_archive(
+            archive,
+            "signatures/glass.dsse.json",
+            &trust,
+        )
+        .expect("publisher and encrypted disk verify before personalization");
+        let age_identity = age::x25519::Identity::generate();
+        let public_key = age_identity.to_public().to_string();
+        let recipient_id = rootglass_signature::recipient_id_for_public_key(
+            rootglass_signature::RecipientWrappingSuite::AgeV1X25519,
+            public_key.as_bytes(),
+        );
+        let age_recipient = age::x25519::Recipient::from_str(&public_key).unwrap();
+        let wrapped_imk = age::encrypt(&age_recipient, &[0x42; 32]).unwrap();
+        let recipient = rootglass_signature::RecipientRecord {
+            recipient_id: recipient_id.clone(),
+            provider_id: rootglass_signature::RecipientProvider::AgeX25519,
+            wrapping_suite_id: rootglass_signature::RecipientWrappingSuite::AgeV1X25519,
+            wrapped_imk,
+        };
+        let personalized = root.join("personalized-encrypted.glass");
+        rootglass_signature::personalize_glass_archive_at(
+            &verified,
+            &personalized,
+            vec![recipient],
+            &authority_key,
+        )
+        .expect("delegated authority personalizes the encrypted fixture");
+
+        (
+            personalized,
+            trust,
+            rootglass_core::identity::RecipientIdentity {
+                recipient_id,
+                provider_id: rootglass_signature::RecipientProvider::AgeX25519,
+                wrapping_suite_id: rootglass_signature::RecipientWrappingSuite::AgeV1X25519,
+                public_key,
+            },
+        )
+    }
+
+    fn rewrite_archive_for_test(
+        source: &Path,
+        destination: &Path,
+        mutated_member: Option<(&str, bool)>,
+        compression_override: Option<(&str, zip::CompressionMethod)>,
+    ) {
+        let mut archive = zip::ZipArchive::new(File::open(source).unwrap()).unwrap();
+        let mut writer = zip::ZipWriter::new(File::create(destination).unwrap());
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index).unwrap();
+            let name = entry.name().to_string();
+            if entry.is_dir() {
+                writer
+                    .add_directory(name, SimpleFileOptions::default())
+                    .unwrap();
+                continue;
+            }
+            let compression = entry.compression();
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).unwrap();
+            if let Some((mutated_path, signature_only)) = mutated_member {
+                if name == mutated_path {
+                    if signature_only {
+                        let mut envelope: serde_json::Value =
+                            serde_json::from_slice(&bytes).unwrap();
+                        let signature = envelope["signatures"][0]["sig"].as_str().unwrap();
+                        let mut signature = URL_SAFE_NO_PAD.decode(signature).unwrap();
+                        signature[0] ^= 0x80;
+                        envelope["signatures"][0]["sig"] = json!(URL_SAFE_NO_PAD.encode(signature));
+                        bytes = serde_json::to_vec(&envelope).unwrap();
+                    } else if !bytes.is_empty() {
+                        bytes[0] ^= 0x01;
+                    }
+                }
+            }
+            let compression = compression_override
+                .filter(|(path, _)| *path == name)
+                .map(|(_, compression)| compression)
+                .unwrap_or(compression);
+            writer
+                .start_file(
+                    name,
+                    SimpleFileOptions::default().compression_method(compression),
+                )
+                .unwrap();
+            writer.write_all(&bytes).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+
+    fn tamper_recipient_envelope(source: &Path, destination: &Path) {
+        rewrite_archive_for_test(
+            source,
+            destination,
+            Some(("signatures/recipients.dsse.json", true)),
+            None,
+        );
+    }
+
+    fn install_archive_test_row(
+        archive: &Path,
+        library_root: &Path,
+        trust: &TrustStore,
+    ) -> registry::InstalledGlass {
+        let bytes = fs::read(archive).unwrap();
+        let content_sha256 = Sha256::digest(&bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let package_path = library_root.join("packages").join(&content_sha256);
+        fs::create_dir_all(&package_path).unwrap();
+        fs::copy(archive, package_path.with_extension("glass")).unwrap();
+        let publisher = trust.publishers().next().unwrap();
+        registry::InstalledGlass {
+            content_sha256,
+            package_path,
+            identifier: "io.rootglass.tests.encrypted-import".to_string(),
+            name: "Encrypted Import Test".to_string(),
+            version: "0.2.0".to_string(),
+            publisher_name: publisher.name.clone(),
+            publisher_identity: publisher.identity.clone(),
+            key_id: publisher.key_id.clone(),
+            original_source: archive.to_path_buf(),
+            imported_at_unix_seconds: 0,
+        }
+    }
+
+    struct TestRecipientProvider {
+        identity: rootglass_core::identity::RecipientIdentity,
+        capabilities: rootglass_core::identity::ProviderCapabilities,
+        list_calls: AtomicUsize,
+        unwrap_calls: AtomicUsize,
+    }
+
+    impl TestRecipientProvider {
+        fn age(identity: rootglass_core::identity::RecipientIdentity) -> Self {
+            Self::with_capabilities(
+                identity,
+                rootglass_core::identity::ProviderCapabilities {
+                    provider_id: rootglass_signature::RecipientProvider::AgeX25519,
+                    wrapping_suite_id: rootglass_signature::RecipientWrappingSuite::AgeV1X25519,
+                    hardware_backed: false,
+                    can_create: true,
+                    can_unwrap: true,
+                },
+            )
+        }
+
+        fn with_capabilities(
+            identity: rootglass_core::identity::RecipientIdentity,
+            capabilities: rootglass_core::identity::ProviderCapabilities,
+        ) -> Self {
+            Self {
+                identity,
+                capabilities,
+                list_calls: AtomicUsize::new(0),
+                unwrap_calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl RecipientIdentityProvider for TestRecipientProvider {
+        fn capabilities(&self) -> rootglass_core::identity::ProviderCapabilities {
+            self.capabilities
+        }
+
+        fn list_identities(
+            &self,
+        ) -> Result<Vec<rootglass_core::identity::RecipientIdentity>, IdentityProviderError>
+        {
+            self.list_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![self.identity.clone()])
+        }
+
+        fn create_identity(
+            &self,
+        ) -> Result<rootglass_core::identity::RecipientIdentity, IdentityProviderError> {
+            Err(IdentityProviderError::UnsupportedPlatform)
+        }
+
+        fn delete_identity(&self, _recipient_id: &str) -> Result<(), IdentityProviderError> {
+            Err(IdentityProviderError::IdentityNotFound)
+        }
+
+        fn unwrap_image_key(
+            &self,
+            envelope: &rootglass_signature::VerifiedRecipientEnvelope,
+            recipient_id: &str,
+        ) -> Result<ImageMasterKey, IdentityProviderError> {
+            self.unwrap_calls.fetch_add(1, Ordering::SeqCst);
+            if envelope.recipient(recipient_id).is_none() {
+                return Err(IdentityProviderError::RecipientNotFound);
+            }
+            Ok(ImageMasterKey::new(zeroize::Zeroizing::new([0x42; 32])))
+        }
     }
 
     fn create_archive(source: &Path, archive: &Path) {
@@ -1774,9 +2175,14 @@ node_id = "linux"
         let archive = root.join("encrypted.glass");
         let library_root = root.join("library");
         let trust = package_encrypted_schema2_fixture(&source, &archive);
-        let service = AppService::with_trust_store(trust).with_library_root(&library_root);
+        let mut service = AppService::with_trust_store(trust).with_library_root(&library_root);
 
         let installed = service.import_archive(&archive).unwrap();
+        let launch_error = service
+            .start(&source, RunOptions::default())
+            .expect_err("schema-2 bundles must not use the schema-1 QEMU launch path");
+        assert_eq!(launch_error.phase, LifecycleState::Validating);
+        assert!(launch_error.detail.contains("schema version 2"));
         let disk_path = installed.package_path.join("images/root.raw");
         assert!(
             !disk_path.exists(),
@@ -1799,6 +2205,251 @@ node_id = "linux"
         let reimported = service.import_archive(&archive).unwrap();
         assert_eq!(reimported.content_sha256, installed.content_sha256);
         assert!(!reimported.package_path.join("images/root.raw").exists());
+
+        make_tree_writable(&root);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn encrypted_preflight_verifies_everything_before_unwrapping_the_image_key() {
+        let root = temp_root();
+        let base_archive = root.join("encrypted-base.glass");
+        let (archive, trust, identity) =
+            personalize_encrypted_fixture(&root, &base_archive, "software-allowed");
+        let library_root = root.join("library");
+        let service = AppService::with_trust_store(trust).with_library_root(&library_root);
+        let installed = service.import_archive(&archive).unwrap();
+        let provider = TestRecipientProvider::age(identity.clone());
+
+        let mut prepared = service
+            .package_library()
+            .preflight_encrypted_artifact(
+                &installed,
+                "linux-root",
+                &identity.recipient_id,
+                &provider,
+            )
+            .expect("verified software recipient can open a software-allowed bundle");
+
+        assert_eq!(prepared.info().glass_identifier, installed.identifier);
+        assert_eq!(prepared.info().artifact_id, "linux-root");
+        assert_eq!(prepared.info().recipient_id, identity.recipient_id);
+        assert!(!prepared.info().provider.hardware_backed);
+        assert_eq!(provider.list_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.unwrap_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(prepared.image_master_key().as_bytes(), &[0x42; 32]);
+        let mut ciphertext = Vec::new();
+        prepared
+            .artifact_reader()
+            .read_to_end(&mut ciphertext)
+            .unwrap();
+        assert_eq!(ciphertext, b"mock encrypted disk bytes");
+
+        make_tree_writable(&root);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn hardware_policy_and_provider_suite_fail_before_key_store_access() {
+        let root = temp_root();
+        let base_archive = root.join("encrypted-base.glass");
+        let (archive, trust, identity) =
+            personalize_encrypted_fixture(&root, &base_archive, "hardware-backed-required");
+        let library_root = root.join("library");
+        let service = AppService::with_trust_store(trust).with_library_root(&library_root);
+        let installed = service.import_archive(&archive).unwrap();
+        let software_provider = TestRecipientProvider::age(identity.clone());
+
+        let error = service
+            .package_library()
+            .preflight_encrypted_artifact(
+                &installed,
+                "linux-root",
+                &identity.recipient_id,
+                &software_provider,
+            )
+            .expect_err("Age must not satisfy the signed hardware-backed policy");
+        assert!(error.detail.contains("hardware-backed identity policy"));
+        assert_eq!(software_provider.list_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(software_provider.unwrap_calls.load(Ordering::SeqCst), 0);
+
+        make_tree_writable(&root);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unsupported_provider_and_missing_recipient_fail_before_unwrap() {
+        let root = temp_root();
+        let base_archive = root.join("encrypted-base.glass");
+        let (archive, trust, identity) =
+            personalize_encrypted_fixture(&root, &base_archive, "software-allowed");
+        let library_root = root.join("library");
+        let service = AppService::with_trust_store(trust).with_library_root(&library_root);
+        let installed = service.import_archive(&archive).unwrap();
+
+        let mut invalid_registry_row = installed.clone();
+        invalid_registry_row.package_path = root.join("outside-package");
+        let invalid_path_provider = TestRecipientProvider::age(identity.clone());
+        let error = service
+            .package_library()
+            .preflight_encrypted_artifact(
+                &invalid_registry_row,
+                "linux-root",
+                &identity.recipient_id,
+                &invalid_path_provider,
+            )
+            .expect_err("preflight must reject registry paths outside the package store");
+        assert!(error.summary.contains("invalid package path"));
+        assert_eq!(invalid_path_provider.list_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(invalid_path_provider.unwrap_calls.load(Ordering::SeqCst), 0);
+
+        let unsupported = TestRecipientProvider::with_capabilities(
+            identity.clone(),
+            ProviderCapabilities {
+                provider_id: rootglass_signature::RecipientProvider::WindowsTpmRsa3072,
+                wrapping_suite_id: rootglass_signature::RecipientWrappingSuite::RsaOaepV1Sha256,
+                hardware_backed: true,
+                can_create: true,
+                can_unwrap: true,
+            },
+        );
+        let error = service
+            .package_library()
+            .preflight_encrypted_artifact(
+                &installed,
+                "linux-root",
+                &identity.recipient_id,
+                &unsupported,
+            )
+            .expect_err("a provider that does not match the signed recipient must fail closed");
+        assert!(error.detail.contains("provider or wrapping suite"));
+        assert_eq!(unsupported.list_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(unsupported.unwrap_calls.load(Ordering::SeqCst), 0);
+
+        let age_provider = TestRecipientProvider::age(identity.clone());
+        let absent = format!("{}:{}", "age-v1-x25519", "0".repeat(64));
+        let error = service
+            .package_library()
+            .preflight_encrypted_artifact(&installed, "linux-root", &absent, &age_provider)
+            .expect_err("the selected recipient must exist in the verified sidecar");
+        assert!(error
+            .detail
+            .contains("not present in the verified envelope"));
+        assert_eq!(age_provider.list_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(age_provider.unwrap_calls.load(Ordering::SeqCst), 0);
+
+        make_tree_writable(&root);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn invalid_recipient_envelope_and_changed_archive_fail_before_unwrap() {
+        let root = temp_root();
+        let base_archive = root.join("encrypted-base.glass");
+        let (valid_archive, trust, identity) =
+            personalize_encrypted_fixture(&root, &base_archive, "software-allowed");
+        let invalid_archive = root.join("invalid-recipient.glass");
+        tamper_recipient_envelope(&valid_archive, &invalid_archive);
+        let library_root = root.join("library");
+        let service = AppService::with_trust_store(trust).with_library_root(&library_root);
+        let installed = service.import_archive(&invalid_archive).unwrap();
+        let provider = TestRecipientProvider::age(identity.clone());
+
+        let error = service
+            .package_library()
+            .preflight_encrypted_artifact(
+                &installed,
+                "linux-root",
+                &identity.recipient_id,
+                &provider,
+            )
+            .expect_err("invalid recipient signatures must fail before key resolution");
+        assert!(error.detail.contains("signature") || error.detail.contains("recipient"));
+        assert_eq!(provider.list_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(provider.unwrap_calls.load(Ordering::SeqCst), 0);
+
+        let valid_library = root.join("valid-library");
+        let valid_service = AppService::with_trust_store(service.trust_store.clone())
+            .with_library_root(&valid_library);
+        let valid_installed = valid_service.import_archive(&valid_archive).unwrap();
+        let archive_object = crate::import::archive_object_path(&valid_installed);
+        make_path_writable(&archive_object, fs::metadata(&archive_object).unwrap());
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&archive_object)
+            .unwrap()
+            .write_all(b"changed")
+            .unwrap();
+        let changed_provider = TestRecipientProvider::age(identity.clone());
+        let error = valid_service
+            .package_library()
+            .preflight_encrypted_artifact(
+                &valid_installed,
+                "linux-root",
+                &identity.recipient_id,
+                &changed_provider,
+            )
+            .expect_err("a changed installed archive must fail before provider access");
+        assert!(error.detail.contains("archive digest"));
+        assert_eq!(changed_provider.list_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(changed_provider.unwrap_calls.load(Ordering::SeqCst), 0);
+
+        make_tree_writable(&root);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn publisher_signature_artifact_digest_and_zip_profile_fail_before_key_store_access() {
+        let root = temp_root();
+        let base_archive = root.join("encrypted-base.glass");
+        let (valid_archive, trust, identity) =
+            personalize_encrypted_fixture(&root, &base_archive, "software-allowed");
+        let publisher_signature_archive = root.join("invalid-publisher-signature.glass");
+        rewrite_archive_for_test(
+            &valid_archive,
+            &publisher_signature_archive,
+            Some(("signatures/glass.dsse.json", true)),
+            None,
+        );
+        let changed_artifact_archive = root.join("changed-encrypted-artifact.glass");
+        rewrite_archive_for_test(
+            &valid_archive,
+            &changed_artifact_archive,
+            Some(("images/root.raw", false)),
+            None,
+        );
+        let compressed_artifact_archive = root.join("compressed-encrypted-artifact.glass");
+        rewrite_archive_for_test(
+            &valid_archive,
+            &compressed_artifact_archive,
+            None,
+            Some(("images/root.raw", zip::CompressionMethod::Deflated)),
+        );
+
+        for (name, archive) in [
+            ("publisher signature", publisher_signature_archive),
+            ("signed artifact digest", changed_artifact_archive),
+            ("encrypted ZIP profile", compressed_artifact_archive),
+        ] {
+            let library_root = root.join(format!("library-{name}"));
+            let service =
+                AppService::with_trust_store(trust.clone()).with_library_root(&library_root);
+            let installed = install_archive_test_row(&archive, &library_root, &trust);
+            let provider = TestRecipientProvider::age(identity.clone());
+
+            let error = service
+                .package_library()
+                .preflight_encrypted_artifact(
+                    &installed,
+                    "linux-root",
+                    &identity.recipient_id,
+                    &provider,
+                )
+                .expect_err("publisher and encrypted image validation must precede key access");
+            assert_eq!(error.phase, LifecycleState::Verifying, "{name}: {error}");
+            assert_eq!(provider.list_calls.load(Ordering::SeqCst), 0, "{name}");
+            assert_eq!(provider.unwrap_calls.load(Ordering::SeqCst), 0, "{name}");
+        }
 
         make_tree_writable(&root);
         let _ = fs::remove_dir_all(root);
