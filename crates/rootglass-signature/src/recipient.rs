@@ -5,7 +5,9 @@ use crate::{
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use ed25519_dalek::{Signature, Signer, Verifier, VerifyingKey};
-use rootglass_manifest::{ArtifactCatalog, EncryptionPolicy, MULTI_ARTIFACT_SCHEMA_VERSION};
+use rootglass_manifest::{
+    ArtifactCatalog, EncryptionPolicy, MinimumRecipientHardware, MULTI_ARTIFACT_SCHEMA_VERSION,
+};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -87,6 +89,7 @@ pub struct RecipientEnvelopePayload {
 pub struct VerifiedRecipientEnvelope {
     payload: RecipientEnvelopePayload,
     authority_key_id: String,
+    minimum_recipient_hardware: MinimumRecipientHardware,
 }
 
 impl VerifiedRecipientEnvelope {
@@ -96,6 +99,12 @@ impl VerifiedRecipientEnvelope {
 
     pub fn authority_key_id(&self) -> &str {
         &self.authority_key_id
+    }
+
+    /// The publisher-signed minimum recipient hardware requirement that was
+    /// verified together with this envelope's binding.
+    pub fn minimum_recipient_hardware(&self) -> &MinimumRecipientHardware {
+        &self.minimum_recipient_hardware
     }
 
     pub fn recipient(&self, recipient_id: &str) -> Option<&RecipientRecord> {
@@ -306,6 +315,7 @@ pub fn verify_recipient_envelope(
     Ok(VerifiedRecipientEnvelope {
         payload,
         authority_key_id: dsse_signature.keyid.clone(),
+        minimum_recipient_hardware: policy.minimum_recipient_hardware.clone(),
     })
 }
 

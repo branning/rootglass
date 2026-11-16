@@ -1,4 +1,5 @@
 //! UI-independent application orchestration shared by the CLI and desktop.
+pub mod identity;
 pub mod import;
 pub mod registry;
 pub mod state;

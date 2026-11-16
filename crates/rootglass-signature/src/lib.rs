@@ -2781,6 +2781,10 @@ mod tests {
             verify_recipient_envelope_bytes(&bytes, &report, &VerificationLimits::default())
                 .expect("recipient envelope verifies");
         assert_eq!(
+            verified_recipients.minimum_recipient_hardware(),
+            &rootglass_manifest::MinimumRecipientHardware::SoftwareAllowed
+        );
+        assert_eq!(
             verified_recipients.authority_key_id(),
             report
                 .artifact_catalog
@@ -2899,6 +2903,39 @@ mod tests {
             verified.verify_recipient_envelope(),
             Err(SignatureError::MissingRecipientEnvelope)
         ));
+
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_file(archive_path);
+    }
+
+    #[test]
+    fn verified_recipient_envelope_carries_publisher_hardware_policy() {
+        let (root, archive_path, publisher_key, trust, authority_key) =
+            temp_encrypted_schema2_bundle_with_policy("hardware-backed-required");
+        package_glass_directory_at(&root, &archive_path, &publisher_key, "2026-11-15T00:00:00Z")
+            .expect("package encrypted bundle");
+        let verified =
+            open_verified_glass_archive(&archive_path, "signatures/glass.dsse.json", &trust)
+                .expect("verify signed encrypted bundle");
+        let record = test_age_recipient(b"canonical age public key", b"wrapped image key");
+        let envelope_bytes = sign_recipient_envelope(
+            verified.report(),
+            vec![record],
+            &authority_key,
+            &VerificationLimits::default(),
+        )
+        .expect("sign recipient envelope");
+
+        let recipient_envelope = verify_recipient_envelope_bytes(
+            &envelope_bytes,
+            verified.report(),
+            &VerificationLimits::default(),
+        )
+        .expect("verify recipient envelope");
+        assert_eq!(
+            recipient_envelope.minimum_recipient_hardware(),
+            &rootglass_manifest::MinimumRecipientHardware::HardwareBackedRequired
+        );
 
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_file(archive_path);
@@ -3571,6 +3608,12 @@ node_id = "mcu"
     }
 
     fn temp_encrypted_schema2_bundle() -> (PathBuf, PathBuf, SigningKey, TrustStore, SigningKey) {
+        temp_encrypted_schema2_bundle_with_policy("software-allowed")
+    }
+
+    fn temp_encrypted_schema2_bundle_with_policy(
+        minimum_hardware: &str,
+    ) -> (PathBuf, PathBuf, SigningKey, TrustStore, SigningKey) {
         let (root, archive) = temp_schema2_bundle(false);
         let authority_key = SigningKey::from_bytes(&[19; 32]);
         let recipient = authority_key.verifying_key().to_bytes();
@@ -3585,7 +3628,7 @@ node_id = "mcu"
             .replace(
                 "[artifact_catalog.profiles.default]",
                 &format!(
-                    "[artifact_catalog.encryption]\nminimum_recipient_hardware = \"software-allowed\"\nmax_concurrent_instances = 1\n\n[[artifact_catalog.encryption.recipient_authorities]]\nkey_id = \"{recipient_id}\"\npublic_key_base64url = \"{}\"\n\n[artifact_catalog.profiles.default]",
+                    "[artifact_catalog.encryption]\nminimum_recipient_hardware = \"{minimum_hardware}\"\nmax_concurrent_instances = 1\n\n[[artifact_catalog.encryption.recipient_authorities]]\nkey_id = \"{recipient_id}\"\npublic_key_base64url = \"{}\"\n\n[artifact_catalog.profiles.default]",
                     URL_SAFE_NO_PAD.encode(recipient)
                 ),
             )

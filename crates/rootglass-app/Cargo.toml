@@ -10,11 +10,14 @@ rootglass-core.workspace = true
 rootglass-manifest.workspace = true
 rootglass-qemu.workspace = true
 rootglass-signature.workspace = true
+age.workspace = true
+keyring.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 zip.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 base64.workspace = true
