@@ -3,7 +3,7 @@ pub mod runtime_assets;
 pub mod runtime_profile;
 pub mod storage;
 
-use rootglass_manifest::{Glass, ManifestError};
+use rootglass_manifest::{Glass, ManifestError, LEGACY_SCHEMA_VERSION};
 use rootglass_signature::{verify_glass_dir, SignatureError, TrustStore, VerificationReport};
 use runtime_assets::{RuntimeAssetsError, RuntimeAssetsResolver};
 use runtime_profile::{ResolvedRuntimeAssets, RuntimeAssetResolver, RuntimeProfileError};
@@ -382,6 +382,15 @@ impl RootglassRuntime {
 
         if let Err(error) = glass.validate_manifest_only() {
             self.fail(CoreError::Manifest(error), LifecycleState::Validating)?;
+            unreachable!("fail always returns Err")
+        }
+        if glass.manifest.schema_version != LEGACY_SCHEMA_VERSION {
+            self.fail(
+                CoreError::Manifest(ManifestError::UnsupportedLaunchSchema {
+                    actual: glass.manifest.schema_version,
+                }),
+                LifecycleState::Validating,
+            )?;
             unreachable!("fail always returns Err")
         }
 

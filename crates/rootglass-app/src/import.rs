@@ -13,7 +13,7 @@ use rootglass_manifest::{Glass, Manifest, MAX_MANIFEST_BYTES};
 use rootglass_signature::{
     open_verified_glass_archive_with_limits, verify_glass_archive_with_limits,
     verify_glass_dir_with_limits, DsseEnvelope, SignatureError, TrustStore, VerificationLimits,
-    VerifiedArtifactReader,
+    VerifiedArchive, VerifiedArtifactReader,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashSet};
@@ -50,6 +50,19 @@ pub fn open_installed_encrypted_artifact(
     trust_store: &TrustStore,
     limits: &ImportLimits,
 ) -> Result<VerifiedArtifactReader, ImportError> {
+    Ok(
+        open_installed_verified_archive(installed, trust_store, limits)?
+            .open_encrypted_artifact(artifact_id)?,
+    )
+}
+
+/// Reverify the immutable content-addressed archive and return its authenticated report,
+/// recipient-envelope reader, and validated encrypted-artifact ranges.
+pub fn open_installed_verified_archive(
+    installed: &InstalledGlass,
+    trust_store: &TrustStore,
+    limits: &ImportLimits,
+) -> Result<VerifiedArchive, ImportError> {
     validate_limits(limits)?;
     let archive_path = archive_object_path(installed);
     if hash_archive_file(&archive_path, limits.max_archive_bytes)? != installed.content_sha256 {
@@ -74,7 +87,7 @@ pub fn open_installed_encrypted_artifact(
                 .to_string(),
         });
     }
-    Ok(verified.open_encrypted_artifact(artifact_id)?)
+    Ok(verified)
 }
 
 impl Default for ImportLimits {
