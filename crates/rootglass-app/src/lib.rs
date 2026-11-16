@@ -1,4 +1,5 @@
 //! UI-independent application orchestration shared by the CLI and desktop.
+pub mod encrypted_sessions;
 pub mod identity;
 pub mod import;
 pub mod registry;
@@ -16,11 +17,12 @@ use rootglass_manifest::MinimumRecipientHardware;
 use rootglass_qemu::{QemuLaunchPlan, QemuProcess, SerialChunk};
 use rootglass_signature::trust_config::{load_trust_store, LoadedTrustStore, TrustConfigError};
 use rootglass_signature::{SignatureError, TrustStore, VerifiedArtifactReader};
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::time::{Duration, Instant};
+use zeroize::Zeroizing;
 
 /// Maximum time allowed for a guest to show its profile-specific ready prompt.
 pub const GUEST_READY_TIMEOUT: Duration = Duration::from_secs(90);
@@ -93,8 +95,10 @@ pub struct PreflightReport {
 pub struct EncryptedArtifactPreflightInfo {
     pub glass_identifier: String,
     pub glass_version: String,
+    pub content_sha256: String,
     pub artifact_id: String,
     pub recipient_id: String,
+    pub max_concurrent_instances: u8,
     pub minimum_recipient_hardware: MinimumRecipientHardware,
     pub provider: ProviderCapabilities,
 }
@@ -221,6 +225,7 @@ impl std::error::Error for AppError {}
 
 struct ActiveRun {
     id: RunId,
+    encrypted_scope: Option<String>,
     process: QemuProcess,
     state: LifecycleState,
     login_seen: bool,
@@ -229,6 +234,7 @@ struct ActiveRun {
     diagnostic_tail: Vec<u8>,
     ready_deadline: Instant,
     _state_lock: Option<state::StateRunLock>,
+    _encrypted_session: Option<encrypted_sessions::EncryptedSessionLease>,
 }
 
 /// Cloneable library handle for background archive verification and registry work.
@@ -348,6 +354,16 @@ impl PackageLibrary {
                 detail: format!("Artifact '{artifact_id}' has no signed encryption declaration."),
             });
         }
+        let max_concurrent_instances = catalog
+            .encryption
+            .as_ref()
+            .map(|policy| policy.max_concurrent_instances)
+            .filter(|limit| (1..=encrypted_sessions::MAX_ENCRYPTED_INSTANCES).contains(limit))
+            .ok_or_else(|| AppError {
+                phase: LifecycleState::Verifying,
+                summary: "The encrypted glass has an invalid instance policy.".to_string(),
+                detail: "The signed concurrent instance limit must be between 1 and 5.".to_string(),
+            })?;
 
         // Opening the recipient sidecar and disk range happens only after the full publisher
         // subject set has been verified by `open_installed_verified_archive`.
@@ -400,8 +416,10 @@ impl PackageLibrary {
             info: EncryptedArtifactPreflightInfo {
                 glass_identifier: report.glass_identifier.clone(),
                 glass_version: report.glass_version.clone(),
+                content_sha256: installed.content_sha256.clone(),
                 artifact_id: artifact_id.to_string(),
                 recipient_id: recipient_id.to_string(),
+                max_concurrent_instances,
                 minimum_recipient_hardware: envelope.minimum_recipient_hardware().clone(),
                 provider: capabilities,
             },
@@ -475,7 +493,7 @@ impl PackageLibrary {
     }
 }
 
-/// Owns validation and no more than one active QEMU process.
+/// Owns validation, legacy single-run launches, and signed-limit encrypted sessions.
 pub struct AppService {
     runtime: RootglassRuntime,
     state_root: PathBuf,
@@ -486,8 +504,11 @@ pub struct AppService {
     trust_load_error: Option<String>,
     next_run_id: u64,
     active: Option<ActiveRun>,
+    encrypted_runs: HashMap<RunId, ActiveRun>,
+    encrypted_instance_limit: Option<u8>,
+    poll_cursor: Option<RunId>,
     pending: VecDeque<RuntimeEvent>,
-    last_stopped: Option<RunId>,
+    last_stopped: HashSet<RunId>,
 }
 
 impl Default for AppService {
@@ -510,8 +531,11 @@ impl AppService {
             trust_load_error: None,
             next_run_id: 1,
             active: None,
+            encrypted_runs: HashMap::new(),
+            encrypted_instance_limit: None,
+            poll_cursor: None,
             pending: VecDeque::new(),
-            last_stopped: None,
+            last_stopped: HashSet::new(),
         }
     }
 
@@ -695,6 +719,17 @@ impl AppService {
         self
     }
 
+    /// Set a local encrypted-instance preference. The signed glass policy can
+    /// always lower this value, and values outside the supported 1–5 range fail.
+    pub fn with_encrypted_instance_limit(mut self, limit: u8) -> Result<Self, AppError> {
+        effective_encrypted_instance_limit(
+            encrypted_sessions::MAX_ENCRYPTED_INSTANCES,
+            Some(limit),
+        )?;
+        self.encrypted_instance_limit = Some(limit);
+        Ok(self)
+    }
+
     /// Override the per-user package and registry location.
     pub fn with_library_root(mut self, root: impl Into<PathBuf>) -> Self {
         self.library_root = root.into();
@@ -853,7 +888,7 @@ impl AppService {
 
     /// Start an encrypted rootfs after callers have derived `launch` from the
     /// publisher-verified schema-2 profile and completed recipient preflight.
-    /// Encrypted runs remain single-instance and overlay-free until E10.
+    /// Each run owns an independently keyed ephemeral overlay and QEMU session.
     pub fn start_prepared_encrypted(
         &mut self,
         launch: &LaunchRequest,
@@ -862,8 +897,27 @@ impl AppService {
         if self.active.is_some() {
             return Err(AppError {
                 phase: LifecycleState::Starting,
-                summary: "Another glass is already running.".to_string(),
-                detail: "Stop the active run before starting another.".to_string(),
+                summary: "A legacy glass is already running.".to_string(),
+                detail: "Stop the active run before starting an encrypted instance.".to_string(),
+            });
+        }
+        let info = prepared.info().clone();
+        let limit = effective_encrypted_instance_limit(
+            info.max_concurrent_instances,
+            self.encrypted_instance_limit,
+        )?;
+        let active_for_glass = self
+            .encrypted_runs
+            .values()
+            .filter(|run| run.encrypted_scope.as_deref() == Some(&info.content_sha256))
+            .count();
+        if active_for_glass >= usize::from(limit) {
+            return Err(AppError {
+                phase: LifecycleState::Starting,
+                summary: "The encrypted glass has reached its instance limit.".to_string(),
+                detail: format!(
+                    "Stop one of its {limit} active instances before starting another."
+                ),
             });
         }
         let plan =
@@ -872,10 +926,41 @@ impl AppService {
                 summary: "The encrypted launch configuration is invalid.".to_string(),
                 detail: error.to_string(),
             })?;
+        let session_root = self
+            .state_root
+            .join("encrypted-sessions")
+            .join(&info.content_sha256);
+        encrypted_sessions::EncryptedSessionStore::recover_all(
+            &self.state_root.join("encrypted-sessions"),
+        )
+        .map_err(encrypted_session_app_error)?;
+        let mut session = encrypted_sessions::EncryptedSessionStore::new(&session_root)
+            .reserve(limit)
+            .map_err(encrypted_session_app_error)?;
         let (_, artifact_reader, image_master_key) = prepared.into_parts();
         let artifact_length = artifact_reader.len();
+        let mut overlay_key_bytes = Zeroizing::new([0u8; 32]);
+        getrandom::fill(&mut overlay_key_bytes[..]).map_err(|_| AppError {
+            phase: LifecycleState::Starting,
+            summary: "The encrypted instance key could not be generated.".to_string(),
+            detail: "The operating system random number generator is unavailable.".to_string(),
+        })?;
+        let overlay_key = ImageMasterKey::new(overlay_key_bytes);
         let process = plan
-            .spawn_encrypted_supervised(artifact_reader, artifact_length, image_master_key)
+            .spawn_encrypted_overlay_supervised(
+                artifact_reader,
+                artifact_length,
+                image_master_key,
+                overlay_key,
+                &session_root,
+                |pid, directory| {
+                    let result = match pid {
+                        None => session.record_session_dir(directory),
+                        Some(pid) => session.record_qemu(pid, directory),
+                    };
+                    result.map_err(|error| std::io::Error::other(error.to_string()))
+                },
+            )
             .map_err(|error| AppError {
                 phase: LifecycleState::Starting,
                 summary: "The encrypted guest could not be started.".to_string(),
@@ -887,20 +972,25 @@ impl AppService {
             run: id.clone(),
             state: LifecycleState::Booting,
         });
-        self.active = Some(ActiveRun {
-            id: id.clone(),
-            process,
-            state: LifecycleState::Booting,
-            login_seen: false,
-            // Schema-2 profiles do not yet declare readiness evidence. E11/E12
-            // will connect profile-specific readiness without guessing from
-            // generic serial output.
-            require_login_prompt: false,
-            login_marker_tail: Vec::new(),
-            diagnostic_tail: Vec::new(),
-            ready_deadline: Instant::now() + GUEST_READY_TIMEOUT,
-            _state_lock: None,
-        });
+        self.encrypted_runs.insert(
+            id.clone(),
+            ActiveRun {
+                id: id.clone(),
+                encrypted_scope: Some(info.content_sha256),
+                process,
+                state: LifecycleState::Booting,
+                login_seen: false,
+                // Schema-2 profiles do not yet declare readiness evidence. E11/E12
+                // will connect profile-specific readiness without guessing from
+                // generic serial output.
+                require_login_prompt: false,
+                login_marker_tail: Vec::new(),
+                diagnostic_tail: Vec::new(),
+                ready_deadline: Instant::now() + GUEST_READY_TIMEOUT,
+                _state_lock: None,
+                _encrypted_session: Some(session),
+            },
+        );
         Ok(id)
     }
 
@@ -910,7 +1000,7 @@ impl AppService {
         options: RunOptions,
         require_login_prompt: bool,
     ) -> Result<RunId, AppError> {
-        if self.active.is_some() {
+        if self.active.is_some() || !self.encrypted_runs.is_empty() {
             return Err(AppError {
                 phase: LifecycleState::Starting,
                 summary: "Another glass is already running.".to_string(),
@@ -932,6 +1022,7 @@ impl AppService {
         });
         self.active = Some(ActiveRun {
             id: id.clone(),
+            encrypted_scope: None,
             process,
             state: LifecycleState::Booting,
             login_seen: false,
@@ -940,6 +1031,7 @@ impl AppService {
             diagnostic_tail: Vec::new(),
             ready_deadline: Instant::now() + GUEST_READY_TIMEOUT,
             _state_lock: state_lock,
+            _encrypted_session: None,
         });
         Ok(id)
     }
@@ -990,142 +1082,40 @@ impl AppService {
         if let Some(event) = self.pending.pop_front() {
             return Ok(Some(event));
         }
-        let Some(active) = self.active.as_mut() else {
+        let mut ids = self.encrypted_runs.keys().cloned().collect::<Vec<_>>();
+        if let Some(active) = &self.active {
+            ids.push(active.id.clone());
+        }
+        if ids.is_empty() {
             return Ok(None);
-        };
-        let read_timeout = if active.login_seen || !active.require_login_prompt {
-            timeout
-        } else {
-            timeout.min(
-                active
-                    .ready_deadline
-                    .saturating_duration_since(Instant::now()),
-            )
-        };
-        if let Some(SerialChunk { bytes, truncated }) = active.process.read_serial(read_timeout) {
-            let run = active.id.clone();
-            let marker = b"rootglass-hello login:";
-            let mut scan = Vec::with_capacity(active.login_marker_tail.len() + bytes.len());
-            scan.extend_from_slice(&active.login_marker_tail);
-            scan.extend_from_slice(&bytes);
-            let marker_found = scan.windows(marker.len()).any(|window| window == marker);
-            let tail_len = marker.len().saturating_sub(1);
-            active.login_marker_tail = scan[scan.len().saturating_sub(tail_len)..].to_vec();
-            let diagnostic = scan_diagnostics(&active.diagnostic_tail, &bytes);
-            active.diagnostic_tail = diagnostic.tail;
-
-            if let Some(detail) = diagnostic.failure {
-                let _ = active
-                    .process
-                    .stop(Duration::from_secs(1), Duration::from_secs(1));
-                self.active = None;
-                self.pending.push_back(RuntimeEvent::Failed {
-                    run: run.clone(),
-                    phase: LifecycleState::Failed,
-                    summary: "The guest reported a boot failure.".to_string(),
-                    detail,
-                });
-                self.pending.push_front(RuntimeEvent::SerialChunk {
-                    run,
-                    bytes,
-                    truncated,
-                });
-                return Ok(self.pending.pop_front());
-            }
-
-            if active.require_login_prompt
-                && !active.login_seen
-                && Instant::now() >= active.ready_deadline
-            {
-                let _ = active
-                    .process
-                    .stop(Duration::from_secs(1), Duration::from_secs(1));
-                self.active = None;
-                self.pending.push_back(RuntimeEvent::Failed {
-                    run: run.clone(),
-                    phase: LifecycleState::Failed,
-                    summary: "The guest did not become ready in time.".to_string(),
-                    detail: format!(
-                        "No rootglass-hello login prompt arrived within {} seconds.",
-                        GUEST_READY_TIMEOUT.as_secs()
-                    ),
-                });
-                self.pending.push_front(RuntimeEvent::SerialChunk {
-                    run,
-                    bytes,
-                    truncated,
-                });
-                return Ok(self.pending.pop_front());
-            }
-
-            if active.require_login_prompt && !active.login_seen && marker_found {
-                active.login_seen = true;
-                active.login_marker_tail.clear();
-                active.state = LifecycleState::Running;
-                self.pending.push_back(RuntimeEvent::StateChanged {
-                    run: run.clone(),
-                    state: LifecycleState::Running,
-                });
-                self.pending.push_back(RuntimeEvent::GuestReady {
-                    run: run.clone(),
-                    evidence: "rootglass-hello login prompt".to_string(),
-                });
-                self.pending.push_back(RuntimeEvent::SerialChunk {
-                    run,
-                    bytes,
-                    truncated,
-                });
-                return Ok(self.pending.pop_front());
-            }
-            return Ok(Some(RuntimeEvent::SerialChunk {
-                run,
-                bytes,
-                truncated,
-            }));
         }
-        if active.require_login_prompt
-            && !active.login_seen
-            && Instant::now() >= active.ready_deadline
-        {
-            let run = active.id.clone();
-            let _ = active
-                .process
-                .stop(Duration::from_secs(1), Duration::from_secs(1));
-            self.active = None;
-            return Ok(Some(RuntimeEvent::Failed {
-                run,
-                phase: LifecycleState::Failed,
-                summary: "The guest did not become ready in time.".to_string(),
-                detail: format!(
-                    "No rootglass-hello login prompt arrived within {} seconds.",
-                    GUEST_READY_TIMEOUT.as_secs()
-                ),
-            }));
-        }
-        if let Some(status) = active.process.try_wait().map_err(|error| AppError {
-            phase: active.state,
-            summary: "QEMU status could not be read.".to_string(),
-            detail: error.to_string(),
-        })? {
-            let id = active.id.clone();
-            let ready = active.login_seen || !active.require_login_prompt;
-            self.active = None;
-            if !ready {
-                return Ok(Some(RuntimeEvent::Failed {
-                    run: id,
-                    phase: LifecycleState::Failed,
-                    summary: "QEMU exited before the guest became ready.".to_string(),
-                    detail: format!(
-                        "QEMU exited with status {} before the login prompt appeared.",
-                        status
-                    ),
-                }));
+        ids.sort_by_key(|id| id.0);
+        let first = self
+            .poll_cursor
+            .as_ref()
+            .and_then(|cursor| ids.iter().position(|id| id.0 > cursor.0))
+            .unwrap_or(0);
+        ids.rotate_left(first);
+        for (index, id) in ids.into_iter().enumerate() {
+            self.poll_cursor = Some(id.clone());
+            let read_timeout = if index == 0 { timeout } else { Duration::ZERO };
+            let outcome = if self.active.as_ref().is_some_and(|active| active.id == id) {
+                poll_active_run(
+                    self.active.as_mut().expect("active run was checked"),
+                    read_timeout,
+                )?
+            } else if let Some(active) = self.encrypted_runs.get_mut(&id) {
+                poll_active_run(active, read_timeout)?
+            } else {
+                continue;
+            };
+            if outcome.finished {
+                self.remove_run(&id);
             }
-            return Ok(Some(RuntimeEvent::Exited {
-                run: id,
-                exit_code: status.code(),
-                expected: false,
-            }));
+            if !outcome.events.is_empty() {
+                self.pending.extend(outcome.events);
+                return Ok(self.pending.pop_front());
+            }
         }
         Ok(None)
     }
@@ -1167,7 +1157,7 @@ impl AppService {
     }
 
     pub fn stop(&mut self, run: &RunId) -> Result<(), AppError> {
-        if self.active.is_none() && self.last_stopped.as_ref() == Some(run) {
+        if !self.contains_run(run) && self.last_stopped.contains(run) {
             return Ok(());
         }
         self.stop_with_timeouts(run, Duration::from_secs(5), Duration::from_secs(2))
@@ -1185,32 +1175,14 @@ impl AppService {
         guest_shutdown_timeout: Duration,
         qmp_quit_timeout: Duration,
     ) -> Result<ExitStatus, AppError> {
-        let Some(active_id) = self.active.as_ref().map(|active| active.id.clone()) else {
-            return Err(AppError {
-                phase: LifecycleState::Stopped,
-                summary: "There is no active glass.".to_string(),
-                detail: "Start a glass before requesting run control.".to_string(),
-            });
-        };
-        if &active_id != run {
-            return Err(AppError {
-                phase: LifecycleState::Failed,
-                summary: "The run ID does not match the active glass.".to_string(),
-                detail: format!("Requested run {}, active run {}.", run.0, active_id.0),
-            });
-        }
+        self.require_active(run)?;
         self.pending.push_back(RuntimeEvent::StateChanged {
             run: run.clone(),
             state: LifecycleState::Stopping,
         });
-        self.active
-            .as_mut()
-            .expect("active run was validated")
-            .state = LifecycleState::Stopping;
-        let status = self
-            .active
-            .as_mut()
-            .expect("active run was validated")
+        let active = self.require_active(run)?;
+        active.state = LifecycleState::Stopping;
+        let status = active
             .process
             .stop(guest_shutdown_timeout, qmp_quit_timeout)
             .map_err(|error| AppError {
@@ -1218,8 +1190,8 @@ impl AppService {
                 summary: "QEMU could not be stopped cleanly.".to_string(),
                 detail: error.to_string(),
             })?;
-        self.active = None;
-        self.last_stopped = Some(run.clone());
+        self.remove_run(run);
+        self.last_stopped.insert(run.clone());
         self.pending.push_back(RuntimeEvent::StateChanged {
             run: run.clone(),
             state: LifecycleState::Stopped,
@@ -1302,16 +1274,204 @@ impl AppService {
     }
 
     fn require_active(&mut self, run: &RunId) -> Result<&mut ActiveRun, AppError> {
-        if let Some(error) = active_run_error(
-            self.active
-                .as_ref()
-                .map(|active| (&active.id, active.state)),
-            run,
-        ) {
-            return Err(error);
+        if self.active.as_ref().is_some_and(|active| &active.id == run) {
+            return Ok(self.active.as_mut().expect("active run was checked"));
         }
-        Ok(self.active.as_mut().expect("active run was validated"))
+        let current = self
+            .active
+            .as_ref()
+            .map(|active| (active.id.clone(), active.state))
+            .or_else(|| {
+                self.encrypted_runs
+                    .values()
+                    .next()
+                    .map(|active| (active.id.clone(), active.state))
+            });
+        if let Some(active) = self.encrypted_runs.get_mut(run) {
+            return Ok(active);
+        }
+        Err(
+            active_run_error(current.as_ref().map(|(id, state)| (id, *state)), run)
+                .expect("a missing run is always an error"),
+        )
     }
+
+    fn contains_run(&self, run: &RunId) -> bool {
+        self.active.as_ref().is_some_and(|active| &active.id == run)
+            || self.encrypted_runs.contains_key(run)
+    }
+
+    fn remove_run(&mut self, run: &RunId) {
+        if self.active.as_ref().is_some_and(|active| &active.id == run) {
+            self.active = None;
+        } else {
+            self.encrypted_runs.remove(run);
+        }
+    }
+}
+
+struct RunPollOutcome {
+    events: Vec<RuntimeEvent>,
+    finished: bool,
+}
+
+fn poll_active_run(active: &mut ActiveRun, timeout: Duration) -> Result<RunPollOutcome, AppError> {
+    let read_timeout = if active.login_seen || !active.require_login_prompt {
+        timeout
+    } else {
+        timeout.min(
+            active
+                .ready_deadline
+                .saturating_duration_since(Instant::now()),
+        )
+    };
+    if let Some(SerialChunk { bytes, truncated }) = active.process.read_serial(read_timeout) {
+        let run = active.id.clone();
+        let marker = b"rootglass-hello login:";
+        let mut scan = Vec::with_capacity(active.login_marker_tail.len() + bytes.len());
+        scan.extend_from_slice(&active.login_marker_tail);
+        scan.extend_from_slice(&bytes);
+        let marker_found = scan.windows(marker.len()).any(|window| window == marker);
+        let tail_len = marker.len().saturating_sub(1);
+        active.login_marker_tail = scan[scan.len().saturating_sub(tail_len)..].to_vec();
+        let diagnostic = scan_diagnostics(&active.diagnostic_tail, &bytes);
+        active.diagnostic_tail = diagnostic.tail;
+
+        if let Some(detail) = diagnostic.failure {
+            let _ = active
+                .process
+                .stop(Duration::from_secs(1), Duration::from_secs(1));
+            return Ok(RunPollOutcome {
+                events: vec![
+                    RuntimeEvent::SerialChunk {
+                        run: run.clone(),
+                        bytes,
+                        truncated,
+                    },
+                    RuntimeEvent::Failed {
+                        run,
+                        phase: LifecycleState::Failed,
+                        summary: "The guest reported a boot failure.".to_string(),
+                        detail,
+                    },
+                ],
+                finished: true,
+            });
+        }
+
+        if active.require_login_prompt
+            && !active.login_seen
+            && Instant::now() >= active.ready_deadline
+        {
+            let _ = active
+                .process
+                .stop(Duration::from_secs(1), Duration::from_secs(1));
+            return Ok(RunPollOutcome {
+                events: vec![
+                    RuntimeEvent::SerialChunk {
+                        run: run.clone(),
+                        bytes,
+                        truncated,
+                    },
+                    RuntimeEvent::Failed {
+                        run,
+                        phase: LifecycleState::Failed,
+                        summary: "The guest did not become ready in time.".to_string(),
+                        detail: format!(
+                            "No rootglass-hello login prompt arrived within {} seconds.",
+                            GUEST_READY_TIMEOUT.as_secs()
+                        ),
+                    },
+                ],
+                finished: true,
+            });
+        }
+
+        if active.require_login_prompt && !active.login_seen && marker_found {
+            active.login_seen = true;
+            active.login_marker_tail.clear();
+            active.state = LifecycleState::Running;
+            return Ok(RunPollOutcome {
+                events: vec![
+                    RuntimeEvent::StateChanged {
+                        run: run.clone(),
+                        state: LifecycleState::Running,
+                    },
+                    RuntimeEvent::GuestReady {
+                        run: run.clone(),
+                        evidence: "rootglass-hello login prompt".to_string(),
+                    },
+                    RuntimeEvent::SerialChunk {
+                        run,
+                        bytes,
+                        truncated,
+                    },
+                ],
+                finished: false,
+            });
+        }
+        return Ok(RunPollOutcome {
+            events: vec![RuntimeEvent::SerialChunk {
+                run,
+                bytes,
+                truncated,
+            }],
+            finished: false,
+        });
+    }
+
+    if active.require_login_prompt && !active.login_seen && Instant::now() >= active.ready_deadline
+    {
+        let run = active.id.clone();
+        let _ = active
+            .process
+            .stop(Duration::from_secs(1), Duration::from_secs(1));
+        return Ok(RunPollOutcome {
+            events: vec![RuntimeEvent::Failed {
+                run,
+                phase: LifecycleState::Failed,
+                summary: "The guest did not become ready in time.".to_string(),
+                detail: format!(
+                    "No rootglass-hello login prompt arrived within {} seconds.",
+                    GUEST_READY_TIMEOUT.as_secs()
+                ),
+            }],
+            finished: true,
+        });
+    }
+    if let Some(status) = active.process.try_wait().map_err(|error| AppError {
+        phase: active.state,
+        summary: "QEMU status could not be read.".to_string(),
+        detail: error.to_string(),
+    })? {
+        let id = active.id.clone();
+        let ready = active.login_seen || !active.require_login_prompt;
+        let event = if !ready {
+            RuntimeEvent::Failed {
+                run: id,
+                phase: LifecycleState::Failed,
+                summary: "QEMU exited before the guest became ready.".to_string(),
+                detail: format!(
+                    "QEMU exited with status {} before the login prompt appeared.",
+                    status
+                ),
+            }
+        } else {
+            RuntimeEvent::Exited {
+                run: id,
+                exit_code: status.code(),
+                expected: false,
+            }
+        };
+        return Ok(RunPollOutcome {
+            events: vec![event],
+            finished: true,
+        });
+    }
+    Ok(RunPollOutcome {
+        events: Vec::new(),
+        finished: false,
+    })
 }
 
 fn packaged_resource_root() -> PathBuf {
@@ -1503,6 +1663,37 @@ fn identity_provider_app_error(error: IdentityProviderError) -> AppError {
     }
 }
 
+fn encrypted_instance_policy_error(limit: u8) -> AppError {
+    AppError {
+        phase: LifecycleState::Starting,
+        summary: "The encrypted instance limit is invalid.".to_string(),
+        detail: format!(
+            "The local limit must be between 1 and {}, received {limit}.",
+            encrypted_sessions::MAX_ENCRYPTED_INSTANCES
+        ),
+    }
+}
+
+fn effective_encrypted_instance_limit(signed: u8, local: Option<u8>) -> Result<u8, AppError> {
+    if !(1..=encrypted_sessions::MAX_ENCRYPTED_INSTANCES).contains(&signed) {
+        return Err(encrypted_instance_policy_error(signed));
+    }
+    if let Some(local) = local {
+        if !(1..=encrypted_sessions::MAX_ENCRYPTED_INSTANCES).contains(&local) {
+            return Err(encrypted_instance_policy_error(local));
+        }
+    }
+    Ok(local.unwrap_or(signed).min(signed))
+}
+
+fn encrypted_session_app_error(error: encrypted_sessions::SessionError) -> AppError {
+    AppError {
+        phase: LifecycleState::Starting,
+        summary: "An encrypted instance slot could not be reserved.".to_string(),
+        detail: error.to_string(),
+    }
+}
+
 fn revoked_key_app_error(key_id: &str) -> AppError {
     AppError {
         phase: LifecycleState::Verifying,
@@ -1635,6 +1826,24 @@ mod diagnostics_tests {
         assert_eq!(error.summary, "The run identifier is stale.");
         assert_eq!(error.phase, LifecycleState::Running);
         assert!(active_run_error(Some((&active, LifecycleState::Running)), &active).is_none());
+    }
+
+    #[test]
+    fn encrypted_instance_limits_are_validated_and_local_preferences_only_lower_policy() {
+        for limit in 1..=encrypted_sessions::MAX_ENCRYPTED_INSTANCES {
+            let service = AppService::new()
+                .with_encrypted_instance_limit(limit)
+                .unwrap();
+            assert_eq!(service.encrypted_instance_limit, Some(limit));
+        }
+        for invalid in [0, encrypted_sessions::MAX_ENCRYPTED_INSTANCES + 1] {
+            assert!(AppService::new()
+                .with_encrypted_instance_limit(invalid)
+                .is_err());
+            assert!(effective_encrypted_instance_limit(invalid, None).is_err());
+        }
+        assert_eq!(effective_encrypted_instance_limit(3, Some(5)).unwrap(), 3);
+        assert_eq!(effective_encrypted_instance_limit(5, Some(2)).unwrap(), 2);
     }
 }
 
