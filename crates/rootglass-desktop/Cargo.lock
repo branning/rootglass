@@ -6027,7 +6027,9 @@ name = "rootglass-app"
 version = "0.1.0"
 dependencies = [
  "age",
+ "getrandom 0.4.3",
  "keyring",
+ "libc",
  "rootglass-core",
  "rootglass-manifest",
  "rootglass-qemu",
