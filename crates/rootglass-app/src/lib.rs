@@ -13,7 +13,8 @@ use rootglass_core::storage::{LocalWritableOverlay, WritableOverlaySelection};
 use rootglass_core::{
     CoreError, HostCapabilities, LaunchRequest, LifecycleState, RootglassRuntime,
 };
-use rootglass_manifest::MinimumRecipientHardware;
+use rootglass_manifest::BootData;
+pub use rootglass_manifest::MinimumRecipientHardware;
 use rootglass_qemu::{QemuLaunchPlan, QemuProcess, SerialChunk};
 use rootglass_signature::trust_config::{load_trust_store, LoadedTrustStore, TrustConfigError};
 use rootglass_signature::{SignatureError, TrustStore, VerifiedArtifactReader};
@@ -112,6 +113,75 @@ pub struct VerifiedRecipientInfo {
     pub provider_id: String,
     pub wrapping_suite_id: String,
     pub minimum_recipient_hardware: MinimumRecipientHardware,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerificationStatus {
+    Verified,
+    Failed,
+    NotChecked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerificationCheck {
+    pub status: VerificationStatus,
+    pub detail: String,
+}
+
+impl VerificationCheck {
+    fn verified(detail: impl Into<String>) -> Self {
+        Self {
+            status: VerificationStatus::Verified,
+            detail: detail.into(),
+        }
+    }
+
+    fn failed(detail: impl Into<String>) -> Self {
+        Self {
+            status: VerificationStatus::Failed,
+            detail: detail.into(),
+        }
+    }
+
+    fn not_checked(detail: impl Into<String>) -> Self {
+        Self {
+            status: VerificationStatus::NotChecked,
+            detail: detail.into(),
+        }
+    }
+}
+
+/// Read-only results for each independently reported encrypted-bundle check.
+/// This report contains public metadata only and never unwraps recipient keys.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EncryptedArchiveInspection {
+    pub content_sha256: Option<String>,
+    pub glass_identifier: Option<String>,
+    pub glass_version: Option<String>,
+    pub publisher_signature: VerificationCheck,
+    pub recipient_envelope: VerificationCheck,
+    pub encrypted_rootfs: VerificationCheck,
+    pub signed_policy: VerificationCheck,
+    pub recipients: Vec<VerifiedRecipientInfo>,
+    pub max_concurrent_instances: Option<u8>,
+    pub minimum_recipient_hardware: Option<MinimumRecipientHardware>,
+}
+
+impl Default for EncryptedArchiveInspection {
+    fn default() -> Self {
+        Self {
+            content_sha256: None,
+            glass_identifier: None,
+            glass_version: None,
+            publisher_signature: VerificationCheck::not_checked("Not checked."),
+            recipient_envelope: VerificationCheck::not_checked("Not checked."),
+            encrypted_rootfs: VerificationCheck::not_checked("Not checked."),
+            signed_policy: VerificationCheck::not_checked("Not checked."),
+            recipients: Vec::new(),
+            max_concurrent_instances: None,
+            minimum_recipient_hardware: None,
+        }
+    }
 }
 
 /// A fully verified encrypted artifact with its IMK unwrapped as the final preflight step.
@@ -393,6 +463,183 @@ impl PackageLibrary {
                 minimum_recipient_hardware: envelope.minimum_recipient_hardware().clone(),
             })
             .collect())
+    }
+
+    /// Verify publisher, recipient, encrypted-rootfs, and signed-policy claims
+    /// without installing the archive or unwrapping any recipient key.
+    pub fn inspect_encrypted_archive(
+        &self,
+        source: impl AsRef<Path>,
+    ) -> EncryptedArchiveInspection {
+        let source = source.as_ref();
+        let mut inspection = EncryptedArchiveInspection::default();
+        let archive = match import::open_archive_verified(
+            source,
+            &self.trust_store,
+            &import::ImportLimits::default(),
+        ) {
+            Ok(archive) => archive,
+            Err(error) => {
+                inspection.publisher_signature =
+                    VerificationCheck::failed(format!("Publisher verification failed: {error}"));
+                inspection.recipient_envelope = VerificationCheck::not_checked(
+                    "Recipient authority cannot be checked until publisher verification passes.",
+                );
+                inspection.encrypted_rootfs = VerificationCheck::not_checked(
+                    "Encrypted rootfs cannot be checked until publisher verification passes.",
+                );
+                inspection.signed_policy = VerificationCheck::not_checked(
+                    "Signed policy cannot be checked until publisher verification passes.",
+                );
+                return inspection;
+            }
+        };
+        inspection.content_sha256 = import::archive_content_sha256(source).ok();
+        let report = archive.report();
+        if self.revoked_key_ids.contains(&report.key_id) {
+            inspection.publisher_signature = VerificationCheck::failed(format!(
+                "Publisher signing key '{}' is revoked by the local trust policy.",
+                report.key_id
+            ));
+            inspection.recipient_envelope = VerificationCheck::not_checked(
+                "Recipient authority cannot be checked after publisher revocation.",
+            );
+            inspection.encrypted_rootfs = VerificationCheck::not_checked(
+                "Encrypted rootfs cannot be checked after publisher revocation.",
+            );
+            inspection.signed_policy = VerificationCheck::not_checked(
+                "Signed policy cannot be checked after publisher revocation.",
+            );
+            return inspection;
+        }
+        inspection.glass_identifier = Some(report.glass_identifier.clone());
+        inspection.glass_version = Some(report.glass_version.clone());
+        inspection.publisher_signature = VerificationCheck::verified(format!(
+            "Publisher signature and {} signed archive member(s) verified.",
+            report.subject_count
+        ));
+
+        match archive.verify_recipient_envelope() {
+            Ok(envelope) => {
+                let recipients = envelope
+                    .payload()
+                    .recipients
+                    .iter()
+                    .map(|recipient| VerifiedRecipientInfo {
+                        recipient_id: recipient.recipient_id.clone(),
+                        provider_id: recipient.provider_id.id().to_string(),
+                        wrapping_suite_id: recipient.wrapping_suite_id.id().to_string(),
+                        minimum_recipient_hardware: envelope.minimum_recipient_hardware().clone(),
+                    })
+                    .collect::<Vec<_>>();
+                inspection.recipient_envelope = VerificationCheck::verified(format!(
+                    "Recipient authority authenticated; {} public recipient(s) listed.",
+                    recipients.len()
+                ));
+                inspection.recipients = recipients;
+            }
+            Err(error) => {
+                inspection.recipient_envelope = VerificationCheck::failed(format!(
+                    "Recipient-envelope authentication failed: {error}"
+                ));
+            }
+        }
+
+        let Some(catalog) = report.artifact_catalog.as_ref() else {
+            inspection.encrypted_rootfs = VerificationCheck::not_checked(
+                "The publisher-verified archive has no schema-2 artifact catalog.",
+            );
+            inspection.signed_policy = VerificationCheck::not_checked(
+                "The publisher-verified archive has no signed encryption policy.",
+            );
+            return inspection;
+        };
+
+        let rootfs_ids = catalog
+            .profiles
+            .values()
+            .flat_map(|profile| profile.nodes.iter())
+            .filter_map(|node| match &node.boot {
+                BootData::Linux {
+                    rootfs_artifact, ..
+                } => Some(rootfs_artifact.clone()),
+                BootData::Mcu { .. } => None,
+            })
+            .collect::<BTreeSet<_>>();
+        if rootfs_ids.is_empty() {
+            inspection.encrypted_rootfs = VerificationCheck::failed(
+                "The signed catalog does not declare a Linux rootfs artifact.",
+            );
+        } else {
+            let mut unencrypted = Vec::new();
+            let mut invalid = Vec::new();
+            for artifact_id in &rootfs_ids {
+                if !catalog
+                    .artifacts
+                    .get(artifact_id)
+                    .is_some_and(|artifact| artifact.encryption.is_some())
+                {
+                    unencrypted.push(artifact_id.clone());
+                    continue;
+                }
+                if archive.open_encrypted_artifact(artifact_id).is_err() {
+                    invalid.push(artifact_id.clone());
+                }
+            }
+            inspection.encrypted_rootfs = if !invalid.is_empty() {
+                VerificationCheck::failed(format!(
+                    "Encrypted rootfs artifact range(s) are invalid: {}.",
+                    invalid.join(", ")
+                ))
+            } else if !unencrypted.is_empty() {
+                VerificationCheck::failed(format!(
+                    "Linux rootfs artifact(s) are not encrypted: {}.",
+                    unencrypted.join(", ")
+                ))
+            } else {
+                VerificationCheck::verified(format!(
+                    "{} Linux rootfs artifact(s) are declared encrypted in the signed catalog.",
+                    rootfs_ids.len()
+                ))
+            };
+        }
+
+        inspection.signed_policy = match catalog.encryption.as_ref() {
+            None => {
+                VerificationCheck::failed("The signed artifact catalog has no encryption policy.")
+            }
+            Some(policy) => {
+                inspection.max_concurrent_instances = Some(policy.max_concurrent_instances);
+                inspection.minimum_recipient_hardware =
+                    Some(policy.minimum_recipient_hardware.clone());
+                if !(1..=encrypted_sessions::MAX_ENCRYPTED_INSTANCES)
+                    .contains(&policy.max_concurrent_instances)
+                {
+                    VerificationCheck::failed(format!(
+                        "Signed instance limit {} is outside the supported range 1–{}.",
+                        policy.max_concurrent_instances,
+                        encrypted_sessions::MAX_ENCRYPTED_INSTANCES
+                    ))
+                } else if policy.recipient_authorities.is_empty() {
+                    VerificationCheck::failed(
+                        "The signed encryption policy has no recipient authority.",
+                    )
+                } else {
+                    let hardware = match policy.minimum_recipient_hardware {
+                        MinimumRecipientHardware::SoftwareAllowed => "software identities allowed",
+                        MinimumRecipientHardware::HardwareBackedRequired => {
+                            "hardware-backed identity required"
+                        }
+                    };
+                    VerificationCheck::verified(format!(
+                        "Signed policy allows up to {} concurrent instance(s); {hardware}.",
+                        policy.max_concurrent_instances
+                    ))
+                }
+            }
+        };
+
+        inspection
     }
 
     /// Verify an installed encrypted artifact and unwrap its selected recipient key only after
@@ -2861,6 +3108,91 @@ node_id = "linux"
             .read_to_end(&mut ciphertext)
             .unwrap();
         assert_eq!(ciphertext, b"mock encrypted disk bytes");
+
+        make_tree_writable(&root);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn encrypted_archive_inspection_reports_stages_without_installing_or_unwrapping() {
+        let root = temp_root();
+        let base_archive = root.join("encrypted-base.glass");
+        let (archive, trust, _identity) =
+            personalize_encrypted_fixture(&root, &base_archive, "software-allowed");
+        let library_root = root.join("library");
+        let service = AppService::with_trust_store(trust).with_library_root(&library_root);
+
+        let inspection = service
+            .package_library()
+            .inspect_encrypted_archive(&archive);
+        assert_eq!(
+            inspection.publisher_signature.status,
+            VerificationStatus::Verified
+        );
+        assert_eq!(
+            inspection.recipient_envelope.status,
+            VerificationStatus::Verified
+        );
+        assert_eq!(
+            inspection.encrypted_rootfs.status,
+            VerificationStatus::Verified
+        );
+        assert_eq!(
+            inspection.signed_policy.status,
+            VerificationStatus::Verified
+        );
+        assert_eq!(inspection.recipients.len(), 1);
+        assert_eq!(inspection.max_concurrent_instances, Some(1));
+        assert!(
+            !library_root.exists(),
+            "inspection must not install the archive"
+        );
+        assert!(
+            !format!("{inspection:?}").contains("wrapped_imk"),
+            "inspection contains public recipient metadata only"
+        );
+
+        let tampered_envelope = root.join("tampered-envelope.glass");
+        tamper_recipient_envelope(&archive, &tampered_envelope);
+        let envelope_failure = service
+            .package_library()
+            .inspect_encrypted_archive(&tampered_envelope);
+        assert_eq!(
+            envelope_failure.publisher_signature.status,
+            VerificationStatus::Verified
+        );
+        assert_eq!(
+            envelope_failure.recipient_envelope.status,
+            VerificationStatus::Failed
+        );
+        assert_eq!(
+            envelope_failure.encrypted_rootfs.status,
+            VerificationStatus::Verified
+        );
+        assert_eq!(
+            envelope_failure.signed_policy.status,
+            VerificationStatus::Verified
+        );
+        assert!(envelope_failure.recipients.is_empty());
+
+        let tampered_signed_file = root.join("tampered-signed-file.glass");
+        rewrite_archive_for_test(
+            &archive,
+            &tampered_signed_file,
+            Some(("rootglass.toml", false)),
+            None,
+        );
+        let signature_failure = service
+            .package_library()
+            .inspect_encrypted_archive(&tampered_signed_file);
+        assert_eq!(
+            signature_failure.publisher_signature.status,
+            VerificationStatus::Failed
+        );
+        assert_eq!(
+            signature_failure.recipient_envelope.status,
+            VerificationStatus::NotChecked
+        );
 
         make_tree_writable(&root);
         let _ = fs::remove_dir_all(root);

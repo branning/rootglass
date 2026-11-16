@@ -6078,6 +6078,7 @@ dependencies = [
  "rootglass-app",
  "rootglass-cli",
  "rootglass-core",
+ "rootglass-signature",
  "rootglass-terminal-vt",
  "rootglass-tui",
  "url",

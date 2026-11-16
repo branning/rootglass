@@ -30,6 +30,7 @@ portable-pty = { version = "0.9", optional = true }
 rootglass-app = { path = "../rootglass-app" }
 rootglass-cli = { path = "../rootglass-cli", default-features = false }
 rootglass-core = { path = "../rootglass-core" }
+rootglass-signature = { path = "../rootglass-signature" }
 rootglass-tui = { path = "../rootglass-tui", optional = true }
 rootglass-terminal-vt = { path = "../../prototypes/libghostty-vt-ratatui", optional = true }
 url = "2.5.8"

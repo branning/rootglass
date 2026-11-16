@@ -2,8 +2,12 @@ use crate::{DeveloperAction, DeveloperPanel, DeveloperResult};
 use rootglass_app::registry::InstalledGlass;
 use rootglass_app::state::StateRecord;
 use rootglass_app::{
-    AppError, AppService, DiagnosticLogSnapshot, ManifestValidationReport, PreflightReport, RunId,
-    RunOptions, RuntimeEvent, TrustPolicyStatus, UntrustedPublisherReview,
+    AppError, AppService, DiagnosticLogSnapshot, EncryptedArchiveInspection,
+    ManifestValidationReport, PreflightReport, RunId, RunOptions, RuntimeEvent, TrustPolicyStatus,
+    UntrustedPublisherReview,
+};
+use rootglass_core::identity::{
+    ProviderCapabilities, RecipientIdentity, RecipientIdentityProvider,
 };
 use rootglass_core::LifecycleState;
 use std::path::{Path, PathBuf};
@@ -227,6 +231,32 @@ pub trait TuiService: Send {
         })
     }
     fn start(&mut self, source: &Path) -> Result<RunId, AppError>;
+    fn recipient_identities(
+        &mut self,
+    ) -> Result<(ProviderCapabilities, Vec<RecipientIdentity>), AppError> {
+        Err(encryption_api_unavailable("identity listing"))
+    }
+    fn inspect_encrypted_archive(
+        &mut self,
+        _source: &Path,
+    ) -> Result<EncryptedArchiveInspection, AppError> {
+        Err(encryption_api_unavailable("encrypted archive verification"))
+    }
+    fn start_encrypted(
+        &mut self,
+        _source: &Path,
+        _recipient_id: Option<&str>,
+    ) -> Result<RunId, AppError> {
+        Err(encryption_api_unavailable("encrypted guest launch"))
+    }
+    fn list_encrypted_instances(
+        &mut self,
+    ) -> Result<Vec<rootglass_app::encrypted_sessions::EncryptedInstanceInfo>, AppError> {
+        Err(encryption_api_unavailable("encrypted instance listing"))
+    }
+    fn request_stop_encrypted_instance(&mut self, _run_id: &str) -> Result<(), AppError> {
+        Err(encryption_api_unavailable("remote encrypted guest stop"))
+    }
     fn stop(&mut self, run: &RunId) -> Result<(), AppError>;
     fn poll_events(&mut self) -> Result<Vec<RuntimeEvent>, AppError>;
     fn write_serial(&mut self, run: &RunId, bytes: &[u8]) -> Result<(), AppError>;
@@ -395,6 +425,45 @@ impl TuiService for AppService {
         AppService::start(self, source, RunOptions::default())
     }
 
+    fn recipient_identities(
+        &mut self,
+    ) -> Result<(ProviderCapabilities, Vec<RecipientIdentity>), AppError> {
+        let provider = rootglass_app::identity::AgeIdentityProvider::system()
+            .map_err(identity_provider_app_error)?;
+        let capabilities = provider.capabilities();
+        let identities = provider
+            .list_identities()
+            .map_err(identity_provider_app_error)?;
+        Ok((capabilities, identities))
+    }
+
+    fn inspect_encrypted_archive(
+        &mut self,
+        source: &Path,
+    ) -> Result<EncryptedArchiveInspection, AppError> {
+        Ok(self.package_library().inspect_encrypted_archive(source))
+    }
+
+    fn start_encrypted(
+        &mut self,
+        source: &Path,
+        recipient_id: Option<&str>,
+    ) -> Result<RunId, AppError> {
+        let provider = rootglass_app::identity::AgeIdentityProvider::system()
+            .map_err(identity_provider_app_error)?;
+        AppService::start_encrypted_archive(self, source, recipient_id, &provider)
+    }
+
+    fn list_encrypted_instances(
+        &mut self,
+    ) -> Result<Vec<rootglass_app::encrypted_sessions::EncryptedInstanceInfo>, AppError> {
+        AppService::list_encrypted_instances(self)
+    }
+
+    fn request_stop_encrypted_instance(&mut self, run_id: &str) -> Result<(), AppError> {
+        AppService::request_stop_encrypted_instance(self, run_id, Duration::from_secs(10))
+    }
+
     fn stop(&mut self, run: &RunId) -> Result<(), AppError> {
         AppService::stop(self, run)
     }
@@ -478,6 +547,22 @@ impl TuiService for AppService {
     ) -> Result<RunId, AppError> {
         AppService::stop(self, run)?;
         self.start_with_state(source, state_id)
+    }
+}
+
+fn encryption_api_unavailable(action: &str) -> AppError {
+    AppError {
+        phase: LifecycleState::Verifying,
+        summary: "Encrypted guest workflows are unavailable.".to_string(),
+        detail: format!("The active TUI service does not provide {action}."),
+    }
+}
+
+fn identity_provider_app_error(error: rootglass_core::identity::IdentityProviderError) -> AppError {
+    AppError {
+        phase: LifecycleState::Verifying,
+        summary: "The local Age identity provider is unavailable.".to_string(),
+        detail: error.to_string(),
     }
 }
 
