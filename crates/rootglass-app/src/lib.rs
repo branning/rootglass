@@ -208,6 +208,33 @@ impl PackageLibrary {
         })
     }
 
+    /// Open a verified encrypted disk from the immutable archive paired with an installed glass.
+    pub fn open_encrypted_artifact_reader(
+        &self,
+        installed: &registry::InstalledGlass,
+        artifact_id: &str,
+    ) -> Result<rootglass_signature::VerifiedArtifactReader, AppError> {
+        if self.revoked_key_ids.contains(&installed.key_id) {
+            return Err(revoked_key_app_error(&installed.key_id));
+        }
+        let expected_package = self.root.join("packages").join(&installed.content_sha256);
+        if installed.package_path != expected_package {
+            return Err(AppError {
+                phase: LifecycleState::Verifying,
+                summary: "The installed-glass registry contains an invalid package path."
+                    .to_string(),
+                detail: installed.package_path.display().to_string(),
+            });
+        }
+        crate::import::open_installed_encrypted_artifact(
+            installed,
+            artifact_id,
+            &self.trust_store,
+            &crate::import::ImportLimits::default(),
+        )
+        .map_err(|error| import_app_error("The encrypted artifact could not be opened.", error))
+    }
+
     pub fn installed_glasses(&self) -> Result<Vec<registry::InstalledGlass>, AppError> {
         let registry =
             registry::PackageRegistry::open(self.root.join("registry.json")).map_err(|error| {
@@ -1384,7 +1411,7 @@ mod library_tests {
     use serde_json::json;
     use sha2::{Digest, Sha256};
     use std::fs::{self, File};
-    use std::io;
+    use std::io::{self, Read};
     use std::time::{SystemTime, UNIX_EPOCH};
     use zip::write::SimpleFileOptions;
 
@@ -1492,6 +1519,120 @@ mod library_tests {
         .unwrap();
     }
 
+    fn package_encrypted_schema2_fixture(root: &Path, archive: &Path) -> TrustStore {
+        fs::create_dir_all(root.join("images")).unwrap();
+        fs::create_dir_all(root.join("signatures")).unwrap();
+        let disk = b"mock encrypted disk bytes";
+        fs::write(root.join("images/root.raw"), disk).unwrap();
+        let publisher_key = SigningKey::from_bytes(&[52; 32]);
+        let recipient_public_key = SigningKey::from_bytes(&[53; 32]).verifying_key().to_bytes();
+        let recipient_key_id = format!(
+            "ed25519:{}",
+            Sha256::digest(recipient_public_key)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        );
+        let manifest = format!(
+            r#"schema_version = 2
+name = "Encrypted Import Test"
+identifier = "io.rootglass.tests.encrypted-import"
+version = "0.2.0"
+
+[publisher]
+name = "Encrypted Import Publisher"
+identity = "rootglass.test/encrypted-import"
+signature = "signatures/glass.dsse.json"
+
+[artifact_catalog]
+catalog_version = 1
+default_profile = "default"
+
+[artifact_catalog.artifacts.linux-root]
+kind = "linux-boot-disk"
+format = "raw"
+size_bytes = {}
+sha256 = "{}"
+target_architecture = "aarch64"
+target_machine = "qemu:virt"
+
+[artifact_catalog.artifacts.linux-root.encryption]
+suite_id = "qemu-luks-v1"
+
+[artifact_catalog.artifacts.linux-root.storage]
+kind = "zip-entry"
+path = "images/root.raw"
+
+[artifact_catalog.encryption]
+minimum_recipient_hardware = "software-allowed"
+max_concurrent_instances = 1
+
+[[artifact_catalog.encryption.recipient_authorities]]
+key_id = "{}"
+public_key_base64url = "{}"
+
+[artifact_catalog.profiles.default]
+required_features = ["launch-profiles-v1", "linux-node-v1", "typed-devices-v1", "encrypted-artifacts-v1"]
+
+[artifact_catalog.profiles.default.resources]
+memory_mb = 1024
+cpus = 1
+
+[artifact_catalog.profiles.default.network]
+mode = "none"
+
+[[artifact_catalog.profiles.default.nodes]]
+id = "linux"
+startup_order = 0
+process_group = "linux"
+architecture = "aarch64"
+machine = "qemu:virt"
+boot = {{ kind = "linux", kernel = "builtin:aarch64-linux", device_tree = "builtin:aarch64-virt", rootfs_artifact = "linux-root", kernel_args = [] }}
+
+[[artifact_catalog.profiles.default.devices]]
+kind = "virtio-blk-mmio"
+id = "root-disk"
+node_id = "linux"
+artifact_id = "linux-root"
+read_only = true
+
+[[artifact_catalog.profiles.default.devices]]
+kind = "pl011-uart"
+id = "linux-console"
+node_id = "linux"
+"#,
+            disk.len(),
+            Sha256::digest(disk)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>(),
+            recipient_key_id,
+            URL_SAFE_NO_PAD.encode(recipient_public_key)
+        );
+        fs::write(root.join("rootglass.toml"), manifest).unwrap();
+        rootglass_signature::package_glass_directory_at(
+            root,
+            archive,
+            &publisher_key,
+            "2026-11-15T00:00:00Z",
+        )
+        .unwrap();
+        let public_key = publisher_key.verifying_key().to_bytes();
+        let key_id = format!(
+            "ed25519:{}",
+            Sha256::digest(public_key)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        );
+        TrustStore::new([rootglass_signature::TrustedPublisher {
+            name: "Encrypted Import Publisher".to_string(),
+            identity: "rootglass.test/encrypted-import".to_string(),
+            key_id,
+            public_key_base64url: URL_SAFE_NO_PAD.encode(public_key),
+        }])
+    }
+
     fn create_archive(source: &Path, archive: &Path) {
         let file = File::create(archive).unwrap();
         let mut writer = zip::ZipWriter::new(file);
@@ -1571,6 +1712,15 @@ mod library_tests {
             AppService::with_trust_store(TrustStore::example_fixture()).with_library_root(&library);
         let installed = service.import_archive(&archive).unwrap();
         assert_eq!(installed.identifier, "io.rootglass.examples.hello-world");
+        let archive_object = crate::import::archive_object_path(&installed);
+        assert_eq!(
+            fs::read(&archive_object).unwrap(),
+            fs::read(&archive).unwrap()
+        );
+        assert!(fs::metadata(&archive_object)
+            .unwrap()
+            .permissions()
+            .readonly());
         let reimported = service.import_archive(&archive).unwrap();
         assert_eq!(reimported.content_sha256, installed.content_sha256);
         assert_eq!(
@@ -1617,6 +1767,43 @@ mod library_tests {
     }
 
     #[test]
+    fn encrypted_import_keeps_disk_in_archive_and_opens_by_logical_id() {
+        let root = temp_root();
+        let source = root.join("encrypted-source");
+        let archive = root.join("encrypted.glass");
+        let library_root = root.join("library");
+        let trust = package_encrypted_schema2_fixture(&source, &archive);
+        let service = AppService::with_trust_store(trust).with_library_root(&library_root);
+
+        let installed = service.import_archive(&archive).unwrap();
+        let disk_path = installed.package_path.join("images/root.raw");
+        assert!(
+            !disk_path.exists(),
+            "encrypted disk is not extracted to storage"
+        );
+        let archive_object = crate::import::archive_object_path(&installed);
+        assert_eq!(
+            fs::read(&archive_object).unwrap(),
+            fs::read(&archive).unwrap()
+        );
+
+        let mut reader = service
+            .package_library()
+            .open_encrypted_artifact_reader(&installed, "linux-root")
+            .unwrap();
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"mock encrypted disk bytes");
+
+        let reimported = service.import_archive(&archive).unwrap();
+        assert_eq!(reimported.content_sha256, installed.content_sha256);
+        assert!(!reimported.package_path.join("images/root.raw").exists());
+
+        make_tree_writable(&root);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn import_recovers_when_registry_commit_fails_after_package_publication() {
         let root = temp_root();
         fs::create_dir_all(&root).unwrap();
@@ -1642,7 +1829,11 @@ mod library_tests {
         .expect_err("registry write should fail after package publication");
         assert!(matches!(failure, crate::import::ImportError::Registry(_)));
         assert!(registry.packages().is_empty());
-        assert_eq!(fs::read_dir(store.join("packages")).unwrap().count(), 1);
+        assert_eq!(
+            fs::read_dir(store.join("packages")).unwrap().count(),
+            2,
+            "failed registry commit leaves the immutable package and archive objects unreferenced"
+        );
 
         fs::remove_file(&registry_home).unwrap();
         fs::create_dir_all(&registry_home).unwrap();

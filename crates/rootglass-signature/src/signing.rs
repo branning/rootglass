@@ -8,6 +8,7 @@ use base64::Engine;
 use ed25519_dalek::{Signer, SigningKey};
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -30,6 +31,14 @@ struct GlassFile {
     path: PathBuf,
     digest: String,
     size: u64,
+}
+
+struct PreparedSignature {
+    signature_path: PathBuf,
+    envelope: DsseEnvelope,
+    report: SigningReport,
+    files: Vec<GlassFile>,
+    stored_artifact_paths: BTreeSet<String>,
 }
 
 const MAX_SIGNING_KEY_FILE_BYTES: u64 = 256;
@@ -85,15 +94,14 @@ pub fn sign_glass_directory_at(
 ) -> Result<SigningReport, SignatureError> {
     let root = glass_root.as_ref();
     let limits = VerificationLimits::default();
-    let (signature_path, envelope, report, _) =
-        prepare_signature(root, signing_key, created_at, &limits)?;
-    let envelope_path = root.join(signature_path);
+    let prepared = prepare_signature(root, signing_key, created_at, &limits)?;
+    let envelope_path = root.join(prepared.signature_path);
     let parent = envelope_path.parent().unwrap_or(root);
     fs::create_dir_all(parent).map_err(|source| SignatureError::WriteEnvelope {
         path: envelope_path.clone(),
         source,
     })?;
-    let encoded = serde_json::to_vec_pretty(&envelope)?;
+    let encoded = serde_json::to_vec_pretty(&prepared.envelope)?;
     if encoded.len() as u64 + 1 > limits.max_signature_bytes {
         return Err(SignatureError::SignatureEnvelopeTooLarge {
             limit: limits.max_signature_bytes,
@@ -105,7 +113,7 @@ pub fn sign_glass_directory_at(
             source,
         }
     })?;
-    Ok(report)
+    Ok(prepared.report)
 }
 
 /// Create and verify a deterministic ZIP .glass archive before publishing it.
@@ -131,8 +139,13 @@ pub fn package_glass_directory_at(
     }
 
     let limits = VerificationLimits::default();
-    let (signature_path, envelope, report, files) =
-        prepare_signature(root, signing_key, created_at, &limits)?;
+    let PreparedSignature {
+        signature_path,
+        envelope,
+        report,
+        files,
+        stored_artifact_paths,
+    } = prepare_signature(root, signing_key, created_at, &limits)?;
     let signature_name = super::path_to_string(&signature_path);
     let encoded = serde_json::to_vec_pretty(&envelope)?;
     let envelope_bytes = [encoded.as_slice(), b"\n"].concat();
@@ -151,6 +164,7 @@ pub fn package_glass_directory_at(
     let write_result = write_archive(
         &temporary,
         &files,
+        &stored_artifact_paths,
         &signature_name,
         &envelope_bytes,
         &limits,
@@ -191,7 +205,7 @@ fn prepare_signature(
     signing_key: &SigningKey,
     created_at: &str,
     limits: &VerificationLimits,
-) -> Result<(PathBuf, DsseEnvelope, SigningReport, Vec<GlassFile>), SignatureError> {
+) -> Result<PreparedSignature, SignatureError> {
     let root_metadata =
         fs::symlink_metadata(root).map_err(|source| SignatureError::ReadSignedFile {
             path: root.to_path_buf(),
@@ -221,7 +235,7 @@ fn prepare_signature(
     )?;
     files.sort_by(|left, right| left.name.cmp(&right.name));
 
-    if let Some(catalog) = &glass.manifest.artifact_catalog {
+    let stored_artifact_paths = if let Some(catalog) = &glass.manifest.artifact_catalog {
         for (artifact_id, artifact) in &catalog.artifacts {
             let file = files
                 .iter()
@@ -252,7 +266,15 @@ fn prepare_signature(
                 });
             }
         }
-    }
+        catalog
+            .artifacts
+            .values()
+            .filter(|artifact| artifact.encryption.is_some())
+            .map(|artifact| artifact.storage.path.clone())
+            .collect()
+    } else {
+        BTreeSet::new()
+    };
 
     let public_key = signing_key.verifying_key().to_bytes();
     let key_id = format!("ed25519:{}", hex_sha256(&public_key));
@@ -324,7 +346,13 @@ fn prepare_signature(
             limit: limits.max_total_uncompressed_bytes,
         });
     }
-    Ok((signature_path, envelope, report, files))
+    Ok(PreparedSignature {
+        signature_path,
+        envelope,
+        report,
+        files,
+        stored_artifact_paths,
+    })
 }
 
 fn collect_glass_files(
@@ -454,6 +482,7 @@ fn hash_file(path: &Path, expected_size: u64, limit: u64) -> Result<String, Sign
 fn write_archive(
     output: &Path,
     files: &[GlassFile],
+    stored_artifact_paths: &BTreeSet<String>,
     signature_name: &str,
     envelope: &[u8],
     limits: &VerificationLimits,
@@ -467,10 +496,6 @@ fn write_archive(
             source,
         })?;
     let mut writer = ZipWriter::new(file);
-    let options = SimpleFileOptions::default()
-        .compression_method(CompressionMethod::Deflated)
-        .last_modified_time(DateTime::default())
-        .unix_permissions(0o644);
     let mut order = files
         .iter()
         .map(|file| file.name.as_str())
@@ -479,6 +504,15 @@ fn write_archive(
     order.sort_unstable();
 
     for name in order {
+        let compression = if stored_artifact_paths.contains(name) {
+            CompressionMethod::Stored
+        } else {
+            CompressionMethod::Deflated
+        };
+        let options = SimpleFileOptions::default()
+            .compression_method(compression)
+            .last_modified_time(DateTime::default())
+            .unix_permissions(0o644);
         writer
             .start_file(name, options)
             .map_err(|error| SignatureError::WritePackage {
