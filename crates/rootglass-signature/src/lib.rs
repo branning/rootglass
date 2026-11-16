@@ -5,11 +5,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
-use std::io::{Cursor, Read, Seek, SeekFrom};
+use std::fs::{self, File};
+use std::io::{self, Cursor, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
-use zip::ZipArchive;
+use zip::{CompressionMethod, HasZipMetadata, ZipArchive};
 
 mod signing;
 pub mod trust_config;
@@ -208,6 +209,15 @@ pub enum SignatureError {
 
     #[error("artifact inventory mismatch for '{artifact_id}': {reason}")]
     ArtifactInventoryMismatch { artifact_id: String, reason: String },
+
+    #[error("encrypted artifact '{artifact_id}' has an invalid ZIP layout: {reason}")]
+    InvalidEncryptedArtifactLayout { artifact_id: String, reason: String },
+
+    #[error("encrypted artifact '{0}' is not present in the verified catalog")]
+    EncryptedArtifactNotFound(String),
+
+    #[error("artifact '{0}' is not declared as encrypted")]
+    ArtifactNotEncrypted(String),
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -335,6 +345,291 @@ pub struct VerificationReport {
     pub signed_paths: Vec<String>,
 }
 
+/// An archive that has passed publisher verification and encrypted-entry layout checks.
+/// Archive offsets and physical ZIP names are kept internal to the container abstraction.
+pub struct VerifiedArchive {
+    report: VerificationReport,
+    source: Arc<Mutex<File>>,
+    encrypted_artifacts: BTreeMap<String, VerifiedArtifactRange>,
+}
+
+impl VerifiedArchive {
+    pub fn report(&self) -> &VerificationReport {
+        &self.report
+    }
+
+    /// Open one signed encrypted disk as a bounded read-only stream.
+    pub fn open_encrypted_artifact(
+        &self,
+        artifact_id: &str,
+    ) -> Result<VerifiedArtifactReader, SignatureError> {
+        let catalog =
+            self.report.artifact_catalog.as_ref().ok_or_else(|| {
+                SignatureError::EncryptedArtifactNotFound(artifact_id.to_string())
+            })?;
+        let artifact = catalog
+            .artifacts
+            .get(artifact_id)
+            .ok_or_else(|| SignatureError::EncryptedArtifactNotFound(artifact_id.to_string()))?;
+        if artifact.encryption.is_none() {
+            return Err(SignatureError::ArtifactNotEncrypted(
+                artifact_id.to_string(),
+            ));
+        }
+        let range = self
+            .encrypted_artifacts
+            .get(artifact_id)
+            .ok_or_else(|| SignatureError::EncryptedArtifactNotFound(artifact_id.to_string()))?;
+        Ok(VerifiedArtifactReader {
+            source: Arc::clone(&self.source),
+            offset: range.offset,
+            length: range.length,
+            position: 0,
+        })
+    }
+}
+
+/// A signed development directory. Its encrypted assets are ordinary verified files,
+/// not ZIP ranges.
+pub struct VerifiedDirectory {
+    report: VerificationReport,
+    root: PathBuf,
+}
+
+impl VerifiedDirectory {
+    pub fn report(&self) -> &VerificationReport {
+        &self.report
+    }
+
+    /// Open one signed encrypted disk after checking its path, size, and digest again.
+    pub fn open_encrypted_artifact(
+        &self,
+        artifact_id: &str,
+    ) -> Result<VerifiedArtifactReader, SignatureError> {
+        let artifact = catalog_encrypted_artifact(&self.report, artifact_id)?;
+        let relative = normalize_relative_path(Path::new(&artifact.storage.path))?;
+        let root_metadata =
+            fs::symlink_metadata(&self.root).map_err(|source| SignatureError::ReadSignedFile {
+                path: self.root.clone(),
+                source,
+            })?;
+        if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+            return Err(SignatureError::UnsupportedArchiveEntry(
+                self.root.display().to_string(),
+            ));
+        }
+        ensure_no_symlink_components(&self.root, &relative, false)?;
+        let path = self.root.join(&relative);
+        let metadata =
+            fs::symlink_metadata(&path).map_err(|source| SignatureError::ReadSignedFile {
+                path: path.clone(),
+                source,
+            })?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(SignatureError::UnsupportedArchiveEntry(
+                path.display().to_string(),
+            ));
+        }
+        if metadata.len() != artifact.size_bytes {
+            return Err(SignatureError::ArtifactInventoryMismatch {
+                artifact_id: artifact_id.to_string(),
+                reason: format!(
+                    "development artifact size {} does not match signed size {}",
+                    metadata.len(),
+                    artifact.size_bytes
+                ),
+            });
+        }
+        let canonical_root =
+            fs::canonicalize(&self.root).map_err(|source| SignatureError::ReadSignedFile {
+                path: self.root.clone(),
+                source,
+            })?;
+        let canonical_path =
+            fs::canonicalize(&path).map_err(|source| SignatureError::ReadSignedFile {
+                path: path.clone(),
+                source,
+            })?;
+        if !canonical_path.starts_with(&canonical_root) {
+            return Err(SignatureError::UnsupportedArchiveEntry(
+                path.display().to_string(),
+            ));
+        }
+        let mut file = File::open(&path).map_err(|source| SignatureError::ReadSignedFile {
+            path: path.clone(),
+            source,
+        })?;
+        let digest = hash_open_file(&mut file, artifact.size_bytes).map_err(|source| {
+            SignatureError::ReadSignedFile {
+                path: path.clone(),
+                source,
+            }
+        })?;
+        if digest != artifact.sha256 {
+            return Err(SignatureError::DigestMismatch {
+                path: artifact.storage.path.clone(),
+                expected: artifact.sha256.clone(),
+                actual: digest,
+            });
+        }
+        file.seek(SeekFrom::Start(0))
+            .map_err(|source| SignatureError::ReadSignedFile {
+                path: path.clone(),
+                source,
+            })?;
+        Ok(VerifiedArtifactReader {
+            source: Arc::new(Mutex::new(file)),
+            offset: 0,
+            length: artifact.size_bytes,
+            position: 0,
+        })
+    }
+}
+
+fn catalog_encrypted_artifact<'a>(
+    report: &'a VerificationReport,
+    artifact_id: &str,
+) -> Result<&'a rootglass_manifest::Artifact, SignatureError> {
+    let catalog = report
+        .artifact_catalog
+        .as_ref()
+        .ok_or_else(|| SignatureError::EncryptedArtifactNotFound(artifact_id.to_string()))?;
+    let artifact = catalog
+        .artifacts
+        .get(artifact_id)
+        .ok_or_else(|| SignatureError::EncryptedArtifactNotFound(artifact_id.to_string()))?;
+    if artifact.encryption.is_none() {
+        return Err(SignatureError::ArtifactNotEncrypted(
+            artifact_id.to_string(),
+        ));
+    }
+    Ok(artifact)
+}
+
+/// A read-only reader constrained to one verified artifact. Seeking cannot escape its extent.
+pub struct VerifiedArtifactReader {
+    source: Arc<Mutex<File>>,
+    offset: u64,
+    length: u64,
+    position: u64,
+}
+
+impl VerifiedArtifactReader {
+    pub fn len(&self) -> u64 {
+        self.length
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.length == 0
+    }
+}
+
+impl Read for VerifiedArtifactReader {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let remaining = self.length.saturating_sub(self.position);
+        let count = buffer.len().min(remaining.min(usize::MAX as u64) as usize);
+        if count == 0 {
+            return Ok(0);
+        }
+        let absolute = self.offset.checked_add(self.position).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "artifact range overflow")
+        })?;
+        let mut source = self
+            .source
+            .lock()
+            .map_err(|_| io::Error::other("verified archive reader lock was poisoned"))?;
+        source.seek(SeekFrom::Start(absolute))?;
+        let read = source.read(&mut buffer[..count])?;
+        self.position += read as u64;
+        Ok(read)
+    }
+}
+
+impl Seek for VerifiedArtifactReader {
+    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+        let next = match position {
+            SeekFrom::Start(offset) => Some(offset),
+            SeekFrom::Current(offset) => self.position.checked_add_signed(offset),
+            SeekFrom::End(offset) => self.length.checked_add_signed(offset),
+        }
+        .filter(|offset| *offset <= self.length)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "seek is outside the verified artifact extent",
+            )
+        })?;
+        self.position = next;
+        Ok(next)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct VerifiedArtifactRange {
+    offset: u64,
+    length: u64,
+}
+
+/// Verify a ZIP archive and retain a read-only handle for its encrypted disk assets.
+pub fn open_verified_glass_archive(
+    archive_path: impl AsRef<Path>,
+    signature_path: impl AsRef<Path>,
+    trust_store: &TrustStore,
+) -> Result<VerifiedArchive, SignatureError> {
+    open_verified_glass_archive_with_limits(
+        archive_path,
+        signature_path,
+        trust_store,
+        &VerificationLimits::default(),
+    )
+}
+
+pub fn open_verified_glass_archive_with_limits(
+    archive_path: impl AsRef<Path>,
+    signature_path: impl AsRef<Path>,
+    trust_store: &TrustStore,
+    limits: &VerificationLimits,
+) -> Result<VerifiedArchive, SignatureError> {
+    limits.validate()?;
+    let archive_path = archive_path.as_ref();
+    let metadata =
+        fs::symlink_metadata(archive_path).map_err(|source| SignatureError::ReadArchive {
+            path: archive_path.to_path_buf(),
+            source,
+        })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(SignatureError::UnsupportedArchiveEntry(
+            archive_path.display().to_string(),
+        ));
+    }
+    if metadata.len() > limits.max_archive_bytes {
+        return Err(SignatureError::ArchiveTooLarge {
+            limit: limits.max_archive_bytes,
+        });
+    }
+    let source = File::open(archive_path).map_err(|source| SignatureError::ReadArchive {
+        path: archive_path.to_path_buf(),
+        source,
+    })?;
+    let verification_source = source
+        .try_clone()
+        .map_err(|source| SignatureError::ReadArchive {
+            path: archive_path.to_path_buf(),
+            source,
+        })?;
+    let (report, encrypted_artifacts) = verify_glass_archive_reader_with_artifacts(
+        verification_source,
+        signature_path,
+        trust_store,
+        limits,
+    )?;
+    Ok(VerifiedArchive {
+        report,
+        source: Arc::new(Mutex::new(source)),
+        encrypted_artifacts,
+    })
+}
+
 pub fn verify_glass_dir(
     glass_root: impl AsRef<Path>,
     signature_path: impl AsRef<Path>,
@@ -380,6 +675,33 @@ pub fn verify_glass_dir_with_limits(
     let envelope: DsseEnvelope = serde_json::from_slice(&envelope_bytes)?;
     let file_set = DirectoryFileSet::new(glass_root, &signature_path, limits.clone());
     verify_envelope_with_files(&file_set, &envelope, trust_store)
+}
+
+pub fn open_verified_glass_directory(
+    glass_root: impl AsRef<Path>,
+    signature_path: impl AsRef<Path>,
+    trust_store: &TrustStore,
+) -> Result<VerifiedDirectory, SignatureError> {
+    open_verified_glass_directory_with_limits(
+        glass_root,
+        signature_path,
+        trust_store,
+        &VerificationLimits::default(),
+    )
+}
+
+pub fn open_verified_glass_directory_with_limits(
+    glass_root: impl AsRef<Path>,
+    signature_path: impl AsRef<Path>,
+    trust_store: &TrustStore,
+    limits: &VerificationLimits,
+) -> Result<VerifiedDirectory, SignatureError> {
+    let glass_root = glass_root.as_ref();
+    let report = verify_glass_dir_with_limits(glass_root, signature_path, trust_store, limits)?;
+    Ok(VerifiedDirectory {
+        report,
+        root: glass_root.to_path_buf(),
+    })
 }
 
 pub fn verify_glass_archive(
@@ -456,16 +778,28 @@ pub fn verify_glass_archive_bytes_with_limits(
 }
 
 fn verify_glass_archive_reader<R: Read + Seek>(
-    mut reader: R,
+    reader: R,
     signature_path: impl AsRef<Path>,
     trust_store: &TrustStore,
     limits: &VerificationLimits,
 ) -> Result<VerificationReport, SignatureError> {
+    verify_glass_archive_reader_with_artifacts(reader, signature_path, trust_store, limits)
+        .map(|(report, _)| report)
+}
+
+fn verify_glass_archive_reader_with_artifacts<R: Read + Seek>(
+    mut reader: R,
+    signature_path: impl AsRef<Path>,
+    trust_store: &TrustStore,
+    limits: &VerificationLimits,
+) -> Result<(VerificationReport, BTreeMap<String, VerifiedArtifactRange>), SignatureError> {
     let signature_path = normalize_relative_path(signature_path.as_ref())?;
     preflight_zip_entry_count(&mut reader, limits)?;
+    let archive_len = reader.seek(SeekFrom::End(0)).map_err(zip_io_error)?;
+    reader.seek(SeekFrom::Start(0)).map_err(zip_io_error)?;
     let mut archive = ZipArchive::new(reader)?;
     let signature_name = path_to_string(&signature_path);
-    let files = read_zip_files(&mut archive, limits, &signature_name)?;
+    let ReadZipFiles { files, layouts } = read_zip_files(&mut archive, limits, &signature_name)?;
     let envelope_bytes = files
         .get(&path_to_string(&signature_path))
         .ok_or_else(|| SignatureError::MissingSubject(path_to_string(&signature_path)))?;
@@ -475,7 +809,15 @@ fn verify_glass_archive_reader<R: Read + Seek>(
         signature_path: signature_name,
         limits: limits.clone(),
     };
-    verify_envelope_with_files(&file_set, &envelope, trust_store)
+    let report = verify_envelope_with_files(&file_set, &envelope, trust_store)?;
+    let mut reader = archive.into_inner();
+    let ranges = verified_encrypted_artifact_ranges(
+        &mut reader,
+        archive_len,
+        report.artifact_catalog.as_ref(),
+        &layouts,
+    )?;
+    Ok((report, ranges))
 }
 
 /// Bound central-directory allocation before handing an untrusted ZIP to `zip`.
@@ -964,17 +1306,23 @@ impl FileSet for ArchiveFileSet {
     }
 }
 
+struct ReadZipFiles {
+    files: BTreeMap<String, Vec<u8>>,
+    layouts: Vec<ZipMemberLayout>,
+}
+
 fn read_zip_files<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
     limits: &VerificationLimits,
     signature_path: &str,
-) -> Result<BTreeMap<String, Vec<u8>>, SignatureError> {
+) -> Result<ReadZipFiles, SignatureError> {
     if archive.len() > limits.max_entries {
         return Err(SignatureError::TooManyArchiveEntries {
             limit: limits.max_entries,
         });
     }
     let mut files = BTreeMap::new();
+    let mut layouts = Vec::with_capacity(archive.len());
     let mut kinds = BTreeMap::<String, bool>::new();
     let mut total = 0u64;
 
@@ -983,6 +1331,21 @@ fn read_zip_files<R: Read + Seek>(
         let name = entry.name().to_string();
         let normalized = normalize_archive_name(&name, entry.is_dir())?;
         let is_dir = entry.is_dir();
+        let metadata = entry.get_metadata();
+        layouts.push(ZipMemberLayout {
+            path: normalized.clone(),
+            is_dir,
+            header_start: entry.header_start(),
+            data_start: entry.data_start(),
+            central_header_start: entry.central_header_start(),
+            compressed_size: entry.compressed_size(),
+            size: entry.size(),
+            crc32: entry.crc32(),
+            compression: entry.compression(),
+            encrypted: entry.encrypted(),
+            using_data_descriptor: metadata.using_data_descriptor,
+            name_raw: entry.name_raw().to_vec(),
+        });
 
         let collision_key = normalized.to_lowercase();
         if kinds.insert(collision_key.clone(), is_dir).is_some() {
@@ -1094,7 +1457,611 @@ fn read_zip_files<R: Read + Seek>(
         }
     }
 
-    Ok(files)
+    Ok(ReadZipFiles { files, layouts })
+}
+
+#[derive(Debug, Clone)]
+struct ZipMemberLayout {
+    path: String,
+    is_dir: bool,
+    header_start: u64,
+    data_start: u64,
+    central_header_start: u64,
+    compressed_size: u64,
+    size: u64,
+    crc32: u32,
+    compression: CompressionMethod,
+    encrypted: bool,
+    using_data_descriptor: bool,
+    name_raw: Vec<u8>,
+}
+
+#[derive(Debug)]
+struct ParsedZipMember {
+    layout: ZipMemberLayout,
+    data_end: u64,
+    record_end: u64,
+    central_record_end: u64,
+    central_flags: u16,
+    central_method: u16,
+    central_crc32: u32,
+    central_compressed_size: u32,
+    central_size: u32,
+    central_local_offset: u32,
+    central_name: Vec<u8>,
+    local_flags: u16,
+    local_method: u16,
+    local_crc32: u32,
+    local_compressed_size: u32,
+    local_size: u32,
+    local_name: Vec<u8>,
+    has_zip64: bool,
+}
+
+fn verified_encrypted_artifact_ranges<R: Read + Seek>(
+    reader: &mut R,
+    archive_len: u64,
+    catalog: Option<&rootglass_manifest::ArtifactCatalog>,
+    layouts: &[ZipMemberLayout],
+) -> Result<BTreeMap<String, VerifiedArtifactRange>, SignatureError> {
+    let Some(catalog) = catalog else {
+        return Ok(BTreeMap::new());
+    };
+    let encrypted_artifacts = catalog
+        .artifacts
+        .iter()
+        .filter(|(_, artifact)| artifact.encryption.is_some())
+        .collect::<Vec<_>>();
+    if encrypted_artifacts.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let diagnostic_id = encrypted_artifacts[0].0.clone();
+    let fail = |reason: String| SignatureError::InvalidEncryptedArtifactLayout {
+        artifact_id: diagnostic_id.clone(),
+        reason,
+    };
+
+    let (uses_zip64, eocd_start) = archive_end_record_info(reader, archive_len).map_err(fail)?;
+    if uses_zip64 {
+        return Err(fail(
+            "ZIP64 is not qualified for encrypted artifact ranges".to_string(),
+        ));
+    }
+
+    let mut parsed = Vec::with_capacity(layouts.len());
+    for layout in layouts {
+        parsed.push(parse_zip_member_layout(reader, archive_len, layout).map_err(fail)?);
+    }
+    if parsed.iter().any(|member| member.has_zip64) {
+        return Err(fail(
+            "ZIP64 fields are not qualified in encrypted archives".to_string(),
+        ));
+    }
+    validate_non_overlapping_zip_layouts(&parsed, archive_len, eocd_start).map_err(fail)?;
+
+    let mut members_by_path = BTreeMap::new();
+    for member in parsed {
+        if members_by_path
+            .insert(member.layout.path.clone(), member)
+            .is_some()
+        {
+            return Err(fail(
+                "multiple ZIP records map to one normalized path".to_string(),
+            ));
+        }
+    }
+
+    let mut ranges = BTreeMap::new();
+    for (artifact_id, artifact) in encrypted_artifacts {
+        if artifact.kind != rootglass_manifest::ArtifactKind::LinuxBootDisk {
+            return Err(SignatureError::InvalidEncryptedArtifactLayout {
+                artifact_id: artifact_id.clone(),
+                reason: "only Linux boot disks can use the encrypted range reader".to_string(),
+            });
+        }
+        if artifact.storage.kind != rootglass_manifest::StorageKind::ZipEntry {
+            return Err(SignatureError::InvalidEncryptedArtifactLayout {
+                artifact_id: artifact_id.clone(),
+                reason: "encrypted disk storage must be a ZIP entry".to_string(),
+            });
+        }
+        let expected_path =
+            path_to_string(&normalize_relative_path(Path::new(&artifact.storage.path))?);
+        let member = members_by_path.get(&expected_path).ok_or_else(|| {
+            SignatureError::InvalidEncryptedArtifactLayout {
+                artifact_id: artifact_id.clone(),
+                reason: format!("catalog storage path '{expected_path}' is absent from the ZIP"),
+            }
+        })?;
+        if member.layout.is_dir {
+            return Err(SignatureError::InvalidEncryptedArtifactLayout {
+                artifact_id: artifact_id.clone(),
+                reason: "catalog storage path resolves to a ZIP directory".to_string(),
+            });
+        }
+        if member.layout.compression != CompressionMethod::Stored
+            || member.central_method != 0
+            || member.local_method != 0
+        {
+            return Err(SignatureError::InvalidEncryptedArtifactLayout {
+                artifact_id: artifact_id.clone(),
+                reason: "encrypted disk entry must use ZIP method STORED".to_string(),
+            });
+        }
+        if member.layout.encrypted || member.central_flags & 1 != 0 || member.local_flags & 1 != 0 {
+            return Err(SignatureError::InvalidEncryptedArtifactLayout {
+                artifact_id: artifact_id.clone(),
+                reason: "ZIP-level encryption is not supported for encrypted disk entries"
+                    .to_string(),
+            });
+        }
+        if member.layout.using_data_descriptor
+            || member.central_flags & (1 << 3) != 0
+            || member.local_flags & (1 << 3) != 0
+        {
+            return Err(SignatureError::InvalidEncryptedArtifactLayout {
+                artifact_id: artifact_id.clone(),
+                reason: "encrypted disk entry must not use a trailing data descriptor".to_string(),
+            });
+        }
+        if member.has_zip64 {
+            return Err(SignatureError::InvalidEncryptedArtifactLayout {
+                artifact_id: artifact_id.clone(),
+                reason: "ZIP64 fields are not qualified for encrypted disk entries".to_string(),
+            });
+        }
+        if member.central_name != artifact.storage.path.as_bytes()
+            || member.local_name != artifact.storage.path.as_bytes()
+        {
+            return Err(SignatureError::InvalidEncryptedArtifactLayout {
+                artifact_id: artifact_id.clone(),
+                reason: "local and central ZIP names must exactly match the signed storage path"
+                    .to_string(),
+            });
+        }
+        if member.local_flags != member.central_flags
+            || member.local_method != member.central_method
+            || member.local_crc32 != member.central_crc32
+            || member.local_compressed_size != member.central_compressed_size
+            || member.local_size != member.central_size
+            || member.central_crc32 != member.layout.crc32
+            || u64::from(member.central_compressed_size) != member.layout.compressed_size
+            || u64::from(member.central_size) != member.layout.size
+            || member.layout.size != artifact.size_bytes
+            || member.layout.compressed_size != artifact.size_bytes
+        {
+            return Err(SignatureError::InvalidEncryptedArtifactLayout {
+                artifact_id: artifact_id.clone(),
+                reason: "local header, central directory, and signed catalog metadata disagree"
+                    .to_string(),
+            });
+        }
+        if member.central_flags & !((1 << 11) as u16) != 0 {
+            return Err(SignatureError::InvalidEncryptedArtifactLayout {
+                artifact_id: artifact_id.clone(),
+                reason: "encrypted disk entry uses unsupported ZIP general-purpose flags"
+                    .to_string(),
+            });
+        }
+        let length = member.data_end.saturating_sub(member.layout.data_start);
+        ranges.insert(
+            artifact_id.clone(),
+            VerifiedArtifactRange {
+                offset: member.layout.data_start,
+                length,
+            },
+        );
+    }
+    Ok(ranges)
+}
+
+fn archive_end_record_info<R: Read + Seek>(
+    reader: &mut R,
+    archive_len: u64,
+) -> Result<(bool, u64), String> {
+    const EOCD_SIGNATURE: &[u8; 4] = b"PK\x05\x06";
+    const ZIP64_LOCATOR_SIGNATURE: &[u8; 4] = b"PK\x06\x07";
+    const EOCD_MIN_BYTES: usize = 22;
+    let tail_len = archive_len.min((EOCD_MIN_BYTES + u16::MAX as usize) as u64) as usize;
+    if tail_len < EOCD_MIN_BYTES {
+        return Err("archive is too short to contain a ZIP end record".to_string());
+    }
+    let tail_start = archive_len - tail_len as u64;
+    let tail = read_zip_bytes(reader, archive_len, tail_start, tail_len)?;
+    let eocd_offset = (0..=tail.len() - EOCD_MIN_BYTES)
+        .rev()
+        .find(|offset| {
+            tail.get(*offset..*offset + 4) == Some(EOCD_SIGNATURE.as_slice())
+                && offset.checked_add(EOCD_MIN_BYTES).and_then(|end| {
+                    end.checked_add(
+                        u16::from_le_bytes([tail[*offset + 20], tail[*offset + 21]]) as usize
+                    )
+                }) == Some(tail.len())
+        })
+        .ok_or_else(|| "archive is missing a valid ZIP end record".to_string())?;
+    let eocd = &tail[eocd_offset..eocd_offset + EOCD_MIN_BYTES];
+    let has_sentinel = u16::from_le_bytes([eocd[8], eocd[9]]) == u16::MAX
+        || u16::from_le_bytes([eocd[10], eocd[11]]) == u16::MAX
+        || u32::from_le_bytes(eocd[12..16].try_into().expect("fixed ZIP end record")) == u32::MAX
+        || u32::from_le_bytes(eocd[16..20].try_into().expect("fixed ZIP end record")) == u32::MAX;
+    let eocd_absolute = tail_start + eocd_offset as u64;
+    let has_locator = eocd_absolute >= 20
+        && read_zip_bytes(reader, archive_len, eocd_absolute - 20, 4)?.as_slice()
+            == ZIP64_LOCATOR_SIGNATURE;
+    if le_u16(eocd, 4) != 0 || le_u16(eocd, 6) != 0 {
+        return Err("multi-disk ZIP archives are not supported for encrypted assets".to_string());
+    }
+    Ok((has_sentinel || has_locator, eocd_absolute))
+}
+
+fn parse_zip_member_layout<R: Read + Seek>(
+    reader: &mut R,
+    archive_len: u64,
+    layout: &ZipMemberLayout,
+) -> Result<ParsedZipMember, String> {
+    const CENTRAL_SIGNATURE: &[u8; 4] = b"PK\x01\x02";
+    const LOCAL_SIGNATURE: &[u8; 4] = b"PK\x03\x04";
+
+    let central_fixed = read_zip_bytes(reader, archive_len, layout.central_header_start, 46)?;
+    if central_fixed.get(..4) != Some(CENTRAL_SIGNATURE.as_slice()) {
+        return Err(format!(
+            "entry '{}' has an invalid central-directory header",
+            layout.path
+        ));
+    }
+    let central_flags = le_u16(&central_fixed, 8);
+    let central_method = le_u16(&central_fixed, 10);
+    let central_crc32 = le_u32(&central_fixed, 16);
+    let central_compressed_size = le_u32(&central_fixed, 20);
+    let central_size = le_u32(&central_fixed, 24);
+    let central_name_len = le_u16(&central_fixed, 28) as usize;
+    let central_extra_len = le_u16(&central_fixed, 30) as usize;
+    let central_comment_len = le_u16(&central_fixed, 32) as usize;
+    let central_disk = le_u16(&central_fixed, 34);
+    let central_local_offset = le_u32(&central_fixed, 42);
+    let central_variable_len = central_name_len
+        .checked_add(central_extra_len)
+        .and_then(|length| length.checked_add(central_comment_len))
+        .ok_or_else(|| format!("entry '{}' central header length overflows", layout.path))?;
+    let central_variable_start = layout
+        .central_header_start
+        .checked_add(46)
+        .ok_or_else(|| format!("entry '{}' central header offset overflows", layout.path))?;
+    let central_variable = read_zip_bytes(
+        reader,
+        archive_len,
+        central_variable_start,
+        central_variable_len,
+    )?;
+    let central_name = central_variable[..central_name_len].to_vec();
+    let central_extra = &central_variable[central_name_len..central_name_len + central_extra_len];
+    let central_extra_zip64 = has_zip64_extra(central_extra)?;
+    let central_record_end = central_variable_start
+        .checked_add(central_variable_len as u64)
+        .ok_or_else(|| format!("entry '{}' central record end overflows", layout.path))?;
+
+    let local_fixed = read_zip_bytes(reader, archive_len, layout.header_start, 30)?;
+    if local_fixed.get(..4) != Some(LOCAL_SIGNATURE.as_slice()) {
+        return Err(format!(
+            "entry '{}' has an invalid local-file header",
+            layout.path
+        ));
+    }
+    let local_flags = le_u16(&local_fixed, 6);
+    let local_method = le_u16(&local_fixed, 8);
+    let local_crc32 = le_u32(&local_fixed, 14);
+    let local_compressed_size = le_u32(&local_fixed, 18);
+    let local_size = le_u32(&local_fixed, 22);
+    let local_name_len = le_u16(&local_fixed, 26) as usize;
+    let local_extra_len = le_u16(&local_fixed, 28) as usize;
+    let local_variable_len = local_name_len
+        .checked_add(local_extra_len)
+        .ok_or_else(|| format!("entry '{}' local header length overflows", layout.path))?;
+    let local_variable_start = layout
+        .header_start
+        .checked_add(30)
+        .ok_or_else(|| format!("entry '{}' local header offset overflows", layout.path))?;
+    let local_variable = read_zip_bytes(
+        reader,
+        archive_len,
+        local_variable_start,
+        local_variable_len,
+    )?;
+    let local_name = local_variable[..local_name_len].to_vec();
+    let local_extra = &local_variable[local_name_len..];
+    let local_extra_zip64 = has_zip64_extra(local_extra)?;
+    let calculated_data_start = local_variable_start
+        .checked_add(local_variable_len as u64)
+        .ok_or_else(|| format!("entry '{}' data offset overflows", layout.path))?;
+    if calculated_data_start != layout.data_start {
+        return Err(format!(
+            "entry '{}' data offset disagrees with its local header",
+            layout.path
+        ));
+    }
+    if central_disk != 0 {
+        return Err(format!(
+            "entry '{}' uses a multi-disk ZIP layout",
+            layout.path
+        ));
+    }
+    if central_name != local_name || central_name != layout.name_raw {
+        return Err(format!(
+            "entry '{}' local and central names disagree",
+            layout.path
+        ));
+    }
+    if central_flags != local_flags || central_method != local_method {
+        return Err(format!(
+            "entry '{}' local and central flags or methods disagree",
+            layout.path
+        ));
+    }
+    let has_descriptor = central_flags & (1 << 3) != 0;
+    if has_descriptor != layout.using_data_descriptor
+        || (central_flags & 1 != 0) != layout.encrypted
+    {
+        return Err(format!(
+            "entry '{}' ZIP flags disagree with the parsed entry",
+            layout.path
+        ));
+    }
+    if central_compressed_size != u32::MAX
+        && u64::from(central_compressed_size) != layout.compressed_size
+        || central_size != u32::MAX && u64::from(central_size) != layout.size
+        || central_crc32 != layout.crc32
+    {
+        return Err(format!(
+            "entry '{}' central metadata disagrees with the parsed entry",
+            layout.path
+        ));
+    }
+    if !has_descriptor
+        && (local_crc32 != central_crc32
+            || local_compressed_size != central_compressed_size
+            || local_size != central_size)
+    {
+        return Err(format!(
+            "entry '{}' local sizes or CRC disagree with the central directory",
+            layout.path
+        ));
+    }
+    if has_descriptor
+        && ((local_crc32 != 0 && local_crc32 != central_crc32)
+            || (local_compressed_size != 0 && local_compressed_size != central_compressed_size)
+            || (local_size != 0 && local_size != central_size))
+    {
+        return Err(format!(
+            "entry '{}' local descriptor placeholders disagree with central metadata",
+            layout.path
+        ));
+    }
+
+    let data_end = layout
+        .data_start
+        .checked_add(layout.compressed_size)
+        .filter(|end| *end <= archive_len)
+        .ok_or_else(|| {
+            format!(
+                "entry '{}' payload is truncated or out of bounds",
+                layout.path
+            )
+        })?;
+    let descriptor_len = if has_descriptor {
+        verify_data_descriptor(
+            reader,
+            archive_len,
+            data_end,
+            central_crc32,
+            central_compressed_size,
+            central_size,
+            &layout.path,
+        )?
+    } else {
+        0
+    };
+    let record_end = data_end
+        .checked_add(descriptor_len)
+        .filter(|end| *end <= archive_len)
+        .ok_or_else(|| {
+            format!(
+                "entry '{}' record is truncated or out of bounds",
+                layout.path
+            )
+        })?;
+
+    let has_zip64 = central_compressed_size == u32::MAX
+        || central_size == u32::MAX
+        || central_local_offset == u32::MAX
+        || local_compressed_size == u32::MAX
+        || local_size == u32::MAX
+        || central_extra_zip64
+        || local_extra_zip64;
+    Ok(ParsedZipMember {
+        layout: layout.clone(),
+        data_end,
+        record_end,
+        central_record_end,
+        central_flags,
+        central_method,
+        central_crc32,
+        central_compressed_size,
+        central_size,
+        central_local_offset,
+        central_name,
+        local_flags,
+        local_method,
+        local_crc32,
+        local_compressed_size,
+        local_size,
+        local_name,
+        has_zip64,
+    })
+}
+
+fn validate_non_overlapping_zip_layouts(
+    members: &[ParsedZipMember],
+    archive_len: u64,
+    eocd_start: u64,
+) -> Result<(), String> {
+    let central_start = members
+        .iter()
+        .map(|member| member.layout.central_header_start)
+        .min()
+        .ok_or_else(|| "archive has no central-directory entries".to_string())?;
+    if central_start > archive_len {
+        return Err("central directory lies outside the archive".to_string());
+    }
+
+    let mut local_ranges = members
+        .iter()
+        .map(|member| {
+            (
+                member.layout.header_start,
+                member.record_end,
+                member.layout.path.as_str(),
+            )
+        })
+        .collect::<Vec<_>>();
+    local_ranges.sort_by_key(|range| range.0);
+    for pair in local_ranges.windows(2) {
+        if pair[0].1 > pair[1].0 {
+            return Err(format!(
+                "ZIP local records '{}' and '{}' overlap",
+                pair[0].2, pair[1].2
+            ));
+        }
+    }
+    if local_ranges.iter().any(|(_, end, _)| *end > central_start) {
+        return Err("ZIP local record overlaps the central directory".to_string());
+    }
+
+    let mut central_ranges = members
+        .iter()
+        .map(|member| {
+            (
+                member.layout.central_header_start,
+                member.central_record_end,
+                member.layout.path.as_str(),
+            )
+        })
+        .collect::<Vec<_>>();
+    central_ranges.sort_by_key(|range| range.0);
+    if central_ranges.iter().any(|(_, end, _)| *end > eocd_start) {
+        return Err("central directory overlaps the ZIP end record".to_string());
+    }
+    for pair in central_ranges.windows(2) {
+        if pair[0].1 > pair[1].0 {
+            return Err(format!(
+                "ZIP central records '{}' and '{}' overlap",
+                pair[0].2, pair[1].2
+            ));
+        }
+    }
+
+    let archive_base = members
+        .iter()
+        .map(|member| {
+            member
+                .layout
+                .header_start
+                .checked_sub(u64::from(member.central_local_offset))
+                .ok_or_else(|| {
+                    format!(
+                        "entry '{}' has an invalid local-header offset",
+                        member.layout.path
+                    )
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if archive_base.iter().any(|base| *base != archive_base[0]) {
+        return Err("central directory local-header offsets disagree".to_string());
+    }
+    Ok(())
+}
+
+fn verify_data_descriptor<R: Read + Seek>(
+    reader: &mut R,
+    archive_len: u64,
+    offset: u64,
+    crc32: u32,
+    compressed_size: u32,
+    size: u32,
+    path: &str,
+) -> Result<u64, String> {
+    const DESCRIPTOR_SIGNATURE: u32 = 0x0807_4b50;
+    let available = archive_len.saturating_sub(offset).min(16) as usize;
+    if available < 12 {
+        return Err(format!("entry '{path}' has a truncated data descriptor"));
+    }
+    let bytes = read_zip_bytes(reader, archive_len, offset, available)?;
+    let direct_matches = le_u32(&bytes, 0) == crc32
+        && le_u32(&bytes, 4) == compressed_size
+        && le_u32(&bytes, 8) == size;
+    let signed_matches = bytes.len() >= 16
+        && le_u32(&bytes, 0) == DESCRIPTOR_SIGNATURE
+        && le_u32(&bytes, 4) == crc32
+        && le_u32(&bytes, 8) == compressed_size
+        && le_u32(&bytes, 12) == size;
+    match (direct_matches, signed_matches) {
+        (true, false) => Ok(12),
+        (false, true) => Ok(16),
+        (true, true) => Err(format!("entry '{path}' has an ambiguous data descriptor")),
+        (false, false) => Err(format!(
+            "entry '{path}' data descriptor disagrees with central metadata"
+        )),
+    }
+}
+
+fn has_zip64_extra(extra: &[u8]) -> Result<bool, String> {
+    let mut cursor = 0usize;
+    let mut found = false;
+    while cursor < extra.len() {
+        let header_end = cursor
+            .checked_add(4)
+            .filter(|end| *end <= extra.len())
+            .ok_or_else(|| "malformed ZIP extra field".to_string())?;
+        let identifier = u16::from_le_bytes([extra[cursor], extra[cursor + 1]]);
+        let length = u16::from_le_bytes([extra[cursor + 2], extra[cursor + 3]]) as usize;
+        cursor = header_end
+            .checked_add(length)
+            .filter(|end| *end <= extra.len())
+            .ok_or_else(|| "malformed ZIP extra field length".to_string())?;
+        found |= identifier == 0x0001;
+    }
+    Ok(found)
+}
+
+fn read_zip_bytes<R: Read + Seek>(
+    reader: &mut R,
+    archive_len: u64,
+    offset: u64,
+    length: usize,
+) -> Result<Vec<u8>, String> {
+    let end = offset
+        .checked_add(length as u64)
+        .filter(|end| *end <= archive_len)
+        .ok_or_else(|| "ZIP structure is truncated or out of bounds".to_string())?;
+    let mut bytes = vec![0; length];
+    reader
+        .seek(SeekFrom::Start(offset))
+        .and_then(|_| reader.read_exact(&mut bytes))
+        .map_err(|error| format!("could not read ZIP structure: {error}"))?;
+    debug_assert!(end <= archive_len);
+    Ok(bytes)
+}
+
+fn le_u16(bytes: &[u8], offset: usize) -> u16 {
+    u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
+}
+
+fn le_u32(bytes: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes([
+        bytes[offset],
+        bytes[offset + 1],
+        bytes[offset + 2],
+        bytes[offset + 3],
+    ])
 }
 
 fn collect_directory_files(
@@ -1382,6 +2349,40 @@ pub(crate) fn hex_sha256(bytes: &[u8]) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+fn hash_open_file(file: &mut File, expected_size: u64) -> io::Result<String> {
+    file.seek(SeekFrom::Start(0))?;
+    let mut hasher = Sha256::new();
+    let mut count = 0u64;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        count = count
+            .checked_add(read as u64)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "file size overflow"))?;
+        if count > expected_size {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "file grew after signature verification",
+            ));
+        }
+        hasher.update(&buffer[..read]);
+    }
+    if count != expected_size {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "file size changed after signature verification",
+        ));
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1477,6 +2478,110 @@ mod tests {
         let error = verify_glass_dir(&root, "signatures/glass.dsse.json", &trust)
             .expect_err("tampered schema-2 artifact is rejected");
         assert!(matches!(error, SignatureError::DigestMismatch { .. }));
+
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_file(archive_path);
+    }
+
+    #[test]
+    fn encrypted_archive_packages_stored_ranges_and_returns_bounded_reader() {
+        let (root, archive_path, key, trust) = temp_encrypted_schema2_bundle();
+        package_glass_directory_at(&root, &archive_path, &key, "2026-11-15T00:00:00Z")
+            .expect("encrypted disk is packaged as a stored ZIP member");
+
+        let verified =
+            open_verified_glass_archive(&archive_path, "signatures/glass.dsse.json", &trust)
+                .expect("encrypted archive verifies and exposes its checked reader");
+        let mut artifact = verified
+            .open_encrypted_artifact("linux-root")
+            .expect("logical artifact ID selects the encrypted disk");
+        let mut bytes = Vec::new();
+        artifact.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"linux-rootfs");
+        assert_eq!(artifact.len(), bytes.len() as u64);
+        assert_eq!(artifact.seek(SeekFrom::End(0)).unwrap(), bytes.len() as u64);
+        assert!(artifact.seek(SeekFrom::Current(1)).is_err());
+        assert!(matches!(
+            verified.open_encrypted_artifact("controller-fw"),
+            Err(SignatureError::ArtifactNotEncrypted(_))
+        ));
+
+        let directory = open_verified_glass_directory(&root, "signatures/glass.dsse.json", &trust)
+            .expect("signed development directory verifies separately");
+        let mut directory_artifact = directory
+            .open_encrypted_artifact("linux-root")
+            .expect("development directory provides a signed file reader");
+        let mut directory_bytes = Vec::new();
+        directory_artifact
+            .read_to_end(&mut directory_bytes)
+            .unwrap();
+        assert_eq!(directory_bytes, bytes);
+
+        fs::write(root.join("images/root.raw"), b"bad-rootfs!!")
+            .expect("tamper with development asset");
+        assert!(matches!(
+            directory.open_encrypted_artifact("linux-root"),
+            Err(SignatureError::DigestMismatch { .. })
+        ));
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_file(archive_path);
+    }
+
+    #[test]
+    fn encrypted_archive_rejects_deflate_descriptors_and_inconsistent_headers() {
+        let (root, archive_path, key, trust) = temp_encrypted_schema2_bundle();
+        let deflated = build_encrypted_archive(&root, CompressionMethod::Deflated, false);
+        assert!(matches!(
+            verify_glass_archive_bytes(&deflated, "signatures/glass.dsse.json", &trust),
+            Err(SignatureError::InvalidEncryptedArtifactLayout { .. })
+        ));
+
+        let descriptor = build_encrypted_archive(&root, CompressionMethod::Stored, true);
+        assert!(matches!(
+            verify_glass_archive_bytes(&descriptor, "signatures/glass.dsse.json", &trust),
+            Err(SignatureError::InvalidEncryptedArtifactLayout { .. })
+        ));
+
+        let mut mismatched = build_encrypted_archive(&root, CompressionMethod::Stored, false);
+        let header = local_header_for_path(&mismatched, "images/root.raw");
+        mismatched[header + 14..header + 18].copy_from_slice(&0x1234_5678u32.to_le_bytes());
+        assert!(matches!(
+            verify_glass_archive_bytes(&mismatched, "signatures/glass.dsse.json", &trust),
+            Err(SignatureError::InvalidEncryptedArtifactLayout { .. })
+        ));
+
+        fs::write(root.join("firmware/controller.bin"), b"linux-rootfs")
+            .expect("make two signed members share bytes");
+        let manifest_path = root.join("rootglass.toml");
+        let manifest = fs::read_to_string(&manifest_path).unwrap();
+        let manifest = manifest.replace(&hex_sha256(b"mcu-firmware"), &hex_sha256(b"linux-rootfs"));
+        fs::write(manifest_path, manifest).unwrap();
+        sign_glass_directory_at(&root, &key, "2026-11-15T00:00:00Z")
+            .expect("resign the overlapping-layout fixture");
+        let mut overlapping = build_encrypted_archive(&root, CompressionMethod::Stored, false);
+        let root_header = local_header_for_path(&overlapping, "images/root.raw") as u32;
+        let firmware_header = central_header_for_path(&overlapping, "firmware/controller.bin");
+        overlapping[firmware_header + 42..firmware_header + 46]
+            .copy_from_slice(&root_header.to_le_bytes());
+        assert!(matches!(
+            verify_glass_archive_bytes(&overlapping, "signatures/glass.dsse.json", &trust),
+            Err(SignatureError::InvalidEncryptedArtifactLayout { .. })
+        ));
+
+        let valid = build_encrypted_archive(&root, CompressionMethod::Stored, false);
+        assert!(verify_glass_archive_bytes(
+            &valid[..valid.len() - 10],
+            "signatures/glass.dsse.json",
+            &trust
+        )
+        .is_err());
+
+        let mut out_of_range = valid;
+        let central = central_header_for_path(&out_of_range, "images/root.raw");
+        out_of_range[central + 42..central + 46].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(
+            verify_glass_archive_bytes(out_of_range, "signatures/glass.dsse.json", &trust).is_err()
+        );
 
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_file(archive_path);
@@ -1955,6 +3060,168 @@ node_id = "mcu"
         );
         fs::write(root.join("rootglass.toml"), text).expect("write schema 2 manifest");
         (root, archive)
+    }
+
+    fn temp_encrypted_schema2_bundle() -> (PathBuf, PathBuf, SigningKey, TrustStore) {
+        let (root, archive) = temp_schema2_bundle(false);
+        let recipient = SigningKey::from_bytes(&[19; 32]).verifying_key().to_bytes();
+        let recipient_id = format!("ed25519:{}", hex_sha256(&recipient));
+        let manifest_path = root.join("rootglass.toml");
+        let manifest = fs::read_to_string(&manifest_path).expect("read schema-2 fixture");
+        let manifest = manifest
+            .replace(
+                "[artifact_catalog.artifacts.linux-root.storage]",
+                "[artifact_catalog.artifacts.linux-root.encryption]\nsuite_id = \"qemu-luks-v1\"\n\n[artifact_catalog.artifacts.linux-root.storage]",
+            )
+            .replace(
+                "[artifact_catalog.profiles.default]",
+                &format!(
+                    "[artifact_catalog.encryption]\nminimum_recipient_hardware = \"software-allowed\"\nmax_concurrent_instances = 1\n\n[[artifact_catalog.encryption.recipient_authorities]]\nkey_id = \"{recipient_id}\"\npublic_key_base64url = \"{}\"\n\n[artifact_catalog.profiles.default]",
+                    URL_SAFE_NO_PAD.encode(recipient)
+                ),
+            )
+            .replace(
+                "\"launch-profiles-v1\", \"linux-node-v1\", \"mcu-node-v1\", \"typed-devices-v1\"",
+                "\"launch-profiles-v1\", \"linux-node-v1\", \"mcu-node-v1\", \"typed-devices-v1\", \"encrypted-artifacts-v1\"",
+            );
+        fs::write(manifest_path, manifest).expect("write encrypted schema-2 fixture");
+        let key = SigningKey::from_bytes(&[42; 32]);
+        sign_glass_directory_at(&root, &key, "2026-11-15T00:00:00Z")
+            .expect("sign encrypted schema-2 fixture");
+        let trust = trust_store_for(&key);
+        (root, archive, key, trust)
+    }
+
+    fn build_encrypted_archive(
+        root: &Path,
+        root_compression: CompressionMethod,
+        with_descriptors: bool,
+    ) -> Vec<u8> {
+        let regular_order = [
+            "firmware/controller.bin",
+            "images/root.raw",
+            "rootglass.toml",
+            "signatures/glass.dsse.json",
+        ];
+        let descriptor_order = [
+            "firmware/controller.bin",
+            "rootglass.toml",
+            "signatures/glass.dsse.json",
+            "images/root.raw",
+        ];
+        let names = if with_descriptors {
+            &descriptor_order
+        } else {
+            &regular_order
+        };
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for name in names {
+            let method = if *name == "images/root.raw" {
+                root_compression
+            } else {
+                CompressionMethod::Stored
+            };
+            writer
+                .start_file(
+                    *name,
+                    SimpleFileOptions::default().compression_method(method),
+                )
+                .expect("start fixture entry");
+            writer
+                .write_all(&fs::read(root.join(name)).expect("read fixture member"))
+                .expect("write fixture entry");
+        }
+        let mut bytes = writer.finish().expect("finish archive").into_inner();
+        if with_descriptors {
+            let local = local_header_for_path(&bytes, "images/root.raw");
+            let central = central_header_for_path(&bytes, "images/root.raw");
+            let name_len = u16::from_le_bytes([bytes[local + 26], bytes[local + 27]]) as usize;
+            let extra_len = u16::from_le_bytes([bytes[local + 28], bytes[local + 29]]) as usize;
+            let data_start = local + 30 + name_len + extra_len;
+            let compressed_size = u32::from_le_bytes([
+                bytes[local + 18],
+                bytes[local + 19],
+                bytes[local + 20],
+                bytes[local + 21],
+            ]) as usize;
+            let data_end = data_start + compressed_size;
+            let crc32 = u32::from_le_bytes([
+                bytes[central + 16],
+                bytes[central + 17],
+                bytes[central + 18],
+                bytes[central + 19],
+            ]);
+            let size = u32::from_le_bytes([
+                bytes[central + 24],
+                bytes[central + 25],
+                bytes[central + 26],
+                bytes[central + 27],
+            ]);
+            let descriptor = [
+                0x0807_4b50u32.to_le_bytes(),
+                crc32.to_le_bytes(),
+                (compressed_size as u32).to_le_bytes(),
+                size.to_le_bytes(),
+            ]
+            .concat();
+            bytes.splice(data_end..data_end, descriptor);
+            let local = local_header_for_path(&bytes, "images/root.raw");
+            let central = central_header_for_path(&bytes, "images/root.raw");
+            let local_flags = u16::from_le_bytes([bytes[local + 6], bytes[local + 7]]) | (1 << 3);
+            bytes[local + 6..local + 8].copy_from_slice(&local_flags.to_le_bytes());
+            bytes[local + 14..local + 26].fill(0);
+            let central_flags =
+                u16::from_le_bytes([bytes[central + 8], bytes[central + 9]]) | (1 << 3);
+            bytes[central + 8..central + 10].copy_from_slice(&central_flags.to_le_bytes());
+            let eocd = bytes
+                .windows(4)
+                .rposition(|signature| signature == b"PK\x05\x06")
+                .expect("find ZIP end record");
+            let central_offset = u32::from_le_bytes([
+                bytes[eocd + 16],
+                bytes[eocd + 17],
+                bytes[eocd + 18],
+                bytes[eocd + 19],
+            ]) + 16;
+            bytes[eocd + 16..eocd + 20].copy_from_slice(&central_offset.to_le_bytes());
+        }
+        bytes
+    }
+
+    fn local_header_for_path(bytes: &[u8], name: &str) -> usize {
+        bytes
+            .windows(4)
+            .enumerate()
+            .find_map(|(offset, signature)| {
+                if signature != b"PK\x03\x04" || offset + 30 > bytes.len() {
+                    return None;
+                }
+                let name_len =
+                    u16::from_le_bytes([bytes[offset + 26], bytes[offset + 27]]) as usize;
+                let name_start = offset + 30;
+                let name_end = name_start.checked_add(name_len)?;
+                (name_end <= bytes.len() && &bytes[name_start..name_end] == name.as_bytes())
+                    .then_some(offset)
+            })
+            .expect("find ZIP local header")
+    }
+
+    fn central_header_for_path(bytes: &[u8], name: &str) -> usize {
+        bytes
+            .windows(4)
+            .enumerate()
+            .find_map(|(offset, signature)| {
+                if signature != b"PK\x01\x02" || offset + 46 > bytes.len() {
+                    return None;
+                }
+                let name_len =
+                    u16::from_le_bytes([bytes[offset + 28], bytes[offset + 29]]) as usize;
+                let name_start = offset + 46;
+                let name_end = name_start.checked_add(name_len)?;
+                (name_end <= bytes.len() && &bytes[name_start..name_end] == name.as_bytes())
+                    .then_some(offset)
+            })
+            .expect("find ZIP central header")
     }
 
     fn trust_store_for(key: &SigningKey) -> TrustStore {

@@ -11,8 +11,9 @@ use crate::registry::{InstalledGlass, PackageRegistry, RegistryError};
 use crate::UntrustedPublisherReview;
 use rootglass_manifest::{Glass, Manifest, MAX_MANIFEST_BYTES};
 use rootglass_signature::{
-    verify_glass_archive_with_limits, verify_glass_dir_with_limits, DsseEnvelope, SignatureError,
-    TrustStore, VerificationLimits,
+    open_verified_glass_archive_with_limits, verify_glass_archive_with_limits,
+    verify_glass_dir_with_limits, DsseEnvelope, SignatureError, TrustStore, VerificationLimits,
+    VerifiedArtifactReader,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashSet};
@@ -34,6 +35,46 @@ pub struct ImportLimits {
     pub max_member_bytes: u64,
     pub max_total_uncompressed_bytes: u64,
     pub max_compression_ratio: u64,
+}
+
+/// Return the immutable source archive object paired with an imported package.
+/// This archive is used by the encrypted-artifact reader; it is not an install path.
+pub fn archive_object_path(installed: &InstalledGlass) -> PathBuf {
+    installed.package_path.with_extension("glass")
+}
+
+/// Reverify an installed content-addressed archive and return a bounded encrypted-disk reader.
+pub fn open_installed_encrypted_artifact(
+    installed: &InstalledGlass,
+    artifact_id: &str,
+    trust_store: &TrustStore,
+    limits: &ImportLimits,
+) -> Result<VerifiedArtifactReader, ImportError> {
+    validate_limits(limits)?;
+    let archive_path = archive_object_path(installed);
+    if hash_archive_file(&archive_path, limits.max_archive_bytes)? != installed.content_sha256 {
+        return Err(ImportError::ArchiveChanged {
+            detail: "installed content-addressed archive digest does not match its registry row"
+                .to_string(),
+        });
+    }
+    let verified = open_verified_glass_archive_with_limits(
+        &archive_path,
+        SIGNATURE_PATH,
+        trust_store,
+        &verification_limits(limits),
+    )?;
+    let report = verified.report();
+    if report.publisher_identity != installed.publisher_identity
+        || report.publisher_name != installed.publisher_name
+        || report.key_id != installed.key_id
+    {
+        return Err(ImportError::ArchiveChanged {
+            detail: "stored archive publisher does not match its installed registry row"
+                .to_string(),
+        });
+    }
+    Ok(verified.open_encrypted_artifact(artifact_id)?)
 }
 
 impl Default for ImportLimits {
@@ -312,6 +353,14 @@ fn import_snapshot(
         &verification_limits,
     )?;
     inspect_archive(snapshot, limits)?;
+    let encrypted_storage_paths = verification
+        .artifact_catalog
+        .as_ref()
+        .into_iter()
+        .flat_map(|catalog| catalog.artifacts.values())
+        .filter(|artifact| artifact.encryption.is_some())
+        .map(|artifact| artifact.storage.path.clone())
+        .collect::<BTreeSet<_>>();
 
     let packages_dir = store_root.join("packages");
     fs::create_dir_all(&packages_dir).map_err(|source| io_at(&packages_dir, source))?;
@@ -326,7 +375,7 @@ fn import_snapshot(
     if !final_path.exists() {
         let stage = temp_path(&packages_dir, "package");
         fs::create_dir(&stage).map_err(|source| io_at(&stage, source))?;
-        let extract_result = extract_archive(snapshot, &stage, limits);
+        let extract_result = extract_archive(snapshot, &stage, limits, &encrypted_storage_paths);
         if let Err(error) = extract_result {
             let _ = fs::remove_dir_all(&stage);
             return Err(error);
@@ -338,7 +387,13 @@ fn import_snapshot(
                 return Err(error.into());
             }
         };
-        if let Err(error) = glass.validate_launch_ready() {
+        let validation = if verification.schema_version == rootglass_manifest::LEGACY_SCHEMA_VERSION
+        {
+            glass.validate_launch_ready()
+        } else {
+            glass.validate_manifest_only()
+        };
+        if let Err(error) = validation {
             let _ = fs::remove_dir_all(&stage);
             return Err(error.into());
         }
@@ -372,23 +427,30 @@ fn import_snapshot(
 
     // Loading from the content store also validates the manifest when the target
     // already existed, which prevents a stale/corrupt directory becoming trusted.
-    let installed_verification = verify_glass_dir_with_limits(
-        &final_path,
-        SIGNATURE_PATH,
-        trust_store,
-        &verification_limits,
-    )?;
-    if installed_verification.publisher_identity != verification.publisher_identity
-        || installed_verification.key_id != verification.key_id
-    {
-        return Err(ImportError::ArchiveChanged {
-            detail: "installed publisher identity or key ID differs from the verified archive"
-                .to_string(),
-        });
+    if encrypted_storage_paths.is_empty() {
+        let installed_verification = verify_glass_dir_with_limits(
+            &final_path,
+            SIGNATURE_PATH,
+            trust_store,
+            &verification_limits,
+        )?;
+        if installed_verification.publisher_identity != verification.publisher_identity
+            || installed_verification.key_id != verification.key_id
+        {
+            return Err(ImportError::ArchiveChanged {
+                detail: "installed publisher identity or key ID differs from the verified archive"
+                    .to_string(),
+            });
+        }
     }
-    verify_installed_matches_archive(snapshot, &final_path, limits)?;
+    verify_installed_matches_archive(snapshot, &final_path, limits, &encrypted_storage_paths)?;
+    publish_archive_object(snapshot, &packages_dir, digest, limits.max_archive_bytes)?;
     let glass = Glass::load(&final_path)?;
-    glass.validate_launch_ready()?;
+    if verification.schema_version == rootglass_manifest::LEGACY_SCHEMA_VERSION {
+        glass.validate_launch_ready()?;
+    } else {
+        glass.validate_manifest_only()?;
+    }
     let manifest = glass.manifest;
     let installed = InstalledGlass {
         content_sha256: digest.to_owned(),
@@ -407,6 +469,135 @@ fn import_snapshot(
     };
     registry.upsert(installed.clone())?;
     Ok(installed)
+}
+
+fn publish_archive_object(
+    snapshot: &Path,
+    packages_dir: &Path,
+    digest: &str,
+    max_bytes: u64,
+) -> Result<PathBuf, ImportError> {
+    let object = packages_dir.join(format!("{digest}.glass"));
+    match fs::symlink_metadata(&object) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(ImportError::UnsupportedFileType(
+                    object.display().to_string(),
+                ));
+            }
+            if hash_archive_file(&object, max_bytes)? != digest {
+                return Err(ImportError::ArchiveChanged {
+                    detail: "content-addressed archive object differs from its digest".to_string(),
+                });
+            }
+            make_path_readonly(&object)?;
+            return Ok(object);
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(source) => return Err(io_at(&object, source)),
+    }
+
+    let staging = temp_path(packages_dir, "archive-object");
+    let result = (|| {
+        let input = File::open(snapshot).map_err(|source| io_at(snapshot, source))?;
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut output = options
+            .open(&staging)
+            .map_err(|source| io_at(&staging, source))?;
+        let mut hasher = Sha256::new();
+        let mut count = 0u64;
+        let mut buffer = [0u8; 64 * 1024];
+        let mut input = input;
+        loop {
+            let read = input
+                .read(&mut buffer)
+                .map_err(|source| io_at(snapshot, source))?;
+            if read == 0 {
+                break;
+            }
+            count = count
+                .checked_add(read as u64)
+                .ok_or(ImportError::ArchiveTooLarge { limit: max_bytes })?;
+            if count > max_bytes {
+                return Err(ImportError::ArchiveTooLarge { limit: max_bytes });
+            }
+            hasher.update(&buffer[..read]);
+            output
+                .write_all(&buffer[..read])
+                .map_err(|source| io_at(&staging, source))?;
+        }
+        if encode_hex(&hasher.finalize()) != digest {
+            return Err(ImportError::ArchiveChanged {
+                detail: "archive snapshot changed while it was being published".to_string(),
+            });
+        }
+        output
+            .sync_all()
+            .map_err(|source| io_at(&staging, source))?;
+        drop(output);
+        make_path_readonly(&staging)?;
+        match fs::hard_link(&staging, &object) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                if hash_archive_file(&object, max_bytes)? != digest {
+                    return Err(ImportError::ArchiveChanged {
+                        detail: "raced content-addressed archive object has a different digest"
+                            .to_string(),
+                    });
+                }
+                make_path_readonly(&object)?;
+                Ok(())
+            }
+            Err(source) => Err(io_at(&object, source)),
+        }
+    })();
+    let _ = fs::remove_file(&staging);
+    result?;
+    if let Ok(directory) = File::open(packages_dir) {
+        let _ = directory.sync_all();
+    }
+    Ok(object)
+}
+
+fn hash_archive_file(path: &Path, max_bytes: u64) -> Result<String, ImportError> {
+    let metadata = fs::symlink_metadata(path).map_err(|source| io_at(path, source))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(ImportError::UnsupportedFileType(path.display().to_string()));
+    }
+    if metadata.len() > max_bytes {
+        return Err(ImportError::ArchiveTooLarge { limit: max_bytes });
+    }
+    let mut file = File::open(path).map_err(|source| io_at(path, source))?;
+    let mut hasher = Sha256::new();
+    let mut count = 0u64;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|source| io_at(path, source))?;
+        if read == 0 {
+            break;
+        }
+        count = count
+            .checked_add(read as u64)
+            .ok_or(ImportError::ArchiveTooLarge { limit: max_bytes })?;
+        if count > max_bytes {
+            return Err(ImportError::ArchiveTooLarge { limit: max_bytes });
+        }
+        hasher.update(&buffer[..read]);
+    }
+    if count != metadata.len() {
+        return Err(ImportError::ArchiveChanged {
+            detail: "content-addressed archive length changed while reading".to_string(),
+        });
+    }
+    Ok(encode_hex(&hasher.finalize()))
 }
 
 fn inspect_archive(path: &Path, limits: &ImportLimits) -> Result<(), ImportError> {
@@ -505,6 +696,7 @@ fn extract_archive(
     path: &Path,
     destination: &Path,
     limits: &ImportLimits,
+    skipped_members: &BTreeSet<String>,
 ) -> Result<(), ImportError> {
     let file = File::open(path).map_err(|source| io_at(path, source))?;
     let mut archive = ZipArchive::new(file)?;
@@ -512,12 +704,16 @@ fn extract_archive(
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index)?;
         let name = entry.name().to_owned();
-        let relative = PathBuf::from(normalized_name(&name, entry.is_dir())?);
+        let normalized = normalized_name(&name, entry.is_dir())?;
+        let relative = PathBuf::from(&normalized);
         if let Some(mode) = entry.unix_mode() {
             let kind = mode & 0o170000;
             if kind == 0o120000 || (kind != 0 && kind != 0o100000 && kind != 0o040000) {
                 return Err(ImportError::UnsupportedFileType(name));
             }
+        }
+        if !entry.is_dir() && skipped_members.contains(&normalized) {
+            continue;
         }
         let output = destination.join(&relative);
         if entry.is_dir() {
@@ -580,6 +776,7 @@ fn verify_installed_matches_archive(
     archive_path: &Path,
     installed_root: &Path,
     limits: &ImportLimits,
+    skipped_members: &BTreeSet<String>,
 ) -> Result<(), ImportError> {
     let file = File::open(archive_path).map_err(|source| io_at(archive_path, source))?;
     let mut archive = ZipArchive::new(file)?;
@@ -597,9 +794,6 @@ fn verify_installed_matches_archive(
         }
         let name = entry.name().to_owned();
         let normalized = normalized_name(&name, false)?;
-        if !archive_files.insert(normalized.clone()) {
-            return Err(ImportError::DuplicatePath(normalized));
-        }
         let size = entry.size();
         if size > limits.max_member_bytes {
             return Err(ImportError::MemberTooLarge {
@@ -614,6 +808,13 @@ fn verify_installed_matches_archive(
             return Err(ImportError::TotalTooLarge {
                 limit: limits.max_total_uncompressed_bytes,
             });
+        }
+
+        if skipped_members.contains(&normalized) {
+            continue;
+        }
+        if !archive_files.insert(normalized.clone()) {
+            return Err(ImportError::DuplicatePath(normalized));
         }
 
         let relative = PathBuf::from(&normalized);

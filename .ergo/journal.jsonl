@@ -560,3 +560,6 @@
 {"version":1,"task_id":"4YZPJ6","kind":"result","at":"2026-11-15T23:34:01.617955583Z","agent":"codex@worker-1","text":"CI: PR #148 exposed stale desktop Cargo.lock in locked headless and plan commands; refreshed dependency edges."}
 {"version":1,"task_id":"4YZPJ6","kind":"result","at":"2026-11-15T23:34:01.779020359Z","agent":"codex@worker-1","text":"Fix: the desktop --locked headless dependency check passes; CI reruns after the lockfile update."}
 {"version":1,"task_id":"4YZPJ6","kind":"done","at":"2026-11-15T23:37:56.414101918Z","agent":"codex@worker-1","text":"Merged PR #148 (050d361); CI run 751 and focused local checks passed."}
+{"version":1,"task_id":"UU7PF2","kind":"open","at":"2026-11-15T23:38:14.10023896Z","text":"E00 protocol, ADR-0004 container decision, signed catalog, and E01 encryption metadata are complete; starting safe encrypted artifact range support."}
+{"version":1,"task_id":"UU7PF2","kind":"claim","at":"2026-11-15T23:38:14.27886573Z","agent":"codex@worker-1"}
+{"version":1,"task_id":"UU7PF2","kind":"result","at":"2026-11-16T00:13:12.544869158Z","agent":"codex@worker-1","text":"Signature (23) and app (36) tests passed; clippy awaits PR CI because cargo is unavailable here."}
