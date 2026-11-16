@@ -570,3 +570,5 @@
 {"version":1,"task_id":"IKJEP5","kind":"claim","at":"2026-11-16T00:18:19.368817954Z","agent":"codex@worker-1"}
 {"version":1,"task_id":"IKJEP5","kind":"result","at":"2026-11-16T00:58:45.762099191Z","agent":"codex@worker-1","text":"Checks: signature/app tests 26/26 and 36/36; fmt and targeted Clippy pass; full workspace hit ENOSPC."}
 {"version":1,"task_id":"IKJEP5","kind":"result","at":"2026-11-16T01:02:10.134397906Z","agent":"codex@worker-1","text":"Checks: signature 27/27; app 36/36; fmt/Clippy pass. Workspace suite stopped at ENOSPC."}
+{"version":1,"task_id":"IKJEP5","kind":"result","at":"2026-11-16T01:03:33.505900757Z","agent":"codex@worker-1","text":"PR: #150 open; awaiting required CI checks before merge."}
+{"version":1,"task_id":"IKJEP5","kind":"done","at":"2026-11-16T01:07:18.898014823Z","agent":"codex@worker-1","text":"Merged #150 (465aecf); all seven required CI checks passed."}
