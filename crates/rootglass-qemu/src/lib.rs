@@ -1960,7 +1960,7 @@ mod tests {
             .expect("sample glass produces launch request");
 
         let plan = QemuLaunchPlan::for_launch_request(&request);
-        let command_line = plan.command_line();
+        let command_line = plan.command_line().replace('\\', "/");
 
         assert_eq!(plan.accelerator, Accelerator::None);
         assert!(command_line.contains(DEFAULT_QEMU_SYSTEM_AARCH64));
