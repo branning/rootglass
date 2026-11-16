@@ -592,3 +592,6 @@
 {"version":1,"task_id":"LH5LHD","kind":"open","at":"2026-11-16T05:09:21.538287461Z","text":"E04, E08, E09, and E10 are complete; the reviewed CLI contract can now be implemented."}
 {"version":1,"task_id":"LH5LHD","kind":"claim","at":"2026-11-16T05:09:21.557959527Z","agent":"codex@worker-1"}
 {"version":1,"task_id":"LH5LHD","kind":"result","at":"2026-11-16T06:06:17.717934895Z","agent":"codex@worker-1","text":"Checks: fmt; app 62/62; CLI 16/16; targeted Clippy passed; PR pending."}
+{"version":1,"task_id":"LH5LHD","kind":"result","at":"2026-11-16T06:07:53.595103279Z","agent":"codex@worker-1","text":"PR #155 opened from codex/encryption-follow-up; checks passed locally; CI and review pending."}
+{"version":1,"task_id":"LH5LHD","kind":"result","at":"2026-11-16T06:11:00.830978137Z","agent":"codex@worker-1","text":"CI #776 passed all 8 jobs; PR #155 is mergeable; maintainer review/integration pending."}
+{"version":1,"task_id":"LH5LHD","kind":"done","at":"2026-11-16T06:12:47.876473027Z","agent":"codex@worker-1","text":"Merged #155 at 5260213; CI #776 passed all 8 jobs; local fmt, app/CLI tests, and targeted Clippy passed."}
