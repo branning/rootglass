@@ -13,7 +13,7 @@ use rootglass_manifest::{Glass, Manifest, MAX_MANIFEST_BYTES};
 use rootglass_signature::{
     open_verified_glass_archive_with_limits, verify_glass_archive_with_limits,
     verify_glass_dir_with_limits, DsseEnvelope, SignatureError, TrustStore, VerificationLimits,
-    VerifiedArchive, VerifiedArtifactReader,
+    VerificationReport, VerifiedArchive, VerifiedArtifactReader, VerifiedRecipientEnvelope,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashSet};
@@ -88,6 +88,58 @@ pub fn open_installed_verified_archive(
         });
     }
     Ok(verified)
+}
+
+/// Verify a signed archive and its recipient authorization for read-only
+/// inspection without extracting or installing any package contents.
+pub(crate) fn open_archive_verified_recipient_envelope(
+    source: impl AsRef<Path>,
+    trust_store: &TrustStore,
+    limits: &ImportLimits,
+) -> Result<(VerificationReport, VerifiedRecipientEnvelope), ImportError> {
+    let source = source.as_ref();
+    validate_limits(limits)?;
+    inspect_archive(source, limits)?;
+    let verified = open_verified_glass_archive_with_limits(
+        source,
+        SIGNATURE_PATH,
+        trust_store,
+        &verification_limits(limits),
+    )?;
+    let envelope = verified.verify_recipient_envelope()?;
+    Ok((verified.report().clone(), envelope))
+}
+
+/// Read the manifest schema from a bounded archive before the caller chooses
+/// its command path. This result is dispatch metadata only; the eventual
+/// import/boot path must still perform the normal signature verification.
+pub fn inspect_archive_schema_version(
+    source: impl AsRef<Path>,
+    limits: &ImportLimits,
+) -> Result<u32, ImportError> {
+    let source = source.as_ref();
+    validate_limits(limits)?;
+    let snapshot = temp_path(&std::env::temp_dir(), "schema-inspection");
+    let result = (|| {
+        snapshot_archive(source, &snapshot, limits)?;
+        inspect_archive(&snapshot, limits)?;
+        let manifest_bytes = read_archive_member(&snapshot, "rootglass.toml", MAX_MANIFEST_BYTES)?;
+        let manifest_text = String::from_utf8(manifest_bytes).map_err(|_| {
+            ImportError::InvalidManifestEncoding {
+                path: source.to_path_buf(),
+            }
+        })?;
+        let manifest = Manifest::from_toml_str(&manifest_text).map_err(|source_error| {
+            ImportError::Manifest(rootglass_manifest::ManifestError::ParseManifest {
+                path: source.to_path_buf(),
+                source: source_error,
+            })
+        })?;
+        manifest.validate_manifest_only()?;
+        Ok(manifest.schema_version)
+    })();
+    let _ = fs::remove_file(&snapshot);
+    result
 }
 
 impl Default for ImportLimits {

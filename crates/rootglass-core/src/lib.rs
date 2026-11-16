@@ -3,7 +3,10 @@ pub mod runtime_assets;
 pub mod runtime_profile;
 pub mod storage;
 
-use rootglass_manifest::{Glass, ManifestError, LEGACY_SCHEMA_VERSION};
+use rootglass_manifest::{
+    ArtifactKind, BootData, Glass, ManifestError, RequiredFeature, TargetArchitecture,
+    TargetMachine, TypedDevice, LEGACY_SCHEMA_VERSION, MULTI_ARTIFACT_SCHEMA_VERSION,
+};
 use rootglass_signature::{verify_glass_dir, SignatureError, TrustStore, VerificationReport};
 use runtime_assets::{RuntimeAssetsError, RuntimeAssetsResolver};
 use runtime_profile::{ResolvedRuntimeAssets, RuntimeAssetResolver, RuntimeProfileError};
@@ -65,6 +68,9 @@ pub enum CoreError {
 
     #[error("runtime asset resolution failed: {0}")]
     RuntimeAssets(#[from] RuntimeAssetsError),
+
+    #[error("encrypted launch profile is not supported: {0}")]
+    UnsupportedEncryptedProfile(String),
 }
 
 impl CoreError {
@@ -108,6 +114,14 @@ impl CoreError {
                 stage,
                 suggestion: Some(
                     "Install or generate the required Rootglass runtime assets, then try again.".to_string(),
+                ),
+            },
+            CoreError::UnsupportedEncryptedProfile(detail) => UserFacingError {
+                summary: "This encrypted launch profile is not supported yet.".to_string(),
+                detail: detail.clone(),
+                stage,
+                suggestion: Some(
+                    "Choose a profile with one encrypted AArch64 Linux root disk on QEMU virt and no additional devices.".to_string(),
                 ),
             },
         }
@@ -458,6 +472,166 @@ impl RootglassRuntime {
             &self.overlay_store,
             self.selected_local_overlay.as_deref(),
         ))
+    }
+
+    /// Prepare the currently supported encrypted schema-2 profile. This
+    /// deliberately accepts only one AArch64 Linux QEMU-virt node with one
+    /// encrypted virtio root disk; unsupported devices and multi-node profiles
+    /// fail before the QEMU adapter is constructed.
+    pub fn prepare_encrypted_launch(
+        &mut self,
+        glass: &Glass,
+        signature: VerificationReport,
+    ) -> Result<LaunchRequest, CoreError> {
+        self.transition(LifecycleState::Validating);
+        glass.validate_manifest_only()?;
+        if glass.manifest.schema_version != MULTI_ARTIFACT_SCHEMA_VERSION {
+            return Err(CoreError::Manifest(
+                ManifestError::UnsupportedLaunchSchema {
+                    actual: glass.manifest.schema_version,
+                },
+            ));
+        }
+
+        let catalog = glass.manifest.artifact_catalog.as_ref().ok_or_else(|| {
+            CoreError::UnsupportedEncryptedProfile(
+                "the signed manifest has no artifact catalog".to_string(),
+            )
+        })?;
+        if signature.schema_version != MULTI_ARTIFACT_SCHEMA_VERSION
+            || signature.artifact_catalog.as_ref() != Some(catalog)
+        {
+            return Err(CoreError::UnsupportedEncryptedProfile(
+                "the launch manifest does not match the verified archive report".to_string(),
+            ));
+        }
+        let profile = catalog
+            .profiles
+            .get(&catalog.default_profile)
+            .ok_or_else(|| {
+                CoreError::UnsupportedEncryptedProfile(
+                    "the signed default launch profile is missing".to_string(),
+                )
+            })?;
+        for required in [
+            RequiredFeature::LaunchProfilesV1,
+            RequiredFeature::LinuxNodeV1,
+            RequiredFeature::EncryptedArtifactsV1,
+            RequiredFeature::TypedDevicesV1,
+        ] {
+            if !profile.required_features.contains(&required) {
+                return Err(CoreError::UnsupportedEncryptedProfile(format!(
+                    "the default profile does not declare required feature '{}'",
+                    format!("{required:?}").to_ascii_lowercase()
+                )));
+            }
+        }
+        if profile.nodes.len() != 1 {
+            return Err(CoreError::UnsupportedEncryptedProfile(
+                "the default profile must contain exactly one node".to_string(),
+            ));
+        }
+        let node = &profile.nodes[0];
+        if node.startup_order != 0
+            || node.architecture != TargetArchitecture::Aarch64
+            || node.machine != TargetMachine::QemuVirt
+        {
+            return Err(CoreError::UnsupportedEncryptedProfile(
+                "the only supported node is an AArch64 QEMU virt node at startup order zero"
+                    .to_string(),
+            ));
+        }
+        let (kernel_ref, device_tree_ref, rootfs_artifact, kernel_args) = match &node.boot {
+            BootData::Linux {
+                kernel,
+                device_tree,
+                rootfs_artifact,
+                kernel_args,
+            } => (kernel, device_tree, rootfs_artifact, kernel_args),
+            BootData::Mcu { .. } => {
+                return Err(CoreError::UnsupportedEncryptedProfile(
+                    "MCU nodes do not run as an encrypted Linux rootfs".to_string(),
+                ));
+            }
+        };
+        if kernel_ref != rootglass_manifest::BUILTIN_AARCH64_KERNEL
+            || device_tree_ref != rootglass_manifest::BUILTIN_AARCH64_DEVICE_TREE
+        {
+            return Err(CoreError::UnsupportedEncryptedProfile(
+                "the node must use the built-in AArch64 Linux kernel and QEMU virt device tree"
+                    .to_string(),
+            ));
+        }
+        let root_artifact = catalog.artifacts.get(rootfs_artifact).ok_or_else(|| {
+            CoreError::UnsupportedEncryptedProfile(
+                "the Linux root disk artifact is missing".to_string(),
+            )
+        })?;
+        if root_artifact.kind != ArtifactKind::LinuxBootDisk || root_artifact.encryption.is_none() {
+            return Err(CoreError::UnsupportedEncryptedProfile(
+                "the selected Linux root disk must be publisher-declared as encrypted".to_string(),
+            ));
+        }
+        if profile.devices.len() != 1
+            || !matches!(
+                &profile.devices[0],
+                TypedDevice::VirtioBlkMmio {
+                    node_id,
+                    artifact_id,
+                    read_only: true,
+                    ..
+                } if node_id == &node.id && artifact_id == rootfs_artifact
+            )
+        {
+            return Err(CoreError::UnsupportedEncryptedProfile(
+                "the default profile must attach only its encrypted root disk as a read-only virtio block device".to_string(),
+            ));
+        }
+
+        let (runtime_assets, qemu_binary) = if let Some(config) = &self.verified_asset_resolver {
+            let resolved = config.resolver.resolve(&config.runtime_version)?;
+            let profile_assets = self.asset_resolver.resolve(kernel_ref, device_tree_ref)?;
+            (
+                ResolvedRuntimeAssets {
+                    kernel: resolved.kernel,
+                    device_tree: profile_assets.device_tree,
+                    initrd: Some(resolved.initramfs),
+                },
+                Some(resolved.qemu),
+            )
+        } else {
+            (
+                self.asset_resolver.resolve(kernel_ref, device_tree_ref)?,
+                None,
+            )
+        };
+        let placeholder = glass.root.join("encrypted-root-artifact-placeholder");
+        let launch = LaunchRequest {
+            glass_root: glass.root.clone(),
+            runtime_profile: "virt-linux".to_string(),
+            architecture: "aarch64".to_string(),
+            kernel_ref: kernel_ref.clone(),
+            device_tree_ref: device_tree_ref.clone(),
+            kernel: runtime_assets.kernel,
+            device_tree: runtime_assets.device_tree,
+            initrd: runtime_assets.initrd,
+            rootfs: placeholder.clone(),
+            writable_overlay: None,
+            storage: StorageSelection {
+                read_only_rootfs: placeholder,
+                writable_overlay: None,
+            },
+            signature: SignatureVerification::from(signature),
+            kernel_args: kernel_args.clone(),
+            memory_mb: profile.resources.memory_mb,
+            cpus: profile.resources.cpus,
+            network_mode: profile.network.mode.clone(),
+            requires_hardware_acceleration: false,
+            accelerator: None,
+            qemu_binary,
+        };
+        self.transition(LifecycleState::Ready);
+        Ok(launch)
     }
 
     fn transition(&mut self, state: LifecycleState) {

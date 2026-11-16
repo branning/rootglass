@@ -26,7 +26,32 @@ The CLI remains the reference workflow, and the GPUI Kit desktop shell now uses 
 - read-only rootfs plus optional writable overlay modeling,
 - QEMU launch-plan generation,
 - an interactive CLI boot command once local assets exist,
+- schema-2 encrypted archive recipient inspection and foreground boot through the current Age identity provider,
+- public encrypted-instance listing and owner-serviced graceful stop requests,
 - CI for formatting, clippy, tests, and CLI smoke checks.
+
+Encrypted CLI workflows use the local publisher trust file (`trust.json` in
+Rootglass's per-user configuration directory) and the current user's OS
+credential store. The portable `age-x25519` provider is available in this
+build; Secure Enclave and TPM providers remain separate platform work. Identity
+commands print public recipient IDs and never export private keys:
+
+```sh
+rootglass identity create --provider age-x25519 --label "work laptop"
+rootglass identity list
+rootglass recipients list private-image.glass
+rootglass boot private-image.glass [--recipient age-v1-x25519:<fingerprint>]
+rootglass instances list
+rootglass instances stop <run-id>
+```
+
+Encrypted boot currently accepts the signed default profile when it contains
+one encrypted AArch64 Linux root disk on QEMU virt. Other schema-2 node and
+device layouts fail with an explicit unsupported-profile error. The boot runs
+in the foreground and can be stopped with Ctrl-C; `instances stop` sends a
+private request to the Rootglass process that owns QMP and waits for its
+graceful shutdown. Recipient inspection verifies the signed archive without
+installing it.
 
 The native desktop shell uses [GPUI Kit](https://github.com/longbridge/gpui-kit) `=0.9.0`, a curated distribution of Zed's GPUI with components. The release workflow includes signing, notarization, SBOM, and provenance steps; protected GitHub Environments and signing credentials must be configured before the first signed release. Existing previews remain unsigned. See [the delivery roadmap](docs/roadmap.md) and [desktop package status](docs/desktop-packages.md).
 

@@ -11,6 +11,8 @@ use thiserror::Error;
 
 pub const MAX_ENCRYPTED_INSTANCES: u8 = 5;
 const MAX_RECORD_BYTES: u64 = 16 * 1024;
+const MAX_CONTROL_BYTES: u64 = 1024;
+const STOP_REQUEST_TIMEOUT: Duration = Duration::from_secs(75);
 static TEMP_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Error)]
@@ -33,6 +35,23 @@ pub enum SessionError {
         "a crashed encrypted session still has a QEMU process that could not be safely reaped"
     )]
     OrphanQemu,
+    #[error("the encrypted instance identifier is invalid or stale")]
+    InvalidInstanceId,
+    #[error("an encrypted instance stop request is already pending")]
+    StopPending,
+    #[error("the encrypted instance owner did not respond to the stop request")]
+    StopTimeout,
+    #[error("the encrypted instance owner could not stop QEMU cleanly")]
+    StopFailed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EncryptedInstanceInfo {
+    pub run_id: String,
+    pub content_sha256: String,
+    pub slot_index: u8,
+    pub owner_pid: u32,
+    pub qemu_pid: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,6 +60,21 @@ struct SessionRecord {
     owner_pid: u32,
     qemu_pid: Option<u32>,
     session_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StopRequestRecord {
+    nonce: String,
+    owner_pid: u32,
+    slot_index: u8,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StopResponseRecord {
+    nonce: String,
+    stopped: bool,
 }
 
 pub struct EncryptedSessionStore {
@@ -56,6 +90,144 @@ pub struct EncryptedSessionLease {
 impl EncryptedSessionStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
+    }
+
+    /// List live owner processes and their encrypted QEMU slots across all
+    /// installed artifacts. The stable run ID contains a content digest and
+    /// a bounded slot number, never a caller-provided path.
+    pub fn list_all(root: &Path) -> Result<Vec<EncryptedInstanceInfo>, SessionError> {
+        let metadata = match fs::symlink_metadata(root) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(source) => {
+                return Err(SessionError::Io {
+                    path: root.to_path_buf(),
+                    source,
+                });
+            }
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(SessionError::InvalidRecord(
+                "encrypted session collection is not a directory".to_string(),
+            ));
+        }
+        let mut instances = Vec::new();
+        for entry in fs::read_dir(root).map_err(|source| SessionError::Io {
+            path: root.to_path_buf(),
+            source,
+        })? {
+            let entry = entry.map_err(|source| SessionError::Io {
+                path: root.to_path_buf(),
+                source,
+            })?;
+            let content_sha256 = entry.file_name().to_string_lossy().into_owned();
+            if !valid_content_sha256(&content_sha256) {
+                continue;
+            }
+            let artifact_root = entry.path();
+            let metadata =
+                fs::symlink_metadata(&artifact_root).map_err(|source| SessionError::Io {
+                    path: artifact_root.clone(),
+                    source,
+                })?;
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(SessionError::InvalidRecord(
+                    "encrypted artifact session path is not a directory".to_string(),
+                ));
+            }
+            for slot_index in 0..MAX_ENCRYPTED_INSTANCES {
+                let slot = artifact_root.join(format!("slot-{slot_index}.json"));
+                if !slot.exists() {
+                    continue;
+                }
+                let record = read_record(&slot)?;
+                if process_is_alive(record.owner_pid) {
+                    instances.push(EncryptedInstanceInfo {
+                        run_id: format!("{content_sha256}:{slot_index}"),
+                        content_sha256: content_sha256.clone(),
+                        slot_index,
+                        owner_pid: record.owner_pid,
+                        qemu_pid: record.qemu_pid,
+                    });
+                }
+            }
+        }
+        instances.sort_by(|left, right| left.run_id.cmp(&right.run_id));
+        Ok(instances)
+    }
+
+    /// Ask the owning app process to stop its QEMU process. The caller never
+    /// connects to QMP or signals an unrelated process directly.
+    pub fn request_stop(root: &Path, run_id: &str, timeout: Duration) -> Result<(), SessionError> {
+        let (content_sha256, slot_index) = parse_run_id(run_id)?;
+        let artifact_root = root.join(content_sha256);
+        let metadata = fs::symlink_metadata(&artifact_root).map_err(|source| {
+            if source.kind() == io::ErrorKind::NotFound {
+                SessionError::InvalidInstanceId
+            } else {
+                SessionError::Io {
+                    path: artifact_root.clone(),
+                    source,
+                }
+            }
+        })?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(SessionError::InvalidInstanceId);
+        }
+        create_private_dir(&artifact_root)?;
+        let slot_path = artifact_root.join(format!("slot-{slot_index}.json"));
+        let record = read_record(&slot_path).map_err(|error| match error {
+            SessionError::Io { source, .. } if source.kind() == io::ErrorKind::NotFound => {
+                SessionError::InvalidInstanceId
+            }
+            other => other,
+        })?;
+        if !process_is_alive(record.owner_pid) {
+            return Err(SessionError::InvalidInstanceId);
+        }
+        let nonce = stop_nonce()?;
+        let request_path = artifact_root.join(format!("stop-{slot_index}.json"));
+        let request = StopRequestRecord {
+            nonce: nonce.clone(),
+            owner_pid: record.owner_pid,
+            slot_index,
+        };
+        write_control_record(&request_path, &request).map_err(|error| match error {
+            SessionError::Io { source, .. } if source.kind() == io::ErrorKind::AlreadyExists => {
+                SessionError::StopPending
+            }
+            other => other,
+        })?;
+
+        let response_path = artifact_root.join(format!("response-{nonce}.json"));
+        let deadline = Instant::now() + timeout.min(STOP_REQUEST_TIMEOUT);
+        loop {
+            if let Some(stopped) = read_stop_response(&response_path, &nonce)? {
+                let _ = fs::remove_file(&response_path);
+                return if stopped {
+                    Ok(())
+                } else {
+                    Err(SessionError::StopFailed)
+                };
+            }
+            if !process_is_alive(record.owner_pid) {
+                let _ = remove_stop_request(&request_path, &nonce);
+                return Err(SessionError::InvalidInstanceId);
+            }
+            if Instant::now() >= deadline {
+                let _ = remove_stop_request(&request_path, &nonce);
+                return Err(SessionError::StopTimeout);
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    pub fn write_stop_response(
+        artifact_root: &Path,
+        nonce: &str,
+        stopped: bool,
+    ) -> Result<(), SessionError> {
+        write_stop_response(artifact_root, nonce, stopped)
     }
 
     /// Recover sessions for every previously installed encrypted artifact. This
@@ -189,6 +361,10 @@ fn recover_dead_session(
 }
 
 impl EncryptedSessionLease {
+    pub fn artifact_root(&self) -> &Path {
+        &self.root
+    }
+
     /// Persist the private directory before QEMU is spawned. If the app crashes
     /// between spawn and PID recording, recovery can still identify QEMU by its
     /// session-specific QMP endpoint.
@@ -207,6 +383,29 @@ impl EncryptedSessionLease {
         self.record.qemu_pid = Some(pid);
         self.record.session_dir = Some(canonical_session);
         write_record(&self.slot, &self.record, true)
+    }
+
+    /// Consume a stop request only when it names this exact slot and owner.
+    pub fn take_stop_request(&self) -> Result<Option<String>, SessionError> {
+        let index = slot_index(&self.slot).ok_or(SessionError::InvalidInstanceId)?;
+        let path = self.root.join(format!("stop-{index}.json"));
+        let Some(request) = read_control_record::<StopRequestRecord>(&path)? else {
+            return Ok(None);
+        };
+        if request.owner_pid != self.record.owner_pid
+            || request.slot_index != index
+            || !valid_nonce(&request.nonce)
+        {
+            return Err(SessionError::InvalidRecord(
+                "encrypted instance stop request does not match its owner".to_string(),
+            ));
+        }
+        fs::remove_file(&path).map_err(|source| SessionError::Io { path, source })?;
+        Ok(Some(request.nonce))
+    }
+
+    pub fn write_stop_response(&self, nonce: &str, stopped: bool) -> Result<(), SessionError> {
+        write_stop_response(&self.root, nonce, stopped)
     }
 }
 
@@ -401,6 +600,167 @@ fn write_record(
             source,
         })?;
         fs::remove_file(&temp).map_err(|source| SessionError::Io { path: temp, source })?;
+    }
+    Ok(())
+}
+
+fn valid_content_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn parse_run_id(run_id: &str) -> Result<(&str, u8), SessionError> {
+    let (content_sha256, slot) = run_id
+        .split_once(':')
+        .ok_or(SessionError::InvalidInstanceId)?;
+    if !valid_content_sha256(content_sha256) || slot.contains(':') {
+        return Err(SessionError::InvalidInstanceId);
+    }
+    let slot_index = slot
+        .parse::<u8>()
+        .ok()
+        .filter(|index| *index < MAX_ENCRYPTED_INSTANCES)
+        .ok_or(SessionError::InvalidInstanceId)?;
+    Ok((content_sha256, slot_index))
+}
+
+fn slot_index(path: &Path) -> Option<u8> {
+    let name = path.file_name()?.to_str()?;
+    let index = name.strip_prefix("slot-")?.strip_suffix(".json")?;
+    index
+        .parse::<u8>()
+        .ok()
+        .filter(|index| *index < MAX_ENCRYPTED_INSTANCES)
+}
+
+fn stop_nonce() -> Result<String, SessionError> {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).map_err(|_| {
+        SessionError::InvalidRecord(
+            "the operating system could not generate an instance stop request nonce".to_string(),
+        )
+    })?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+fn valid_nonce(nonce: &str) -> bool {
+    nonce.len() == 32
+        && nonce
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn write_control_record<T: Serialize>(path: &Path, record: &T) -> Result<(), SessionError> {
+    let bytes = serde_json::to_vec(record).map_err(|_| {
+        SessionError::InvalidRecord("encrypted instance control data could not be encoded".into())
+    })?;
+    if bytes.len() as u64 > MAX_CONTROL_BYTES {
+        return Err(SessionError::InvalidRecord(
+            "encrypted instance control data exceeds its size limit".to_string(),
+        ));
+    }
+    let id = TEMP_ID.fetch_add(1, Ordering::Relaxed);
+    let temp = path.with_extension(format!("{}.{}.control", std::process::id(), id));
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&temp).map_err(|source| SessionError::Io {
+        path: temp.clone(),
+        source,
+    })?;
+    if let Err(source) = file.write_all(&bytes).and_then(|()| file.sync_all()) {
+        let _ = fs::remove_file(&temp);
+        return Err(SessionError::Io { path: temp, source });
+    }
+    drop(file);
+    let result = fs::hard_link(&temp, path).map_err(|source| SessionError::Io {
+        path: path.to_path_buf(),
+        source,
+    });
+    let _ = fs::remove_file(&temp);
+    result?;
+    Ok(())
+}
+
+fn read_control_record<T: for<'de> Deserialize<'de>>(
+    path: &Path,
+) -> Result<Option<T>, SessionError> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => {
+            return Err(SessionError::Io {
+                path: path.to_path_buf(),
+                source,
+            });
+        }
+    };
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.len() > MAX_CONTROL_BYTES
+    {
+        return Err(SessionError::InvalidRecord(
+            "encrypted instance control file is not a bounded regular file".to_string(),
+        ));
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    File::open(path)
+        .and_then(|file| file.take(MAX_CONTROL_BYTES + 1).read_to_end(&mut bytes))
+        .map_err(|source| SessionError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    if bytes.len() as u64 > MAX_CONTROL_BYTES {
+        return Err(SessionError::InvalidRecord(
+            "encrypted instance control file exceeds its size limit".to_string(),
+        ));
+    }
+    serde_json::from_slice(&bytes).map(Some).map_err(|_| {
+        SessionError::InvalidRecord("encrypted instance control file is invalid".into())
+    })
+}
+
+fn read_stop_response(path: &Path, nonce: &str) -> Result<Option<bool>, SessionError> {
+    let Some(response) = read_control_record::<StopResponseRecord>(path)? else {
+        return Ok(None);
+    };
+    if response.nonce != nonce {
+        return Err(SessionError::InvalidRecord(
+            "encrypted instance stop response did not match its request".to_string(),
+        ));
+    }
+    Ok(Some(response.stopped))
+}
+
+fn write_stop_response(root: &Path, nonce: &str, stopped: bool) -> Result<(), SessionError> {
+    if !valid_nonce(nonce) {
+        return Err(SessionError::InvalidRecord(
+            "encrypted instance stop response nonce is invalid".to_string(),
+        ));
+    }
+    let path = root.join(format!("response-{nonce}.json"));
+    write_control_record(
+        &path,
+        &StopResponseRecord {
+            nonce: nonce.to_string(),
+            stopped,
+        },
+    )
+}
+
+fn remove_stop_request(path: &Path, nonce: &str) -> Result<(), SessionError> {
+    if read_control_record::<StopRequestRecord>(path)?.is_some_and(|request| request.nonce == nonce)
+    {
+        fs::remove_file(path).map_err(|source| SessionError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
     }
     Ok(())
 }
@@ -815,6 +1175,56 @@ mod tests {
         assert_eq!(leases.len(), 3);
         assert_eq!(rejected, 7);
         drop(leases);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn live_instances_use_stable_ids_and_owner_serviced_stop_requests() {
+        let root = temp_dir();
+        let digest = "ab".repeat(32);
+        let artifact_root = root.join(&digest);
+        let store = EncryptedSessionStore::new(&artifact_root);
+        let lease = store.reserve(1).unwrap();
+        let run_id = format!("{digest}:0");
+
+        let listed = EncryptedSessionStore::list_all(&root).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].run_id, run_id);
+        assert_eq!(listed[0].owner_pid, std::process::id());
+
+        let requester_root = root.clone();
+        let requester_run = run_id.clone();
+        let requester = std::thread::spawn(move || {
+            EncryptedSessionStore::request_stop(
+                &requester_root,
+                &requester_run,
+                Duration::from_secs(2),
+            )
+        });
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let nonce = loop {
+            if let Some(nonce) = lease.take_stop_request().unwrap() {
+                break nonce;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "owner did not receive stop request"
+            );
+            thread::sleep(Duration::from_millis(5));
+        };
+        EncryptedSessionStore::write_stop_response(&artifact_root, &nonce, true).unwrap();
+        requester.join().unwrap().unwrap();
+
+        drop(lease);
+        assert!(EncryptedSessionStore::list_all(&root).unwrap().is_empty());
+        assert!(matches!(
+            EncryptedSessionStore::request_stop(
+                &root,
+                &format!("{digest}:5"),
+                Duration::from_millis(1)
+            ),
+            Err(SessionError::InvalidInstanceId)
+        ));
         fs::remove_dir_all(root).unwrap();
     }
 

@@ -21,6 +21,7 @@ use zeroize::Zeroizing;
 const KEYRING_SERVICE: &str = "dev.rootglass.identity.age.v1";
 const INDEX_ACCOUNT: &str = "identity-index-v1";
 const PRIVATE_ACCOUNT_PREFIX: &str = "private-v1:";
+const LABEL_ACCOUNT_PREFIX: &str = "label-v1:";
 const IDENTITY_INDEX_VERSION: u8 = 1;
 // Keep the index comfortably below Windows Credential Manager's 2,560-byte
 // credential-blob limit; the index contains only public Age recipient strings.
@@ -237,11 +238,34 @@ impl RecipientIdentityProvider for AgeIdentityProvider {
         self.load_index()?
             .public_keys
             .iter()
-            .map(|public_key| identity_for_public_key(public_key))
+            .map(|public_key| {
+                let mut identity = identity_for_public_key(public_key)?;
+                let label = self
+                    .store
+                    .get_secret(&label_account(&identity.recipient_id))
+                    .map_err(map_store_error)?;
+                identity.label = label.map(|label| label.expose_secret().to_owned());
+                if identity
+                    .label
+                    .as_deref()
+                    .is_some_and(|label| !valid_label(label))
+                {
+                    return Err(IdentityProviderError::InvalidLabel);
+                }
+                Ok(identity)
+            })
             .collect()
     }
 
     fn create_identity(&self) -> Result<RecipientIdentity, IdentityProviderError> {
+        self.create_identity_with_label(None)
+    }
+
+    fn create_identity_with_label(
+        &self,
+        label: Option<&str>,
+    ) -> Result<RecipientIdentity, IdentityProviderError> {
+        let label = label.map(normalize_label).transpose()?;
         let _guard = self
             .mutation_lock
             .lock()
@@ -272,14 +296,26 @@ impl RecipientIdentityProvider for AgeIdentityProvider {
             .set_secret(&private_account, private_key.expose_secret())
             .map_err(map_store_error)?;
 
+        let label_account = label_account(&public_identity.recipient_id);
+        if let Some(label) = label.as_deref() {
+            if let Err(error) = self.store.set_secret(&label_account, label) {
+                let _ = self.store.delete_secret(&label_account);
+                let _ = self.store.delete_secret(&private_account);
+                return Err(map_store_error(error));
+            }
+        }
+
         index.public_keys.push(public);
         index.public_keys.sort_unstable();
         if let Err(error) = self.store_index(&index) {
+            let _ = self.store.delete_secret(&label_account);
             if self.store.delete_secret(&private_account).is_err() {
                 return Err(IdentityProviderError::CredentialStoreUnavailable);
             }
             return Err(error);
         }
+        let mut public_identity = public_identity;
+        public_identity.label = label;
         Ok(public_identity)
     }
 
@@ -319,6 +355,9 @@ impl RecipientIdentityProvider for AgeIdentityProvider {
             }
             return Err(IdentityProviderError::CredentialStoreUnavailable);
         }
+        let _ = self
+            .store
+            .delete_secret(&label_account(&identity.recipient_id));
         Ok(())
     }
 
@@ -366,11 +405,28 @@ fn identity_for_public_key(public_key: &str) -> Result<RecipientIdentity, Identi
         provider_id: RecipientProvider::AgeX25519,
         wrapping_suite_id: RecipientWrappingSuite::AgeV1X25519,
         public_key: canonical_public_key,
+        label: None,
     })
 }
 
 fn private_account(recipient_id: &str) -> String {
     format!("{PRIVATE_ACCOUNT_PREFIX}{recipient_id}")
+}
+
+fn label_account(recipient_id: &str) -> String {
+    format!("{LABEL_ACCOUNT_PREFIX}{recipient_id}")
+}
+
+fn normalize_label(label: &str) -> Result<String, IdentityProviderError> {
+    let label = label.trim();
+    if !valid_label(label) {
+        return Err(IdentityProviderError::InvalidLabel);
+    }
+    Ok(label.to_owned())
+}
+
+fn valid_label(label: &str) -> bool {
+    !label.is_empty() && label.chars().count() <= 64 && !label.chars().any(char::is_control)
 }
 
 fn map_store_error(error: CredentialStoreError) -> IdentityProviderError {
@@ -486,6 +542,38 @@ mod tests {
         let debug = format!("{private_key:?}");
         assert!(debug.contains("REDACTED"));
         assert!(!debug.contains("AGE-SECRET-KEY-"));
+    }
+
+    #[test]
+    fn identity_labels_persist_as_public_metadata_and_are_removed_with_identity() {
+        let store = FakeStore::default();
+        let provider = AgeIdentityProvider::with_store(store.clone());
+        let created = provider
+            .create_identity_with_label(Some("  laptop key  "))
+            .unwrap();
+
+        assert_eq!(created.label.as_deref(), Some("laptop key"));
+        assert_eq!(
+            provider.list_identities().unwrap()[0].label.as_deref(),
+            Some("laptop key")
+        );
+        assert!(store.has_secret(&label_account(&created.recipient_id)));
+
+        provider.delete_identity(&created.recipient_id).unwrap();
+        assert!(!store.has_secret(&label_account(&created.recipient_id)));
+    }
+
+    #[test]
+    fn identity_labels_reject_empty_control_and_oversized_values() {
+        let provider = AgeIdentityProvider::with_store(FakeStore::default());
+        let oversized = "x".repeat(65);
+        for label in ["", "   ", "line\nbreak", oversized.as_str()] {
+            assert_eq!(
+                provider.create_identity_with_label(Some(label)),
+                Err(IdentityProviderError::InvalidLabel)
+            );
+        }
+        assert!(provider.list_identities().unwrap().is_empty());
     }
 
     #[test]
