@@ -1,6 +1,10 @@
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::Engine;
+use rootglass_core::identity::ImageMasterKey;
 use rootglass_core::{HostAccelerator, LaunchRequest};
+use serde::Deserialize;
 use std::collections::VecDeque;
-use std::fs::{File, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -9,6 +13,10 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use thiserror::Error;
+use zeroize::{Zeroize, Zeroizing};
+
+#[cfg(unix)]
+use std::os::unix::net::{UnixListener, UnixStream};
 
 pub const DEFAULT_QEMU_SYSTEM_AARCH64: &str = "qemu-system-aarch64";
 const QMP_STARTUP_TIMEOUT: Duration = if cfg!(all(target_os = "windows", target_arch = "aarch64")) {
@@ -44,6 +52,20 @@ pub enum QemuError {
 
     #[error("QMP command failed: {0}")]
     QmpCommand(String),
+
+    /// Encrypted setup errors intentionally report only the phase. QMP error
+    /// descriptions can echo request properties, so they must never reach logs
+    /// or user-facing diagnostics.
+    #[error("encrypted QEMU setup failed during {stage}")]
+    EncryptedSetup { stage: &'static str },
+
+    #[error(
+        "encrypted QEMU setup failed during {stage}; QEMU termination could not be confirmed: {cleanup}"
+    )]
+    EncryptedCleanup {
+        stage: &'static str,
+        cleanup: String,
+    },
 
     #[error("QEMU process I/O failed during {operation}: {source}")]
     ProcessIo {
@@ -159,6 +181,62 @@ impl QemuLaunchPlan {
             binary_path,
             QemuOutputMode::Headless,
         )
+    }
+
+    /// Build the paused portion of an encrypted launch. The rootfs is attached
+    /// later through QMP after Rootglass has installed the zeroizing secret
+    /// object. Encrypted runs do not yet support writable overlays.
+    pub fn for_encrypted_launch_request(request: &LaunchRequest) -> Result<Self, QemuError> {
+        if request.writable_overlay.is_some() {
+            return Err(QemuError::EncryptedSetup {
+                stage: "validating encrypted launch options",
+            });
+        }
+
+        let mut plan = Self::for_launch_request_with_binary_and_output_mode(
+            request,
+            request
+                .qemu_binary
+                .clone()
+                .unwrap_or_else(|| QemuBinary::default().path),
+            QemuOutputMode::Headless,
+        );
+        let mut filtered = Vec::with_capacity(plan.args.len());
+        let mut index = 0;
+        let mut removed_rootfs = false;
+        while index < plan.args.len() {
+            match plan.args[index].as_str() {
+                "-drive"
+                    if plan
+                        .args
+                        .get(index + 1)
+                        .is_some_and(|value| value.ends_with(",id=rootfs")) =>
+                {
+                    index = (index + 2).min(plan.args.len());
+                    removed_rootfs = true;
+                }
+                "-device"
+                    if plan
+                        .args
+                        .get(index + 1)
+                        .is_some_and(|value| value == "virtio-blk-device,drive=rootfs") =>
+                {
+                    index = (index + 2).min(plan.args.len());
+                }
+                _ => {
+                    filtered.push(plan.args[index].clone());
+                    index += 1;
+                }
+            }
+        }
+        if !removed_rootfs {
+            return Err(QemuError::EncryptedSetup {
+                stage: "building encrypted launch options",
+            });
+        }
+        filtered.push("-S".to_string());
+        plan.args = filtered;
+        Ok(plan)
     }
 
     fn for_launch_request_with_binary_and_output_mode(
@@ -321,6 +399,18 @@ impl QemuLaunchPlan {
     /// still needs an actual QEMU host validation before it is advertised.
     pub fn spawn_supervised(&self) -> Result<QemuProcess, QemuError> {
         QemuProcess::spawn(self)
+    }
+
+    /// Start paused, copy exactly one verified encrypted extent into a
+    /// private read-only temporary image, configure its QEMU LUKS node over
+    /// private QMP, and resume only after each setup command succeeds.
+    pub fn spawn_encrypted_supervised<R: Read>(
+        &self,
+        artifact: R,
+        artifact_length: u64,
+        image_master_key: ImageMasterKey,
+    ) -> Result<QemuProcess, QemuError> {
+        QemuProcess::spawn_encrypted(self, artifact, artifact_length, image_master_key)
     }
 }
 
@@ -552,6 +642,731 @@ impl QmpClient {
     }
 }
 
+enum QmpControl {
+    Tcp(QmpClient),
+    Private(PrivateQmpClient),
+}
+
+impl QmpControl {
+    fn execute(&mut self, command: &'static str) -> Result<(), QemuError> {
+        match self {
+            Self::Tcp(qmp) => qmp.execute(command),
+            Self::Private(qmp) => qmp.execute_without_wait(command),
+        }
+    }
+
+    fn configure_encrypted_rootfs(
+        &mut self,
+        image_path: &Path,
+        image_master_key: ImageMasterKey,
+    ) -> Result<(), QemuError> {
+        match self {
+            Self::Tcp(_) => Err(QemuError::EncryptedSetup {
+                stage: "opening private QMP",
+            }),
+            Self::Private(qmp) => qmp.configure_encrypted_rootfs(image_path, image_master_key),
+        }
+    }
+}
+
+#[cfg(unix)]
+enum PrivateQmpTransport {
+    Unix(UnixStream),
+}
+
+#[cfg(windows)]
+enum PrivateQmpTransport {
+    NamedPipe(NamedPipeStream),
+}
+
+#[cfg(unix)]
+impl Read for PrivateQmpTransport {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Unix(stream) => stream.read(buffer),
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Read for PrivateQmpTransport {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Self::NamedPipe(stream) => stream.read(buffer),
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Write for PrivateQmpTransport {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Unix(stream) => stream.write(buffer),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Unix(stream) => stream.flush(),
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Write for PrivateQmpTransport {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        match self {
+            Self::NamedPipe(stream) => stream.write(buffer),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::NamedPipe(stream) => stream.flush(),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct PrivateQmpReply {
+    #[serde(rename = "QMP")]
+    greeting: Option<serde::de::IgnoredAny>,
+    #[serde(default)]
+    event: Option<serde::de::IgnoredAny>,
+    #[serde(default)]
+    id: Option<u64>,
+    #[serde(rename = "return", default)]
+    result: Option<serde::de::IgnoredAny>,
+    #[serde(default)]
+    error: Option<serde::de::IgnoredAny>,
+}
+
+struct PrivateQmpClient {
+    stream: PrivateQmpTransport,
+    next_id: u64,
+}
+
+impl PrivateQmpClient {
+    fn connect(stream: PrivateQmpTransport, timeout: Duration) -> Result<Self, QemuError> {
+        let deadline = Instant::now() + timeout;
+        let mut client = Self { stream, next_id: 1 };
+        let greeting = client.read_reply(deadline, "reading QMP greeting")?;
+        if greeting.greeting.is_none() {
+            return Err(QemuError::EncryptedSetup {
+                stage: "validating QMP greeting",
+            });
+        }
+        client.execute_value("qmp_capabilities", serde_json::json!({}), "negotiating QMP")?;
+        Ok(client)
+    }
+
+    fn execute_without_wait(&mut self, command: &'static str) -> Result<(), QemuError> {
+        let request = serde_json::json!({ "execute": command });
+        let bytes = serde_json::to_vec(&request).map_err(|_| QemuError::EncryptedSetup {
+            stage: "encoding QMP shutdown command",
+        })?;
+        self.stream
+            .write_all(&bytes)
+            .and_then(|()| self.stream.write_all(b"\r\n"))
+            .and_then(|()| self.stream.flush())
+            .map_err(|_| QemuError::EncryptedSetup {
+                stage: "sending QMP shutdown command",
+            })
+    }
+
+    fn execute_value(
+        &mut self,
+        command: &'static str,
+        arguments: serde_json::Value,
+        stage: &'static str,
+    ) -> Result<(), QemuError> {
+        let id = self.next_id;
+        self.next_id = self.next_id.wrapping_add(1).max(1);
+        let request = Zeroizing::new(
+            serde_json::to_vec(&serde_json::json!({
+                "execute": command,
+                "arguments": arguments,
+                "id": id,
+            }))
+            .map_err(|_| QemuError::EncryptedSetup { stage })?,
+        );
+        self.execute_request(&request, id, stage)
+    }
+
+    fn add_image_master_key(&mut self, key: &ImageMasterKey) -> Result<(), QemuError> {
+        let id = self.next_id;
+        self.next_id = self.next_id.wrapping_add(1).max(1);
+        let mut encoded_key = Zeroizing::new([0u8; 44]);
+        BASE64_STANDARD
+            .encode_slice(key.as_bytes(), encoded_key.as_mut())
+            .map_err(|_| QemuError::EncryptedSetup {
+                stage: "encoding QEMU secret",
+            })?;
+
+        // Construct the secret-bearing request without an intermediate String
+        // or JSON Value. Both encoded and serialized key bytes are zeroized.
+        let mut request = Zeroizing::new(Vec::with_capacity(192));
+        request.extend_from_slice(
+            br#"{"execute":"object-add","arguments":{"qom-type":"secret","id":"rootglass-imk","props":{"format":"base64","data":""#,
+        );
+        request.extend_from_slice(&encoded_key[..]);
+        request.extend_from_slice(b"\"}},\"id\":");
+        request.extend_from_slice(id.to_string().as_bytes());
+        request.extend_from_slice(b"}");
+        encoded_key.zeroize();
+        self.execute_request(&request, id, "adding QEMU secret")
+    }
+
+    fn configure_encrypted_rootfs(
+        &mut self,
+        image_path: &Path,
+        image_master_key: ImageMasterKey,
+    ) -> Result<(), QemuError> {
+        let filename = image_path.to_string_lossy().into_owned();
+        self.add_image_master_key(&image_master_key)?;
+        self.execute_value(
+            "blockdev-add",
+            serde_json::json!({
+                "driver": "file",
+                "filename": filename,
+                "node-name": "rootglass-encrypted-file",
+                "read-only": true,
+            }),
+            "adding read-only encrypted file node",
+        )?;
+        self.execute_value(
+            "blockdev-add",
+            serde_json::json!({
+                "driver": "raw",
+                "file": "rootglass-encrypted-file",
+                "node-name": "rootglass-encrypted-raw",
+                "read-only": true,
+            }),
+            "adding read-only raw disk node",
+        )?;
+        self.execute_value(
+            "blockdev-add",
+            serde_json::json!({
+                "driver": "luks",
+                "file": "rootglass-encrypted-raw",
+                "node-name": "rootglass-encrypted-rootfs",
+                "key-secret": "rootglass-imk",
+                "read-only": true,
+            }),
+            "opening encrypted rootfs",
+        )?;
+        self.execute_value(
+            "device_add",
+            serde_json::json!({
+                "driver": "virtio-blk-device",
+                "drive": "rootglass-encrypted-rootfs",
+                "id": "rootglass-encrypted-rootfs-device",
+            }),
+            "attaching encrypted rootfs",
+        )?;
+        self.execute_value("cont", serde_json::json!({}), "resuming encrypted guest")?;
+        drop(image_master_key);
+        Ok(())
+    }
+
+    fn execute_request(
+        &mut self,
+        request: &[u8],
+        id: u64,
+        stage: &'static str,
+    ) -> Result<(), QemuError> {
+        self.stream
+            .write_all(request)
+            .and_then(|()| self.stream.write_all(b"\r\n"))
+            .and_then(|()| self.stream.flush())
+            .map_err(|_| QemuError::EncryptedSetup { stage })?;
+        let deadline = Instant::now() + QMP_STARTUP_TIMEOUT;
+        loop {
+            let response = self.read_reply(deadline, stage)?;
+            if response.event.is_some() || response.id != Some(id) {
+                continue;
+            }
+            if response.error.is_some() || response.result.is_none() {
+                return Err(QemuError::EncryptedSetup { stage });
+            }
+            return Ok(());
+        }
+    }
+
+    fn read_reply(
+        &mut self,
+        deadline: Instant,
+        stage: &'static str,
+    ) -> Result<PrivateQmpReply, QemuError> {
+        let mut line = Zeroizing::new(Vec::with_capacity(512));
+        loop {
+            if Instant::now() >= deadline || line.len() >= 64 * 1024 {
+                return Err(QemuError::EncryptedSetup { stage });
+            }
+            let mut byte = [0u8; 1];
+            match self.stream.read(&mut byte) {
+                Ok(0) => return Err(QemuError::EncryptedSetup { stage }),
+                Ok(_) => {
+                    let is_newline = byte[0] == b'\n';
+                    line.push(byte[0]);
+                    byte.zeroize();
+                    if is_newline {
+                        return serde_json::from_slice(&line)
+                            .map_err(|_| QemuError::EncryptedSetup { stage });
+                    }
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::Interrupted
+                            | std::io::ErrorKind::TimedOut
+                            | std::io::ErrorKind::WouldBlock
+                    ) =>
+                {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(_) => return Err(QemuError::EncryptedSetup { stage }),
+            }
+        }
+    }
+}
+
+struct EncryptedTempDir {
+    path: PathBuf,
+}
+
+impl EncryptedTempDir {
+    fn create_in(parent: &Path) -> Result<Self, QemuError> {
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        for _ in 0..100 {
+            let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = parent.join(format!("rootglass-qmp-{}-{id}", std::process::id()));
+            let mut builder = fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            match builder.create(&path) {
+                Ok(()) => return Ok(Self { path }),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(source) => {
+                    return Err(QemuError::ProcessIo {
+                        operation: "creating private encrypted QEMU directory",
+                        source,
+                    });
+                }
+            }
+        }
+        Err(QemuError::EncryptedSetup {
+            stage: "reserving private QEMU directory",
+        })
+    }
+
+    fn image_path(&self) -> PathBuf {
+        self.path.join("encrypted-rootfs.img")
+    }
+}
+
+impl Drop for EncryptedTempDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+fn materialize_encrypted_image<R: Read>(
+    directory: &EncryptedTempDir,
+    artifact: R,
+    artifact_length: u64,
+) -> Result<PathBuf, QemuError> {
+    if artifact_length == 0 {
+        return Err(QemuError::EncryptedSetup {
+            stage: "validating encrypted artifact length",
+        });
+    }
+    let path = directory.image_path();
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&path).map_err(|_| QemuError::EncryptedSetup {
+        stage: "creating private encrypted image",
+    })?;
+    let mut limited = artifact.take(artifact_length);
+    let copied = std::io::copy(&mut limited, &mut file).map_err(|_| QemuError::EncryptedSetup {
+        stage: "copying verified encrypted extent",
+    })?;
+    if copied != artifact_length {
+        return Err(QemuError::EncryptedSetup {
+            stage: "validating encrypted extent length",
+        });
+    }
+    file.sync_all().map_err(|_| QemuError::EncryptedSetup {
+        stage: "syncing private encrypted image",
+    })?;
+    drop(file);
+
+    let mut permissions = fs::metadata(&path)
+        .map_err(|_| QemuError::EncryptedSetup {
+            stage: "protecting private encrypted image",
+        })?
+        .permissions();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        permissions.set_mode(0o400);
+    }
+    #[cfg(not(unix))]
+    permissions.set_readonly(true);
+    fs::set_permissions(&path, permissions).map_err(|_| QemuError::EncryptedSetup {
+        stage: "protecting private encrypted image",
+    })?;
+    Ok(path)
+}
+
+#[cfg(unix)]
+struct PrivateQmpEndpoint {
+    listener: UnixListener,
+    socket_path: PathBuf,
+}
+
+#[cfg(unix)]
+impl PrivateQmpEndpoint {
+    fn bind(directory: &EncryptedTempDir) -> Result<Self, QemuError> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let socket_path = directory.path.join("q");
+        if socket_path.to_string_lossy().contains(',') {
+            return Err(QemuError::EncryptedSetup {
+                stage: "validating private QMP socket path",
+            });
+        }
+        let listener = UnixListener::bind(&socket_path).map_err(QemuError::QmpEndpoint)?;
+        fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600))
+            .map_err(QemuError::QmpEndpoint)?;
+        listener
+            .set_nonblocking(true)
+            .map_err(QemuError::QmpEndpoint)?;
+        Ok(Self {
+            listener,
+            socket_path,
+        })
+    }
+
+    fn qemu_argument(&self) -> String {
+        format!("unix:{},server=off,wait=off", self.socket_path.display())
+    }
+
+    fn connect(self, child: &mut Child, timeout: Duration) -> Result<PrivateQmpClient, QemuError> {
+        let deadline = Instant::now() + timeout;
+        let stream = loop {
+            match self.listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if child
+                        .try_wait()
+                        .map_err(|_| QemuError::EncryptedSetup {
+                            stage: "checking QEMU during private QMP startup",
+                        })?
+                        .is_some()
+                    {
+                        return Err(QemuError::EncryptedSetup {
+                            stage: "waiting for private QMP connection",
+                        });
+                    }
+                    if Instant::now() >= deadline {
+                        return Err(QemuError::EncryptedSetup {
+                            stage: "waiting for private QMP connection",
+                        });
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => {
+                    return Err(QemuError::EncryptedSetup {
+                        stage: "accepting private QMP connection",
+                    });
+                }
+            }
+        };
+        let _ = fs::remove_file(&self.socket_path);
+        stream
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .map_err(|_| QemuError::EncryptedSetup {
+                stage: "setting private QMP read timeout",
+            })?;
+        stream
+            .set_write_timeout(Some(timeout))
+            .map_err(|_| QemuError::EncryptedSetup {
+                stage: "setting private QMP write timeout",
+            })?;
+        PrivateQmpClient::connect(PrivateQmpTransport::Unix(stream), timeout)
+    }
+}
+
+#[cfg(unix)]
+impl Drop for PrivateQmpEndpoint {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.socket_path);
+    }
+}
+
+#[cfg(windows)]
+struct NamedPipeStream {
+    handle: std::os::windows::io::OwnedHandle,
+}
+
+#[cfg(windows)]
+impl Read for NamedPipeStream {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        use std::os::windows::io::AsRawHandle;
+
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        let mut read = 0u32;
+        let count = buffer.len().min(u32::MAX as usize) as u32;
+        let succeeded = unsafe {
+            win32::ReadFile(
+                self.handle.as_raw_handle() as win32::Handle,
+                buffer.as_mut_ptr().cast(),
+                count,
+                &mut read,
+                std::ptr::null_mut(),
+            )
+        };
+        if succeeded != 0 {
+            return Ok(read as usize);
+        }
+        match unsafe { win32::GetLastError() } {
+            win32::ERROR_NO_DATA => Err(std::io::ErrorKind::WouldBlock.into()),
+            win32::ERROR_BROKEN_PIPE | win32::ERROR_PIPE_NOT_CONNECTED => Ok(0),
+            code => Err(std::io::Error::from_raw_os_error(code as i32)),
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Write for NamedPipeStream {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        use std::os::windows::io::AsRawHandle;
+
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        let mut written = 0u32;
+        let count = buffer.len().min(u32::MAX as usize) as u32;
+        let succeeded = unsafe {
+            win32::WriteFile(
+                self.handle.as_raw_handle() as win32::Handle,
+                buffer.as_ptr().cast(),
+                count,
+                &mut written,
+                std::ptr::null_mut(),
+            )
+        };
+        if succeeded != 0 {
+            return Ok(written as usize);
+        }
+        match unsafe { win32::GetLastError() } {
+            win32::ERROR_NO_DATA => Err(std::io::ErrorKind::WouldBlock.into()),
+            win32::ERROR_BROKEN_PIPE | win32::ERROR_PIPE_NOT_CONNECTED => {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            code => Err(std::io::Error::from_raw_os_error(code as i32)),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+mod win32 {
+    use std::ffi::c_void;
+
+    pub type Handle = *mut c_void;
+    pub const ERROR_NO_DATA: u32 = 232;
+    pub const ERROR_BROKEN_PIPE: u32 = 109;
+    pub const ERROR_PIPE_NOT_CONNECTED: u32 = 233;
+    pub const ERROR_PIPE_CONNECTED: u32 = 535;
+    pub const ERROR_PIPE_LISTENING: u32 = 536;
+
+    pub const PIPE_ACCESS_DUPLEX: u32 = 0x0000_0003;
+    pub const FILE_FLAG_FIRST_PIPE_INSTANCE: u32 = 0x0008_0000;
+    pub const PIPE_TYPE_BYTE: u32 = 0;
+    pub const PIPE_READMODE_BYTE: u32 = 0;
+    pub const PIPE_NOWAIT: u32 = 1;
+    pub const PIPE_REJECT_REMOTE_CLIENTS: u32 = 0x0000_0008;
+    pub const SDDL_REVISION_1: u32 = 1;
+
+    #[repr(C)]
+    pub struct SecurityAttributes {
+        pub length: u32,
+        pub descriptor: *mut c_void,
+        pub inherit_handle: i32,
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        pub fn CreateNamedPipeW(
+            name: *const u16,
+            open_mode: u32,
+            pipe_mode: u32,
+            max_instances: u32,
+            out_buffer_size: u32,
+            in_buffer_size: u32,
+            default_timeout: u32,
+            security_attributes: *const SecurityAttributes,
+        ) -> Handle;
+        pub fn ConnectNamedPipe(pipe: Handle, overlapped: *mut c_void) -> i32;
+        pub fn GetLastError() -> u32;
+        pub fn LocalFree(memory: Handle) -> Handle;
+        pub fn ReadFile(
+            file: Handle,
+            buffer: *mut c_void,
+            bytes_to_read: u32,
+            bytes_read: *mut u32,
+            overlapped: *mut c_void,
+        ) -> i32;
+        pub fn WriteFile(
+            file: Handle,
+            buffer: *const c_void,
+            bytes_to_write: u32,
+            bytes_written: *mut u32,
+            overlapped: *mut c_void,
+        ) -> i32;
+    }
+
+    #[link(name = "advapi32")]
+    unsafe extern "system" {
+        pub fn ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            descriptor_string: *const u16,
+            revision: u32,
+            descriptor: *mut *mut c_void,
+            descriptor_size: *mut u32,
+        ) -> i32;
+    }
+}
+
+#[cfg(windows)]
+struct PrivateQmpEndpoint {
+    name: String,
+    stream: Option<NamedPipeStream>,
+}
+
+#[cfg(windows)]
+impl PrivateQmpEndpoint {
+    fn bind(_directory: &EncryptedTempDir) -> Result<Self, QemuError> {
+        use std::os::windows::io::{FromRawHandle, OwnedHandle};
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static NEXT_PIPE_ID: AtomicU64 = AtomicU64::new(0);
+        let id = NEXT_PIPE_ID.fetch_add(1, Ordering::Relaxed);
+        let name = format!(r"\\.\pipe\rootglass-qmp-{}-{id}", std::process::id());
+        let wide_name = name
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let sddl = "D:P(A;;GA;;;OW)"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let mut descriptor = std::ptr::null_mut();
+        let converted = unsafe {
+            win32::ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                win32::SDDL_REVISION_1,
+                &mut descriptor,
+                std::ptr::null_mut(),
+            )
+        };
+        if converted == 0 {
+            return Err(QemuError::QmpEndpoint(std::io::Error::last_os_error()));
+        }
+        let attributes = win32::SecurityAttributes {
+            length: std::mem::size_of::<win32::SecurityAttributes>() as u32,
+            descriptor,
+            inherit_handle: 0,
+        };
+        let raw_handle = unsafe {
+            win32::CreateNamedPipeW(
+                wide_name.as_ptr(),
+                win32::PIPE_ACCESS_DUPLEX | win32::FILE_FLAG_FIRST_PIPE_INSTANCE,
+                win32::PIPE_TYPE_BYTE
+                    | win32::PIPE_READMODE_BYTE
+                    | win32::PIPE_NOWAIT
+                    | win32::PIPE_REJECT_REMOTE_CLIENTS,
+                1,
+                4096,
+                4096,
+                0,
+                &attributes,
+            )
+        };
+        unsafe {
+            win32::LocalFree(descriptor);
+        }
+        if raw_handle == (-1isize) as win32::Handle || raw_handle.is_null() {
+            return Err(QemuError::QmpEndpoint(std::io::Error::last_os_error()));
+        }
+        let handle = unsafe { OwnedHandle::from_raw_handle(raw_handle.cast()) };
+        Ok(Self {
+            name,
+            stream: Some(NamedPipeStream { handle }),
+        })
+    }
+
+    fn qemu_argument(&self) -> String {
+        format!("pipe:{},server=off,wait=off", self.name)
+    }
+
+    fn connect(
+        mut self,
+        child: &mut Child,
+        timeout: Duration,
+    ) -> Result<PrivateQmpClient, QemuError> {
+        use std::os::windows::io::AsRawHandle;
+
+        let stream = self.stream.as_mut().expect("named pipe server exists");
+        let handle = stream.handle.as_raw_handle() as win32::Handle;
+        let deadline = Instant::now() + timeout;
+        loop {
+            let connected = unsafe { win32::ConnectNamedPipe(handle, std::ptr::null_mut()) };
+            if connected != 0 {
+                break;
+            }
+            let code = unsafe { win32::GetLastError() };
+            if code == win32::ERROR_PIPE_CONNECTED {
+                break;
+            }
+            if code != win32::ERROR_PIPE_LISTENING {
+                return Err(QemuError::EncryptedSetup {
+                    stage: "accepting private QMP connection",
+                });
+            }
+            if child
+                .try_wait()
+                .map_err(|_| QemuError::EncryptedSetup {
+                    stage: "checking QEMU during private QMP startup",
+                })?
+                .is_some()
+                || Instant::now() >= deadline
+            {
+                return Err(QemuError::EncryptedSetup {
+                    stage: "waiting for private QMP connection",
+                });
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        let stream = self.stream.take().expect("connected pipe server exists");
+        PrivateQmpClient::connect(PrivateQmpTransport::NamedPipe(stream), timeout)
+    }
+}
+
 fn read_qmp_line(
     reader: &mut BufReader<TcpStream>,
     deadline: Instant,
@@ -596,10 +1411,11 @@ fn read_qmp_line(
 pub struct QemuProcess {
     child: Child,
     serial_input: Option<ChildStdin>,
-    qmp: Option<QmpClient>,
+    qmp: Option<QmpControl>,
     serial: Arc<SerialBuffer>,
     diagnostic_log: PathBuf,
     stderr_tail: Arc<Mutex<BoundedTail>>,
+    encrypted_temp_dir: Option<EncryptedTempDir>,
 }
 
 impl QemuProcess {
@@ -612,10 +1428,91 @@ impl QemuProcess {
             .port();
         drop(listener);
 
-        let command_line = plan.command_line();
+        Self::spawn_with_connector(
+            plan,
+            supervised_args(&plan.args, port),
+            move |_| QmpClient::connect(port, QMP_STARTUP_TIMEOUT).map(QmpControl::Tcp),
+            None,
+        )
+    }
+
+    fn spawn_encrypted<R: Read>(
+        plan: &QemuLaunchPlan,
+        artifact: R,
+        artifact_length: u64,
+        image_master_key: ImageMasterKey,
+    ) -> Result<Self, QemuError> {
+        Self::spawn_encrypted_with_parent(
+            plan,
+            artifact,
+            artifact_length,
+            image_master_key,
+            &std::env::temp_dir(),
+        )
+    }
+
+    fn spawn_encrypted_with_parent<R: Read>(
+        plan: &QemuLaunchPlan,
+        artifact: R,
+        artifact_length: u64,
+        image_master_key: ImageMasterKey,
+        temp_parent: &Path,
+    ) -> Result<Self, QemuError> {
+        if !plan.args.iter().any(|argument| argument == "-S") {
+            return Err(QemuError::EncryptedSetup {
+                stage: "validating paused launch options",
+            });
+        }
+        let encrypted_temp_dir = EncryptedTempDir::create_in(temp_parent)?;
+        let image_path =
+            materialize_encrypted_image(&encrypted_temp_dir, artifact, artifact_length)?;
+        let endpoint = PrivateQmpEndpoint::bind(&encrypted_temp_dir)?;
+        let qmp_argument = endpoint.qemu_argument();
+        let args = supervised_args_with_qmp(&plan.args, qmp_argument);
+        let mut process = Self::spawn_with_connector(
+            plan,
+            args,
+            move |child| {
+                endpoint
+                    .connect(child, QMP_STARTUP_TIMEOUT)
+                    .map(QmpControl::Private)
+            },
+            Some(encrypted_temp_dir),
+        )?;
+        let setup_result = process
+            .qmp
+            .as_mut()
+            .ok_or(QemuError::EncryptedSetup {
+                stage: "initializing encrypted QMP",
+            })?
+            .configure_encrypted_rootfs(&image_path, image_master_key);
+        if let Err(error) = setup_result {
+            if let Err(cleanup) = process.abort_and_reap() {
+                let stage = match &error {
+                    QemuError::EncryptedSetup { stage } => *stage,
+                    _ => "encrypted QMP setup",
+                };
+                return Err(QemuError::EncryptedCleanup {
+                    stage,
+                    cleanup: cleanup.to_string(),
+                });
+            }
+            return Err(error);
+        }
+        Ok(process)
+    }
+
+    fn spawn_with_connector(
+        plan: &QemuLaunchPlan,
+        args: Vec<String>,
+        connect_qmp: impl FnOnce(&mut Child) -> Result<QmpControl, QemuError>,
+        encrypted_temp_dir: Option<EncryptedTempDir>,
+    ) -> Result<Self, QemuError> {
         let binary = qemu_executable_path(&plan.binary.path);
+        let command_line = command_line(&binary, &args);
+
         let mut command = Command::new(&binary);
-        command.args(supervised_args(&plan.args, port));
+        command.args(&args);
         configure_bundled_runtime(&mut command, &binary);
         command.stdin(Stdio::piped());
         command.stdout(Stdio::piped());
@@ -662,11 +1559,13 @@ impl QemuProcess {
         let bounded_log = Arc::new(Mutex::new(BoundedLog { file, written: 0 }));
         let serial = Arc::new(SerialBuffer::default());
         let stderr_tail = Arc::new(Mutex::new(BoundedTail::default()));
+        let redact_stderr = encrypted_temp_dir.is_some();
         if let Err(error) = spawn_pipe_reader(
             stdout,
             Some(Arc::clone(&serial)),
-            Arc::clone(&bounded_log),
+            Some(Arc::clone(&bounded_log)),
             None,
+            false,
         ) {
             let _ = child.kill();
             let _ = child.wait();
@@ -675,15 +1574,16 @@ impl QemuProcess {
         if let Err(error) = spawn_pipe_reader(
             stderr,
             None,
-            Arc::clone(&bounded_log),
-            Some(Arc::clone(&stderr_tail)),
+            (!redact_stderr).then(|| Arc::clone(&bounded_log)),
+            (!redact_stderr).then(|| Arc::clone(&stderr_tail)),
+            redact_stderr,
         ) {
             let _ = child.kill();
             let _ = child.wait();
             return Err(error);
         }
 
-        let qmp = match QmpClient::connect(port, QMP_STARTUP_TIMEOUT) {
+        let qmp = match connect_qmp(&mut child) {
             Ok(qmp) => qmp,
             Err(error) => {
                 let process_state = match child.try_wait() {
@@ -713,6 +1613,7 @@ impl QemuProcess {
             serial,
             diagnostic_log,
             stderr_tail,
+            encrypted_temp_dir,
         })
     }
 
@@ -753,12 +1654,17 @@ impl QemuProcess {
 
     /// Poll the child without blocking the caller.
     pub fn try_wait(&mut self) -> Result<Option<ExitStatus>, QemuError> {
-        self.child
+        let status = self
+            .child
             .try_wait()
             .map_err(|source| QemuError::ProcessIo {
                 operation: "polling QEMU",
                 source,
-            })
+            })?;
+        if status.is_some() {
+            self.cleanup_after_exit();
+        }
+        Ok(status)
     }
 
     /// Request guest shutdown, then QMP quit, and finally terminate/reap QEMU.
@@ -790,10 +1696,43 @@ impl QemuProcess {
             operation: "terminating QEMU",
             source,
         })?;
-        self.child.wait().map_err(|source| QemuError::ProcessIo {
+        let status = self.child.wait().map_err(|source| QemuError::ProcessIo {
             operation: "reaping QEMU",
             source,
-        })
+        })?;
+        self.cleanup_after_exit();
+        Ok(status)
+    }
+
+    fn abort_and_reap(&mut self) -> Result<(), QemuError> {
+        if let Err(kill_error) = self.child.kill() {
+            let exited = self
+                .child
+                .try_wait()
+                .map_err(|source| QemuError::ProcessIo {
+                    operation: "checking QEMU after failed termination",
+                    source,
+                })?
+                .is_some();
+            if !exited {
+                return Err(QemuError::ProcessIo {
+                    operation: "terminating QEMU after encrypted setup failure",
+                    source: kill_error,
+                });
+            }
+        }
+        self.child.wait().map_err(|source| QemuError::ProcessIo {
+            operation: "reaping QEMU after encrypted setup failure",
+            source,
+        })?;
+        self.cleanup_after_exit();
+        Ok(())
+    }
+
+    fn cleanup_after_exit(&mut self) {
+        self.serial_input.take();
+        self.qmp.take();
+        self.encrypted_temp_dir.take();
     }
 
     fn wait_for_exit(&mut self, timeout: Duration) -> Result<Option<ExitStatus>, QemuError> {
@@ -819,6 +1758,10 @@ impl Drop for QemuProcess {
 }
 
 fn supervised_args(args: &[String], qmp_port: u16) -> Vec<String> {
+    supervised_args_with_qmp(args, format!("tcp:127.0.0.1:{qmp_port},server=on,wait=off"))
+}
+
+fn supervised_args_with_qmp(args: &[String], endpoint: String) -> Vec<String> {
     let mut supervised = Vec::with_capacity(args.len() + 8);
     let mut index = 0;
     while index < args.len() {
@@ -840,7 +1783,7 @@ fn supervised_args(args: &[String], qmp_port: u16) -> Vec<String> {
         "-monitor".to_string(),
         "none".to_string(),
         "-qmp".to_string(),
-        format!("tcp:127.0.0.1:{qmp_port},server=on,wait=off"),
+        endpoint,
     ]);
     supervised
 }
@@ -873,8 +1816,9 @@ fn create_diagnostic_log() -> std::io::Result<(PathBuf, File)> {
 fn spawn_pipe_reader<R: Read + Send + 'static>(
     mut pipe: R,
     serial: Option<Arc<SerialBuffer>>,
-    log: Arc<Mutex<BoundedLog>>,
+    log: Option<Arc<Mutex<BoundedLog>>>,
     stderr_tail: Option<Arc<Mutex<BoundedTail>>>,
+    zeroize_chunks: bool,
 ) -> Result<(), QemuError> {
     thread::Builder::new()
         .name("rootglass-qemu-output".to_string())
@@ -893,8 +1837,13 @@ fn spawn_pipe_reader<R: Read + Send + 'static>(
                                 tail.push(bytes);
                             }
                         }
-                        if let Ok(mut log) = log.lock() {
-                            log.write(bytes);
+                        if let Some(log) = &log {
+                            if let Ok(mut log) = log.lock() {
+                                log.write(bytes);
+                            }
+                        }
+                        if zeroize_chunks {
+                            buffer[..count].zeroize();
                         }
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -903,6 +1852,9 @@ fn spawn_pipe_reader<R: Read + Send + 'static>(
             }
             if let Some(serial) = serial {
                 serial.close();
+            }
+            if zeroize_chunks {
+                buffer.zeroize();
             }
         })
         .map(|_| ())
@@ -1000,6 +1952,12 @@ fn shell_quote(value: &str) -> String {
     }
 }
 
+fn command_line(binary: &Path, args: &[String]) -> String {
+    let mut parts = vec![shell_quote(&binary.display().to_string())];
+    parts.extend(args.iter().map(|arg| shell_quote(arg)));
+    parts.join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1014,15 +1972,25 @@ mod tests {
             .expect("sample glass produces launch request");
 
         let plan = QemuLaunchPlan::for_launch_request(&request);
-        let command_line = plan.command_line();
+        let command_line = plan.command_line().replace('\\', "/");
 
         assert_eq!(plan.accelerator, Accelerator::None);
         assert!(command_line.contains(DEFAULT_QEMU_SYSTEM_AARCH64));
         assert!(command_line.contains("-machine virt"));
         assert!(command_line.contains("-cpu cortex-a57"));
-        assert!(command_line.contains("-kernel runtime-assets/alpine-aarch64/vmlinuz-virt"));
+        assert!(plan.args.windows(2).any(|args| {
+            args[0] == "-kernel"
+                && args[1]
+                    .replace('\\', "/")
+                    .ends_with("runtime-assets/alpine-aarch64/vmlinuz-virt")
+        }));
         assert!(!command_line.contains("-dtb"));
-        assert!(command_line.contains("-initrd runtime-assets/alpine-aarch64/initramfs-virt"));
+        assert!(plan.args.windows(2).any(|args| {
+            args[0] == "-initrd"
+                && args[1]
+                    .replace('\\', "/")
+                    .ends_with("runtime-assets/alpine-aarch64/initramfs-virt")
+        }));
         assert!(command_line.contains("readonly=on"));
         assert!(command_line.contains("rootfs.img"));
         assert!(command_line.contains("state.img"));
@@ -1130,6 +2098,44 @@ mod tests {
             .command_line()
             .starts_with("'/opt/rootglass runtime/bin/qemu-system-aarch64' "));
     }
+
+    #[test]
+    fn encrypted_launch_starts_paused_without_a_plain_rootfs_argument() {
+        let mut runtime = RootglassRuntime::new();
+        let capabilities = HostCapabilities::without_acceleration(HostPlatform::Other);
+        let mut request = runtime
+            .prepare_launch_with_host("../../examples/hello-world.glass", &capabilities)
+            .expect("sample glass produces launch request");
+        request.writable_overlay = None;
+
+        let plan = QemuLaunchPlan::for_encrypted_launch_request(&request)
+            .expect("encrypted plan can be built");
+
+        assert!(plan.args.iter().any(|argument| argument == "-S"));
+        assert!(!plan.args.iter().any(|argument| argument == "-drive"));
+        assert!(!plan
+            .args
+            .iter()
+            .any(|argument| argument.contains("rootfs.img")));
+        assert!(!plan
+            .args
+            .iter()
+            .any(|argument| argument == "virtio-blk-device,drive=rootfs"));
+    }
+
+    #[test]
+    fn encrypted_launch_rejects_a_writable_overlay() {
+        let mut runtime = RootglassRuntime::new();
+        let capabilities = HostCapabilities::without_acceleration(HostPlatform::Other);
+        let request = runtime
+            .prepare_launch_with_host("../../examples/hello-world.glass", &capabilities)
+            .expect("sample glass produces launch request");
+
+        let error = QemuLaunchPlan::for_encrypted_launch_request(&request)
+            .expect_err("encrypted launch does not allow a writable overlay");
+
+        assert!(error.to_string().contains("encrypted QEMU setup failed"));
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -1211,6 +2217,295 @@ with client:
         permissions.set_mode(0o755);
         fs::set_permissions(&binary, permissions).unwrap();
         FakeQemu { root, binary }
+    }
+
+    struct FakePrivateQemu {
+        root: PathBuf,
+        binary: PathBuf,
+        trace: PathBuf,
+        pid_file: PathBuf,
+    }
+
+    impl Drop for FakePrivateQemu {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn fake_private_qemu() -> FakePrivateQemu {
+        static NEXT_PRIVATE_QEMU_ID: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
+        let root = loop {
+            let id = NEXT_PRIVATE_QEMU_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let candidate = std::env::temp_dir().join(format!(
+                "rootglass-private-qemu-{}-{id}",
+                std::process::id()
+            ));
+            match fs::create_dir(&candidate) {
+                Ok(()) => break candidate,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("create fake private QEMU fixture directory: {error}"),
+            }
+        };
+        let binary = root.join("fake-private-qemu.py");
+        let trace = root.join("qmp-trace");
+        let pid_file = root.join("qemu.pid");
+        let script = r##"#!/usr/bin/env python3
+import json
+import os
+import socket
+import sys
+import time
+
+args = sys.argv[1:]
+def option(name):
+    return args[args.index(name) + 1]
+
+trace = option("--rootglass-trace")
+pid_file = option("--rootglass-pidfile")
+fail_at = option("--rootglass-fail-at")
+timeout_at = option("--rootglass-timeout-at")
+open(pid_file, "w").write(str(os.getpid()))
+endpoint = option("-qmp")
+socket_path = endpoint[len("unix:"):].split(",server=", 1)[0]
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+client.connect(socket_path)
+with client:
+    reader = client.makefile("rb")
+    client.sendall(b'{"QMP":{"version":{},"capabilities":[]}}\r\n')
+    command_counts = {}
+    for line in reader:
+        request = json.loads(line)
+        command = request.get("execute", "")
+        arguments = request.get("arguments", {})
+        command_counts[command] = command_counts.get(command, 0) + 1
+        if command == "object-add":
+            props = arguments.get("props", {})
+            valid = props.get("format") == "base64" and len(props.get("data", "")) == 44
+            trace_line = "object-add:secret-present" if valid else "object-add:secret-missing"
+            sys.stderr.write(props.get("data", "") + "\n")
+            sys.stderr.flush()
+            print("FAKE_QEMU_STDOUT_AFTER_SECRET", flush=True)
+        else:
+            trace_line = command
+        with open(trace, "a") as output:
+            output.write(trace_line + "\n")
+        stage = command + ("-" + str(command_counts[command]) if command == "blockdev-add" else "")
+        if command == timeout_at:
+            time.sleep(30)
+            continue
+        if command == fail_at or stage == fail_at:
+            description = arguments.get("props", {}).get("data", "injected QMP failure")
+            response = {"error": {"class": "GenericError", "desc": description}, "id": request.get("id")}
+        else:
+            response = {"return": {}, "id": request.get("id")}
+        client.sendall(json.dumps(response).encode() + b"\r\n")
+        if command == "system_powerdown":
+            break
+"##;
+        fs::write(&binary, script).unwrap();
+        let mut permissions = fs::metadata(&binary).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&binary, permissions).unwrap();
+        FakePrivateQemu {
+            root,
+            binary,
+            trace,
+            pid_file,
+        }
+    }
+
+    fn private_plan(fake: &FakePrivateQemu, fail_at: &str, timeout_at: &str) -> QemuLaunchPlan {
+        let mut plan = plan(&fake.binary);
+        plan.args.extend([
+            "--rootglass-trace".to_string(),
+            fake.trace.display().to_string(),
+            "--rootglass-pidfile".to_string(),
+            fake.pid_file.display().to_string(),
+            "--rootglass-fail-at".to_string(),
+            fail_at.to_string(),
+            "--rootglass-timeout-at".to_string(),
+            timeout_at.to_string(),
+            "-S".to_string(),
+        ]);
+        plan
+    }
+
+    fn test_image_master_key() -> ImageMasterKey {
+        ImageMasterKey::new(Zeroizing::new([0x5a; 32]))
+    }
+
+    fn assert_private_qemu_reaped(fake: &FakePrivateQemu) {
+        let pid: u32 = fs::read_to_string(&fake.pid_file)
+            .expect("fake QEMU records its process id")
+            .parse()
+            .expect("fake QEMU process id is numeric");
+        assert!(
+            !PathBuf::from(format!("/proc/{pid}")).exists(),
+            "encrypted setup must terminate and reap fake QEMU"
+        );
+        assert!(fs::read_dir(&fake.root).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("rootglass-qmp-")));
+    }
+
+    fn wait_for_diagnostic_marker(process: &QemuProcess, marker: &[u8]) {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let diagnostic = fs::read(process.diagnostic_log()).unwrap();
+            if diagnostic
+                .windows(marker.len())
+                .any(|window| window == marker)
+            {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "diagnostic marker was not drained"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn encrypted_qmp_delivers_secret_in_order_then_reaps_and_cleans() {
+        let fake = fake_private_qemu();
+        let plan = private_plan(&fake, "", "");
+        let key_text = BASE64_STANDARD.encode([0x5a; 32]);
+        assert!(!plan.command_line().contains(&key_text));
+        let artifact = b"verified ciphertext extent";
+        let mut process = QemuProcess::spawn_encrypted_with_parent(
+            &plan,
+            std::io::Cursor::new(artifact),
+            artifact.len() as u64,
+            test_image_master_key(),
+            &fake.root,
+        )
+        .expect("private QMP setup succeeds");
+
+        let session_dir = process
+            .encrypted_temp_dir
+            .as_ref()
+            .expect("encrypted launch retains its private temporary directory")
+            .path
+            .clone();
+        let image = session_dir.join("encrypted-rootfs.img");
+        assert_eq!(fs::read(&image).unwrap(), artifact);
+        assert_eq!(
+            fs::metadata(&session_dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert!(!session_dir.join("q").exists());
+        assert_eq!(
+            fs::metadata(&image).unwrap().permissions().mode() & 0o777,
+            0o400
+        );
+        assert_eq!(
+            fs::read_to_string(&fake.trace)
+                .unwrap()
+                .lines()
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+            vec![
+                "qmp_capabilities".to_string(),
+                "object-add:secret-present".to_string(),
+                "blockdev-add".to_string(),
+                "blockdev-add".to_string(),
+                "blockdev-add".to_string(),
+                "device_add".to_string(),
+                "cont".to_string(),
+            ]
+        );
+        wait_for_diagnostic_marker(&process, b"FAKE_QEMU_STDOUT_AFTER_SECRET");
+        assert!(!fs::read(process.diagnostic_log())
+            .unwrap()
+            .windows(key_text.len())
+            .any(|window| window == key_text.as_bytes()));
+        assert!(process.stderr_tail().unwrap().bytes.is_empty());
+
+        let status = process
+            .stop(Duration::from_secs(1), Duration::from_secs(1))
+            .expect("fake guest stops cleanly");
+        assert!(status.success());
+        assert!(!session_dir.exists());
+        assert_private_qemu_reaped(&fake);
+    }
+
+    #[test]
+    fn encrypted_qmp_failures_never_echo_secret_and_clean_up_at_each_setup_stage() {
+        for stage in [
+            "qmp_capabilities",
+            "object-add",
+            "blockdev-add-1",
+            "blockdev-add-2",
+            "blockdev-add-3",
+            "device_add",
+            "cont",
+        ] {
+            let fake = fake_private_qemu();
+            let plan = private_plan(&fake, stage, "");
+            let key_text = BASE64_STANDARD.encode([0x5a; 32]);
+            let artifact = b"verified ciphertext extent";
+            let error = QemuProcess::spawn_encrypted_with_parent(
+                &plan,
+                std::io::Cursor::new(artifact),
+                artifact.len() as u64,
+                test_image_master_key(),
+                &fake.root,
+            )
+            .err()
+            .expect("injected QMP error stops encrypted setup");
+
+            assert!(
+                !error.to_string().contains(&key_text),
+                "QMP error at {stage} must redact the secret"
+            );
+            assert_private_qemu_reaped(&fake);
+        }
+    }
+
+    #[test]
+    fn encrypted_qmp_timeout_kills_qemu_and_removes_temporary_extent() {
+        let fake = fake_private_qemu();
+        let plan = private_plan(&fake, "", "object-add");
+        let artifact = b"verified ciphertext extent";
+        let error = QemuProcess::spawn_encrypted_with_parent(
+            &plan,
+            std::io::Cursor::new(artifact),
+            artifact.len() as u64,
+            test_image_master_key(),
+            &fake.root,
+        )
+        .err()
+        .expect("QMP response timeout aborts encrypted startup");
+
+        assert!(error.to_string().contains("adding QEMU secret"));
+        assert_private_qemu_reaped(&fake);
+    }
+
+    #[test]
+    fn short_encrypted_extent_is_removed_before_qemu_starts() {
+        let fake = fake_private_qemu();
+        let plan = private_plan(&fake, "", "");
+        let error = QemuProcess::spawn_encrypted_with_parent(
+            &plan,
+            std::io::Cursor::new(b"short"),
+            12,
+            test_image_master_key(),
+            &fake.root,
+        )
+        .err()
+        .expect("short verified extent is rejected");
+
+        assert!(error.to_string().contains("encrypted QEMU setup failed"));
+        assert!(!fake.pid_file.exists());
+        assert!(fs::read_dir(&fake.root).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("rootglass-qmp-")));
     }
 
     fn fake_qemu_exit(code: i32) -> FakeQemu {

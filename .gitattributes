@@ -1,0 +1,2 @@
+# Verified directory bundles hash exact file bytes, including line endings.
+examples/hello-world.glass/** -text

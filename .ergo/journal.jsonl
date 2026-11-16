@@ -582,3 +582,6 @@
 {"version":1,"task_id":"7ZK6R7","kind":"claim","at":"2026-11-16T02:10:48.561973935Z","agent":"codex@worker-1"}
 {"version":1,"task_id":"7ZK6R7","kind":"result","at":"2026-11-16T02:28:51.308882715Z","agent":"codex@worker-1","text":"app 51/51; core 15/15; Clippy clean; fmt and diff-check clean; negatives precede key access"}
 {"version":1,"task_id":"7ZK6R7","kind":"result","at":"2026-11-16T02:37:06.896679347Z","agent":"codex@worker-1","text":"Asset-free workspace tests pass after narrowing the schema gate; schema-1 launch checks are preserved"}
+{"version":1,"task_id":"7ZK6R7","kind":"done","at":"2026-11-16T02:41:28.166834051Z","agent":"codex@worker-1","text":"Merged #152 (f2c632e); all CI jobs passed, including workspace tests, CLI smoke, and x64/arm64 guest boots."}
+{"version":1,"task_id":"2TNH2J","kind":"open","at":"2026-11-16T02:41:49.705828317Z","text":"E02 and E08 are complete; QMP secret-delivery work can start."}
+{"version":1,"task_id":"2TNH2J","kind":"claim","at":"2026-11-16T02:41:49.728869349Z","agent":"codex@worker-1"}
